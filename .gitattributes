@@ -1,0 +1,3 @@
+# Left out of the release archive: the README's demo media and the tools that made them
+/docs/media export-ignore
+/.demo-studio export-ignore
