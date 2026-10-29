@@ -1,105 +1,140 @@
-# sturnus
+<div align="center">
+  <img src="web/icon.svg" width="76" alt="Sturnus logo">
+  <h1>Sturnus</h1>
+  <p><strong>Your coding agents. One workspace.</strong></p>
+  <p>See what needs you, follow the work, and pick up the right conversation.</p>
+  <p><strong>English</strong> · <a href="README.zh-CN.md">中文</a></p>
+  <p><a href="#quick-start">Quick start</a> · <a href="#see-it-in-action">Watch the demo</a> · <a href="docs/operations.md">Installation & operations</a></p>
+</div>
 
-One page for the Claude Code, Codex and Cursor sessions on this machine. You keep using each one through its own command line; Sturnus is the layer across them. For each session it shows:
+![Sturnus workspace dashboard: one session ready for review, two agents working, and three work items across two projects.](docs/media/v0.13.1/workspace.png)
 
-- what it is doing (a one-line summary by a model),
-- which project it works on, and in which worktree and branch,
-- where it is (its Zellij or tmux session and pane),
-- what the sessions say to each other.
+Sturnus brings **Claude Code, Codex, and Cursor** sessions on one machine into a browser dashboard. It connects each conversation to its project, worktree, branch, and shared discussion—so you can see where your attention is needed without opening every terminal.
 
-From the page you can jump to a session's pane, write to it, or give it one name that is used everywhere.
+Use it when several agents are working across repositories: one is implementing an API, another is reviewing the same branch, and a third is building the UI. Sturnus keeps that work in view and gives you a place to decide what happens next.
 
-## Workspaces, projects, work items
+**Linux & macOS · Python standard library · Zellij & tmux · English & 中文**
 
-- A **workspace** is a folder of projects, like `~/Projects/software/workspace`. By default it is the folder above each git repository a session works in; list your own under `workspaces` in the settings.
-- A **project** is a git repository (all its worktrees are one project) or a plain folder in a workspace.
-- A **work item** is one of a project's worktrees and its branch. Sessions come and go; a work item stays until it is merged and its worktree removed.
-- A session belongs to the project of the folder it is in now. One at the top of a workspace belongs to the project whose files it works on (edits count most), else to the workspace itself. On its page you can say otherwise.
+> Under active development. The media below shows the actual **0.13.1** interface with fictional workspace data. The tour demonstrates navigation; it does not run agents or send messages. [Demo notes and transcript →](docs/demo.md)
 
-The home page shows a workspace's projects with the sessions on them; a project's page shows its work items (ahead of or behind main, files not committed, the last commit) with their sessions, its channel, the decisions taken and what came out.
+## See it in action
 
-## Channels
+**Workspace → work items → session → report → search → shared channel.**
 
-Every project has a channel, and so does every workspace: a room that every session on it reads, whatever agent it is.
+The inline GIF is an 18-second preview at 2× speed; the full video plays at normal speed.
 
-- `amail post "..."` posts to the channel of your project. The other sessions on it get it at the start of their next turn.
-- `@NAME` in a post calls that session (`@all`: everyone on the channel). A call reaches it mid-work too, and Sturnus wakes it if it is idle. One called that is not on the channel gets it by mail.
-- `amail topic "Debate: …" --invite a,b` starts a discussion with the sessions you name. Its posts reach those in it mid-work, a stop picks them up, and Sturnus wakes them when idle, so they can go back and forth. It closes after 24 posts (`--max N`), or when someone closes it.
-- `amail read` shows what is new; `amail read --all` the last posts; `amail topics` the open discussions.
+[![Animated tour of Sturnus: open a project, inspect a session and its report, search for an agent, and read the project channel.](docs/media/v0.13.1/walkthrough.gif)](https://github.com/ethannortharc/sturnus/blob/main/docs/media/v0.13.1/walkthrough.mp4)
 
-On the page, a project's "讨论" tab is its channel: post, start a discussion with any sessions, close it.
+[Watch or download the full MP4](https://github.com/ethannortharc/sturnus/blob/main/docs/media/v0.13.1/walkthrough.mp4) · 36 seconds · Silent, with on-screen chapter captions · [Text walkthrough](docs/demo.md)
 
-## Writing to a session
+## From “who needs me?” to the next step
 
-A session's page has one send button, and what it does follows how the session stands: typed into its terminal when it is idle, held until its turn ends while it works (or typed right away, if you say so), not typed at all while it sits at a permission or choice prompt (the text would answer the prompt), put in its mailbox when it runs in no Zellij or tmux pane.
+### 1. Start with what needs your attention
 
-It runs on Linux and macOS, with the Python 3 the system has (3.9 or newer) and nothing else to install.
+The workspace dashboard puts requests for a decision, blocked work, and results ready for review first. Below that, work items show branch progress and uncommitted files; session cards explain what each agent is doing.
 
-## Install
+The left rail switches workspaces. The adjacent column follows your current workspace and groups its sessions by state. Sub-agents appear under their parent session, with their own activity and conversation records.
 
-Either clone it:
+### 2. Follow the work, even after a session ends
+
+A **work item is a worktree and its branch**. A project collects those work items, the sessions on them, recent decisions, and reported outputs. You can see two agents collaborating on one branch, or spot unmerged work with no active session.
+
+![Project overview showing worktrees, two agents on feat/usage-limits, branch progress, shared decisions, and an output reference.](docs/media/v0.13.1/project.png)
+
+Open a session to read its **Overview**, **Conversation**, or **Report**. Continue in the browser's **Terminal** tab, or use **Switch to it in my terminal** to focus its pane in an attached terminal. Reports gather the goal, completed work, decisions, current state, and next steps.
+
+### 3. Keep the next instruction in context
+
+Write directly to a session, queue work for later, or use the project's shared channel when several agents need the same context. The assistant can help choose an existing session—or suggest a new one—for a task.
+
+![Project channel with a shared release discussion between the user, Claude Code, and Codex, including a mention and a migration decision.](docs/media/v0.13.1/channel.png)
+
+| When you send to a session | What happens |
+|---|---|
+| Idle in Zellij / tmux | The instruction is typed into its terminal |
+| Working | It waits for the turn to finish, unless you explicitly send immediately |
+| At a permission or choice prompt | It is not typed into that prompt |
+| Outside a managed terminal | It goes to the session's mailbox |
+| Ended or gone | Sturnus reports that the session is unavailable |
+
+Queued work can be sent automatically when ready, or held for your confirmation. In automatic mode, the assistant rechecks the task before delivery.
+
+## Quick start
+
+You need **Linux or macOS, Python 3.9+**, and an installed coding-agent CLI. Use **Zellij or tmux** for terminal management. The Sturnus server has no pip dependencies; summaries and assistant features use a separately configured model.
 
 ```sh
-git clone https://github.com/ethannortharc/sturnus && cd sturnus && ./sturnus install
+git clone https://github.com/ethannortharc/sturnus.git
+cd sturnus
+./sturnus install
 ```
 
-or take the newest release (https://github.com/ethannortharc/sturnus/releases), unpack it and run `./sturnus install` in its folder.
+The installer adds `sturnus` and `amail` to `~/.local/bin`, installs agent hooks and the Zellij plugin, and starts a user service. Add `~/.local/bin` to your `PATH` if needed.
 
-- `./sturnus install` — installs into `~/.local/share/sturnus`. It adds:
-  - `~/.local/bin/sturnus` and `~/.local/bin/amail`,
-  - amail's hooks for Claude Code, Codex and Cursor,
-  - the Zellij plugin,
-  - a user service on http://127.0.0.1:7788 that starts at login: systemd on Linux (`systemctl --user status sturnus`), launchd on macOS (`~/Library/LaunchAgents/com.giomni.sturnus.plist`, log in `~/Library/Logs/sturnus.log`),
-  - with Tailscale, https://\<machine\>.\<tailnet\>.ts.net:7443 (see below).
-- `sturnus token [--rotate]` — the sign-in token. Every browser needs it once, then stays signed in for 30 days. `--rotate` makes a new token and signs every browser out.
-- `sturnus status` — the version, the service, and every address it is on.
-- `sturnus upgrade` — the newest version, on Linux and macOS alike. Installed from a clone, it pulls the clone (fast-forward only) and installs it when its VERSION is newer; installed from a release, it takes the newest release on GitHub (checked against its sha256). Three versions are kept, and a new one must pass its own check before it takes over. `--force` installs again, `--release` takes the release even with a clone.
-- `sturnus uninstall [--purge]` — takes all of it out again (`--purge`: its settings, caches and mail too).
-- `amail help` — the mailbox the sessions use.
+```sh
+sturnus open    # open the dashboard
+sturnus token   # show the token for your browser's first sign-in
+sturnus status  # check the service and available addresses
+```
 
-An agentdeck install (this app's name before) is taken over by the first `./sturnus install`: its settings, sign-in token, keys and caches move over, and its service and folder are removed.
+1. Open [127.0.0.1:7788](http://127.0.0.1:7788) and sign in with the token.
+2. Start or continue an agent session in a project. By default, its repository's parent folder becomes a workspace.
+3. Open **Settings → Assistant & models** to choose the models for summaries and the assistant. Defaults are Claude Haiku and Claude Sonnet, using your installed Claude CLI.
+4. In **Settings → Display**, choose English or Chinese. The agents' working language is a separate setting for generated summaries, reports, replies, and drafts.
 
-## From another computer
+You can also install from a [release archive](https://github.com/ethannortharc/sturnus/releases). See the [operations guide](docs/operations.md) for upgrades, service paths, remote access, and uninstalling.
 
-With Tailscale, the deck is also on this machine's tailnet, for your own Tailscale devices only (each peer is checked with `tailscale whois`; devices shared into your tailnet are turned away), and still asks for the token:
+## A small vocabulary
 
-- **https://\<machine\>.\<tailnet\>.ts.net:7443** — through `tailscale serve`, with Tailscale's certificate for the machine's name. It needs HTTPS turned on for the tailnet (admin console → DNS → HTTPS certificates). On Linux, `tailscale serve` also needs `sudo tailscale set --operator=$USER` once. A certificate is only issued for the name, so a bare 100.x address cannot have HTTPS.
-- http://\<machine\>:7788 and http://\<100.x address\>:7788 — the deck listening on the Tailscale address itself (the traffic is WireGuard-encrypted all the same).
+| Concept | What it represents |
+|---|---|
+| **Workspace** | A folder containing projects, such as `~/projects` |
+| **Project** | A Git repository and all its worktrees, or a plain folder |
+| **Work item** | A worktree and its branch; its lifetime is independent of a session |
+| **Session** | A Claude Code, Codex, or Cursor conversation |
+| **Channel** | Shared discussion for a project or workspace |
 
-Set `"tailnet": false` in the config to stay on 127.0.0.1. Its terminal in the page (xterm.js in `web/vendor`, MIT) is a Zellij or tmux client run by the deck in a pseudo-terminal, behind the same sign-in; a tmux one is a session grouped with the agent's, gone when the page closes.
+For sessions started at a workspace root, Sturnus uses the files they work on to infer the project. You can override that assignment on the session page.
 
-## Zellij's open files
+## Move quickly
 
-Every client of a Zellij session (each terminal attached to it, the page's terminal too) loads its own copy of each tab's tab bar and status bar, and each copy holds a few files open: about 58 more files per client for a session of 7 tabs. A Zellij server that runs out of files dies, and every pane in it ends. macOS lets a server started from a terminal or an ssh login hold 256 (Linux usually 1024), which 7 tabs reach at the fourth client.
+| Shortcut | Action |
+|---|---|
+| `⌘/Ctrl K` or `/` | Search workspaces, projects, and sessions |
+| `Enter` in search | Open the selected result |
+| `⌘/Ctrl Enter` in search | Open the selected session's browser terminal |
+| `⌘/Ctrl 1–9` | Switch to a workspace on the rail |
+| `⌘/Ctrl B` | Fold or unfold the contextual column |
+| `⌘/Ctrl J` | Open the assistant |
+| `N` | Create a session |
+| `T` / `C` / `O` on a session | Terminal / Conversation / Overview |
 
-So the page does not open its terminal, or a new tab in a Zellij session, when that would take the server past its limit, and says why. macOS does not tell one process another's limit, so there the deck takes it as 256 unless the server already holds more.
+Single-key shortcuts apply when you are not typing. Double-click a session in the side column to open its browser terminal.
 
-To give Zellij more room, raise the limit in the shell it is started from, e.g. `ulimit -n 10240` in `~/.zshenv`, then start the Zellij session again: a running server keeps the limit it started with. On macOS, also set `zellij_max_files` to that number in the config, so the deck knows.
+## Shared channels with amail
 
-## Settings
+From a project directory:
 
-`~/.config/sturnus/config.json`:
+```sh
+amail post "The API contract is ready for review."
+amail post "@reviewer Please check the retry behavior."
+amail topic "Retry policy" --invite backend,reviewer
+amail read
+amail topics
+```
 
-- `port`, `host`;
-- `tailnet` (false: not on the Tailscale address);
-- `https_port` (7443);
-- `pane_titles`;
-- `zellij_max_files` (macOS: the open-file limit your Zellij sessions start with, once you have raised it);
-- `workspaces`: the folders of projects (default: the folder above each git repository a session works in);
-- `releases`: the GitHub repository `sturnus upgrade` takes releases from (default `ethannortharc/sturnus`);
-- `summarizer.cmd`, which defaults to `claude -p --model haiku`;
-- `summarizer.api`, to use an OpenAI-compatible endpoint instead: `{"url", "model", "key_env"}`.
+Ordinary posts reach the project's sessions at the start of their next turn. `@NAME` calls a session while it works and can wake it when idle; `@all` calls everyone on the channel. Invited discussions close after 24 posts by default, or when explicitly closed. The project's **Channels** tab shows the same discussion. Run `amail help` for all commands.
 
-## Trying a change
+## Models, data, and access
 
-A second deck can run beside the installed one: `STURNUS_CONF`, `STURNUS_CACHE` and `AMAIL_HOME` point it at its own settings (with another `port`), caches and mail, and `STURNUS_DRY=1` keeps it from typing into any pane.
+Sturnus runs on your machine and reads local agent activity and Git state. **Summaries, reports, and assistant requests send relevant context to the model you configure**, which may be a remote service. Model sources include Claude Code, Codex, pi, and OpenAI-compatible APIs. Optional voice input sends recordings to the transcription provider you choose.
 
-## Building
+Configuration lives in `~/.config/sturnus/config.json`. API keys saved through Settings are stored separately in a local `secrets.json` file, created with mode `600`. Browser access requires a sign-in token.
 
-The Zellij plugin's source is in `zellij-jump/`. Rebuild it with `cargo build --release --target wasm32-wasip1`, then copy the `.wasm` file next to this README. `scripts/release.sh` makes the release archive from a clean checkout of a tag.
+For access from another computer, Sturnus supports your own Tailscale devices. Set `"tailnet": false` for localhost-only access. See [models and settings](docs/operations.md#settings), [Tailscale and HTTPS](docs/operations.md#from-another-computer), and [isolated development](docs/operations.md#trying-a-change).
 
 ## License
 
-MIT (see LICENSE). xterm.js in `web/vendor` is MIT, the fonts in `web/fonts` are under the SIL Open Font License (see `web/fonts/OFL.txt`).
+[MIT](LICENSE). Bundled xterm.js is MIT; bundled fonts use the [SIL Open Font License](web/fonts/OFL.txt).
 
 © 2026 Ethan H.B. Zhou
