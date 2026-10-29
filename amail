@@ -12,6 +12,16 @@
   amail wait [--timeout S]    wait here for mail: exit 0 with it, or 2 after S seconds (default 900)
   amail inbox [--peek]        my unread mail (--peek leaves it unread)
   amail status [NAME]         who is doing what: state, task, progress (sturnus's view when it runs); NAME: its report
+  amail post TEXT... [--topic ID] [--to CH]
+                              post to a channel everyone on it reads: by default your project's (the git repository you
+                              work in; --to workspace: your workspace's, or a project's name). @NAME in TEXT calls that
+                              session (@all: everyone on the channel); --topic ID: into a discussion
+  amail read [--to CH] [--topic ID] [--all] [--wait [S]]
+                              new posts of your channels (--all: the last 30 anyway; --wait: wait up to S seconds, default
+                              600, for the next one: exit 0 with it, 2 without)
+  amail topic TITLE [--invite A,B] [--max N] [--to CH] [TEXT...]
+                              start a discussion (a debate, a design question) on a channel: the invited sessions are
+                              called in, it closes after N posts (default 24). amail topic close ID / amail topics
   amail lock [REPO] [--branch B] [--note T] / unlock [REPO] [--force] / locks
                               a push lock on REPO's branch (default main) that the git pre-push hook honours
   amail whoami / amail rename NEW     my name on the board (a Codex window's default is codex-<end of its id>)
@@ -22,6 +32,8 @@
 
 Who I am: --as NAME, else $AMAIL_NAME, else the session this runs in (a Claude session's own name, codex-..., cursor-...).
 Mail lives in $AMAIL_HOME (default /tmp/amail-<uid>: writable from Codex's and Cursor's sandboxes).
+Mail is between two; a channel is a project's (or a workspace's) room: what is posted there reaches every session on it at
+its next turn, calls (@NAME) and discussions it takes part in also mid-work.
 """
 import hashlib, json, os, re, shutil, sqlite3, struct, subprocess, sys, time, uuid
 
@@ -391,6 +403,251 @@ def mail_text(me, mails):
     return '\n'.join(lines)
 
 
+# ---------- channels: a project's (or a workspace's) room ----------
+# channels/<key>/meta.json {key, name, path, kind}; posts/<at>-<id>.json; topics/<id>.json (a discussion); seen/<name>.json
+# {at, ids}: what that session has been handed (all up to at, and ids beyond it) — having one makes it a member.
+
+TOPIC_MAX = 24
+MENTION = re.compile(r'(?<![A-Za-z0-9_.@-])@([A-Za-z0-9][A-Za-z0-9_.-]{0,40}[A-Za-z0-9_]|[A-Za-z0-9])')  # (ASCII around it: 请@ws-61看 calls ws-61)
+
+
+def git_common(p):
+    """The git common dir of the repository P is in (the same for all its worktrees), or None."""
+    try:
+        r = subprocess.run(['git', '-C', p, 'rev-parse', '--path-format=absolute', '--git-common-dir'], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    c = r.stdout.strip()
+    return os.path.realpath(c) if r.returncode == 0 and c else None
+
+
+def key_of(kind, p):
+    """A channel's key: 'p-' a git repository's (by its common dir), 'd-' a plain folder project's, 'w-' a workspace's."""
+    return f'{kind}-{hashlib.sha1(os.path.realpath(p).encode()).hexdigest()[:12]}'
+
+
+def project_of(p):
+    """The project folder P belongs to (its git repository, all worktrees one project) as a channel, or None."""
+    common = git_common(p) if p and os.path.isdir(p) else None
+    if not common:
+        return None
+    root = os.path.dirname(common) if common.endswith('/.git') else common
+    return {'key': key_of('p', common), 'name': os.path.basename(root), 'path': root, 'kind': 'project'}
+
+
+def chan_ensure(ch):
+    f = path('channels', ch['key'], 'meta.json')
+    if not os.path.exists(f):
+        put(f, {'key': ch['key'], 'name': ch.get('name') or ch['key'], 'path': ch.get('path'), 'kind': ch.get('kind') or 'project', 'at': time.time()})
+    return ch['key']
+
+
+def channels():
+    d = os.path.dirname(path('channels', 'x'))
+    out = {}
+    for k in os.listdir(d):
+        m = get(os.path.join(d, k, 'meta.json'))
+        if m:
+            out[k] = m
+    return out
+
+
+def posts(key, since=0, topic=None, limit=None):
+    """A channel's posts after SINCE, oldest first (only one discussion's: TOPIC)."""
+    d = os.path.dirname(path('channels', key, 'posts', 'x'))
+    out = []
+    for f in sorted(os.listdir(d)):
+        try:
+            at = float(f.split('-', 1)[0])
+        except ValueError:
+            continue
+        if at <= since or not f.endswith('.json'):
+            continue
+        m = get(os.path.join(d, f))
+        if m and (topic is None or m.get('topic') == topic):
+            out.append(m)
+    return out[-limit:] if limit else out
+
+
+def topic_get(key, tid):
+    return get(os.path.join(HOME, 'channels', key, 'topics', f'{tid}.json'))
+
+
+def topics(key):
+    d = os.path.dirname(path('channels', key, 'topics', 'x'))
+    ts = [get(os.path.join(d, f)) for f in os.listdir(d) if f.endswith('.json')]
+    return sorted((t for t in ts if t), key=lambda t: -t['at'])
+
+
+def topic_find(tid):
+    """(channel key, topic) of a discussion by its id, on any channel."""
+    for k in channels():
+        t = topic_get(k, tid)
+        if t:
+            return k, t
+    return None, None
+
+
+def seen_file(key, name):
+    return path('channels', key, 'seen', f'{name}.json')
+
+
+def join(name, key, at=None, auto=False):
+    """NAME is on the channel from now on (or from AT): it is handed what is posted after. auto: put there for working
+    on its project (it leaves when it moves on); otherwise it posted, was called or invited, and stays."""
+    f = seen_file(key, name)
+    s = get(f)
+    if not s:
+        put(f, {'at': time.time() if at is None else at, 'ids': [], 'auto': auto})
+    elif s.get('auto') and not auto:
+        put(f, {**s, 'auto': False})
+
+
+def join_mine(me, cwd):
+    """At a turn's start: on the channels of my project and my workspace (sturnus's view, else my folder's repository)."""
+    mine = ((deck() or {}).get('sessions') or {}).get(me) or {}
+    chs = [c for c in (mine.get('project'), mine.get('workspace')) if c]
+    if not chs:
+        p = project_of(cwd)
+        chs = [p] if p else []
+    keys = {chan_ensure(c) for c in chs}
+    for k in member_of(me):
+        if k not in keys and (get(seen_file(k, me)) or {}).get('auto'):
+            os.remove(seen_file(k, me))  # (moved on to another project)
+    for k in keys:
+        join(me, k, auto=True)
+
+
+def members(key):
+    d = os.path.dirname(seen_file(key, 'x'))
+    return sorted(f[:-5] for f in os.listdir(d) if f.endswith('.json'))
+
+
+def member_of(name):
+    return [k for k in channels() if os.path.exists(os.path.join(HOME, 'channels', k, 'seen', f'{name}.json'))]
+
+
+def kind_of_name(name):
+    if name in ('user', 'sturnus', 'amail'):
+        return name
+    e = board().get(name)
+    if e:
+        return e.get('kind') or '?'
+    return 'claude' if any(s['name'] == name for s in claude_sessions()) else '?'
+
+
+def post(frm, key, text, topic=None, title=None):
+    """Post TEXT on channel KEY (into discussion TOPIC); @NAME calls a session (it joins the channel), @all everyone."""
+    t = None
+    if topic:
+        t = topic_get(key, topic)
+        if not t:
+            raise ValueError(f'no discussion {topic} on this channel (amail topics)')
+        if t.get('closed'):
+            raise ValueError(f'discussion {topic} is closed: post without --topic, or start a new one')
+    at = round(time.time(), 6)  # (as its file name has it: what is handed over is compared by that)
+    m = {'id': uuid.uuid4().hex[:10], 'at': at, 'from': frm, 'kind': kind_of_name(frm), 'text': text.strip()[:8000],
+         'topic': topic, 'to': sorted(set(MENTION.findall(text)))}
+    if title:
+        m['title'] = title
+    put(path('channels', key, 'posts', f'{at:.6f}-{m["id"]}.json'), m)
+    join(frm, key)
+    on = set(members(key))
+    for n in m['to']:  # (one called that is not on the channel gets it as a question by mail)
+        if n not in on and n not in ('all', frm):
+            ch = get(os.path.join(HOME, 'channels', key, 'meta.json')) or {'name': key}
+            send(frm, n, f'(on the channel of {ch["name"]}) {m["text"]}\n— answer there: amail post --to {ch["name"]} "..."', 'question')
+    if t:
+        t = topic_get(key, topic)
+        if frm not in t['members'] and frm not in ('sturnus', 'amail'):
+            t['members'] = sorted(set(t['members']) | {frm})
+        n = len(posts(key, topic=topic))
+        if n >= t.get('max', TOPIC_MAX) and not t.get('closed'):
+            t.update(closed=True, closed_at=time.time(), closed_by='amail')
+            put(path('channels', key, 'topics', f'{topic}.json'), t)
+            post('amail', key, f'Discussion «{t["title"]}» reached {n} posts and is closed. A summary or a decision goes on the channel itself.')
+        else:
+            put(path('channels', key, 'topics', f'{topic}.json'), t)
+    return m
+
+
+def topic_new(frm, key, title, text='', invite=(), maxn=TOPIC_MAX):
+    tid = uuid.uuid4().hex[:6]
+    invite = [n for n in dict.fromkeys(invite) if n and n != frm]
+    t = {'id': tid, 'title': title.strip()[:200], 'by': frm, 'at': time.time(), 'members': sorted({frm, *invite}),
+         'max': max(2, min(200, int(maxn or TOPIC_MAX))), 'closed': False}
+    put(path('channels', key, 'topics', f'{tid}.json'), t)
+    for n in invite:
+        join(n, key, t['at'] - .001)
+    post(frm, key, text or title, topic=tid, title=t['title'])
+    return t
+
+
+def topic_close(by, key, tid):
+    t = topic_get(key, tid)
+    if not t:
+        raise ValueError(f'no discussion {tid}')
+    if not t.get('closed'):
+        t.update(closed=True, closed_at=time.time(), closed_by=by)
+        put(path('channels', key, 'topics', f'{tid}.json'), t)
+    return t
+
+
+def calls(p, me):
+    return me in (p.get('to') or ()) or 'all' in (p.get('to') or ())
+
+
+def news(me, urgent=False, take=True, only=None):
+    """What my channels have for me, as [(channel, post)], oldest first: new posts, not mine; a discussion's posts only if I
+    am in it (its opening post goes to all). urgent: only calls (@me, @all) and my discussions' posts — those come
+    mid-work too; the rest waits for a turn's start. Taken (marked handed over) unless take is False."""
+    out = []
+    for key in member_of(me):
+        if only and key != only:
+            continue
+        f = seen_file(key, me)
+        s = get(f) or {'at': time.time(), 'ids': []}
+        after = posts(key, since=s['at'])
+        new = [p for p in after if p.get('from') != me and p['id'] not in s['ids']]
+        if not new:
+            continue
+        mine = {t['id'] for t in topics(key) if me in t.get('members', ())}
+        hit = [p for p in new if calls(p, me) or p.get('topic') in mine or (not urgent and (not p.get('topic') or p.get('title')))]
+        if urgent:
+            hit = [p for p in hit if calls(p, me) or p.get('topic') in mine]
+        if take and (hit or not urgent):
+            s = {'at': s['at'], 'ids': s['ids'] + [p['id'] for p in hit]} if urgent else {'at': max(p['at'] for p in after), 'ids': []}
+            put(f, {**(get(f) or {}), 'at': s['at'], 'ids': s['ids'][-500:]})
+        meta = get(os.path.join(HOME, 'channels', key, 'meta.json')) or {'key': key, 'name': key}
+        out += [(meta, p) for p in hit]
+    return out
+
+
+def news_text(me, items, intro=True):
+    """Posts as a session reads them: by channel, with how to answer."""
+    lines, joined = [], {}
+    for ch, p in items:
+        joined.setdefault(ch['key'], (ch, []))[1].append(p)
+    for key, (ch, ps) in joined.items():
+        where = 'workspace' if ch.get('kind') == 'workspace' else 'project'
+        if intro:
+            lines.append(f'[amail] {len(ps)} new post{"s" if len(ps) > 1 else ""} on the channel of {where} {ch.get("name")} (every session on it reads it):')
+        ts = {t['id']: t for t in topics(key)}
+        for p in ps:
+            t = ts.get(p.get('topic'))
+            tag = f' [discussion {t["id"]} «{t["title"]}»{" — opened" if p.get("title") else ""}]' if t else ''
+            call = ' [calls you]' if calls(p, me) and not t else ''
+            lines.append(f'- {"the person" if p["from"] == "user" else p["from"]} ({p.get("kind") or "?"}) at {hhmm(p["at"])}{tag}{call}: {p["text"][:1500]}')
+        for t in ts.values():
+            if me in t.get('members', ()) and not t.get('closed') and any(p.get('topic') == t['id'] for p in ps):
+                n = len(posts(key, topic=t['id']))
+                lines.append(f'  You are in discussion {t["id"]} «{t["title"]}» ({", ".join(t["members"])}; {n}/{t.get("max", TOPIC_MAX)} posts). '
+                             f'Take part: amail --as {me} post --topic {t["id"]} "..." — say something new or say you agree; it is read by all of them.')
+    if lines and intro:
+        lines.append(f'Post on the channel: amail --as {me} post "..." (@NAME calls a session). All of it: amail read --all')
+    return '\n'.join(lines)
+
+
 # ---------- the board ----------
 
 def ago(t):
@@ -631,20 +888,26 @@ def on_event(kind, ev, p):
     put(f, e)
     if ev in ('pre', 'said', 'end', 'ask'):
         return None  # (never answer a permission request: that is the person's)
+    if ev in ('start', 'prompt'):
+        join_mine(me, e.get('cwd'))
     if ev == 'prompt' and kind == 'cursor':
         return None  # (Cursor cannot add context here: its mail comes after a tool, or when it stops)
     mails = take(me, urgent=ev == 'post')
+    # (a channel's posts at a turn's start — Cursor's, after a tool; calls and discussions also mid-work, and at a stop)
+    items = news(me, urgent=not (ev in ('start', 'prompt') or (kind == 'cursor' and ev == 'post')))
     intro = ''
     if ev == 'start':
         intro = (f'[amail] You are "{me}" on amail, the mailbox shared by the Claude Code, Codex and Cursor sessions on this '
                  f'machine; mail to you shows up here. Send: amail --as {me} send <name|all> "text". Who is doing what: '
                  f'amail status (NAME: its report). To be told when another session stops or gets somewhere: amail wait NAME '
-                 f'[--until "what"]. Those waiting on you are told when you stop; no DONE notes needed. The person: send user.')
-    if not mails and not intro:
+                 f'[--until "what"]. Those waiting on you are told when you stop; no DONE notes needed. The person: send user. '
+                 f'Your project has a channel every session on it reads: amail post "..." tells them all (what you changed, '
+                 f'what they should know); its posts reach you here.')
+    if not mails and not intro and not items:
         return None
-    text = '\n'.join(x for x in [intro, mails and mail_text(me, mails)] if x)
+    text = '\n'.join(x for x in [intro, mails and mail_text(me, mails), items and news_text(me, items)] if x)
     if ev == 'stop':
-        if not mails:
+        if not mails and not items:
             return None
         return {'followup_message': text} if kind == 'cursor' else {'decision': 'block', 'reason': text}
     if kind == 'cursor':
@@ -1053,7 +1316,50 @@ def selftest():
         assert prepush() == 0
         os.chdir(cwd)
         assert unlock('lead', repo) == 'unlocked main'
+        # channels: a project's room
+        os.environ.pop('AMAIL_NAME', None)
+        ch = project_of(repo)
+        assert ch and ch['kind'] == 'project' and ch['name'] == os.path.basename(repo)
+        os.makedirs(os.path.join(repo, 'sub'))
+        assert project_of(os.path.join(repo, 'sub'))['key'] == ch['key']
+        ev('codex', 'UserPromptSubmit', cwd=repo)
+        key = ch['key']
+        assert member_of('codex-456789') == [key] and get(seen_file(key, 'codex-456789'))['auto']  # (joined by its folder)
+        join('cursor-abcdef', key)
+        post('lead', key, 'heads up: main moves')
+        assert news('codex-456789', urgent=True) == []  # (a plain post waits for a turn's start)
+        got = [p['text'] for _, p in news('codex-456789')]
+        assert got == ['heads up: main moves'] and news('codex-456789') == [], got
+        post('lead', key, '请@codex-456789看一下 the release, @nobody.')
+        out = ev('codex', 'PostToolUse')['hookSpecificOutput']['additionalContext']
+        assert '看一下' in out and '[calls you]' in out and 'heads up' not in out
+        assert not os.path.exists(seen_file(key, 'nobody')) and '看一下' in take('nobody')[0]['text']  # (not on it: by mail)
+        t = topic_new('lead', key, 'Debate: tabs or spaces', 'Argue it.', ['cursor-abcdef'], 4)
+        stop = ev('cursor', 'stop', conversation_id='abcdef12-0000')['followup_message']
+        assert 'Argue it.' in stop and f'post --topic {t["id"]}' in stop  # (invited: called in at once)
+        post('cursor-abcdef', key, 'tabs', topic=t['id'])
+        texts = [p['text'] for _, p in news('codex-456789')]
+        assert texts == ['Argue it.']  # (the opening reaches all; the replies only those in it)
+        assert [p['text'] for _, p in news('lead', urgent=True)] == ['tabs']
+        stop = ev('codex', 'Stop')
+        assert stop is None  # (not in the discussion: its stop is its own)
+        post('lead', key, 'spaces', topic=t['id'])
+        post('cursor-abcdef', key, 'tabs!', topic=t['id'])
+        assert topic_get(key, t['id'])['closed']  # (4 posts: closed)
+        try:
+            post('lead', key, 'more', topic=t['id'])
+            assert False, 'a post into a closed discussion'
+        except ValueError:
+            pass
+        assert 'closed' in news_text('lead', news('lead'))
+        other = tempfile.mkdtemp(prefix='amail-o')
+        ev('codex', 'UserPromptSubmit', cwd=other)
+        assert member_of('codex-456789') == []  # (moved on: off its old project's channel)
+        post('codex-456789', key, 'back again')
+        ev('codex', 'UserPromptSubmit', cwd=other)
+        assert member_of('codex-456789') == [key]  # (it posted there: it stays)
         shutil.rmtree(repo)
+        shutil.rmtree(other)
         return 'selftest ok'
     finally:
         os.environ.pop('AMAIL_NAME', None)
@@ -1062,6 +1368,117 @@ def selftest():
 
 
 # ---------- the command line ----------
+
+def opt(a, flag, default=None):
+    return a[a.index(flag) + 1] if flag in a and a.index(flag) + 1 < len(a) else default
+
+
+def words(a, valued, bare=()):
+    """The words of A that are not options (VALUED take the word after them)."""
+    out, skip = [], False
+    for x in a:
+        if skip:
+            skip = False
+        elif x in valued:
+            skip = True
+        elif x not in bare:
+            out.append(x)
+    return out
+
+
+def resolve(me, to=None):
+    """A channel's key: TO (a key, a project's name, "workspace", a folder), else my project's (sturnus's view, else the
+    git repository this runs in), else my workspace's."""
+    mine = ((deck() or {}).get('sessions') or {}).get(me) or {}
+    chs = channels()
+    if to:
+        if to in chs:
+            return to
+        if to == 'workspace':
+            if mine.get('workspace'):
+                return chan_ensure(mine['workspace'])
+            raise ValueError('sturnus knows no workspace of yours (it has to run): post to a project instead')
+        hit = [k for k, m in chs.items() if m.get('name') == to]
+        if len(hit) == 1:
+            return hit[0]
+        p = project_of(os.path.expanduser(to))
+        if p:
+            return chan_ensure(p)
+        raise ValueError(f'no channel called {to}' + (f' (there are: {", ".join(sorted(m["name"] for m in chs.values()))})' if chs else ''))
+    for c in (mine.get('project'), project_of(os.getcwd()), mine.get('workspace')):
+        if c:
+            return chan_ensure(c)
+    raise ValueError('you are in no project: amail post --to NAME (a project, or "workspace")')
+
+
+def channel_cmd(me, c, a):
+    chs = lambda: channels()
+    if c == 'post':
+        topic, text = opt(a, '--topic'), ' '.join(words(a, ('--to', '--topic'))).strip()
+        if not text:
+            sys.exit('usage: amail post TEXT... [--topic ID] [--to CHANNEL]')
+        key = topic_find(topic)[0] if topic else resolve(me, opt(a, '--to'))
+        if not key:
+            raise ValueError(f'no discussion {topic} (amail topics)')
+        m = post(me, key, text, topic)
+        print(f'posted on {chs()[key]["name"]}' + (f', in discussion {topic}' if topic else '') + (f'; calls {", ".join(m["to"])}' if m['to'] else '')
+              + ('' if deck() or not m['to'] else ' (sturnus is not running: they read it at their next turn)'))
+        return 0
+    if c == 'topics':
+        keys = [resolve(me, opt(a, '--to'))] if '--to' in a else member_of(me)
+        out = [f'{t["id"]}  «{t["title"]}» on {chs()[k]["name"]}: {", ".join(t["members"])}; {len(posts(k, topic=t["id"]))}/{t.get("max", TOPIC_MAX)} posts'
+               + (' (closed)' if t.get('closed') else '') for k in keys for t in topics(k) if '--all' in a or not t.get('closed')]
+        print('\n'.join(out) or 'no open discussions on your channels (--all: closed ones too)')
+        return 0
+    if c == 'topic':
+        if a[:1] == ['close']:
+            key, t = topic_find(a[1] if len(a) > 1 else '')
+            if not t:
+                raise ValueError('usage: amail topic close ID (amail topics)')
+            topic_close(me, key, t['id'])
+            print(f'closed discussion {t["id"]} «{t["title"]}»')
+            return 0
+        if not a or a[0].startswith('--'):
+            sys.exit('usage: amail topic TITLE [--invite A,B] [--max N] [--to CHANNEL] [TEXT...]')
+        key = resolve(me, opt(a, '--to'))
+        invite = [x.strip() for x in (opt(a, '--invite') or '').split(',') if x.strip()]
+        t = topic_new(me, key, a[0], ' '.join(words(a[1:], ('--invite', '--max', '--to'))).strip(), invite, opt(a, '--max', TOPIC_MAX))
+        print(f'discussion {t["id"]} «{t["title"]}» on {chs()[key]["name"]} with {", ".join(t["members"])}; closes after {t["max"]} posts. '
+              f'Post in it: amail post --topic {t["id"]} "..."' + ('' if deck() else ' (sturnus is not running: the invited read it at their next turn)'))
+        return 0
+    # read
+    topic = opt(a, '--topic')
+    if topic:
+        key, t = topic_find(topic)
+        if not t:
+            raise ValueError(f'no discussion {topic} (amail topics)')
+        n = len(posts(key, topic=topic))
+        print(f'Discussion {topic} «{t["title"]}» on {chs()[key]["name"]} ({", ".join(t["members"])}; {n}/{t.get("max", TOPIC_MAX)} posts{", closed" if t.get("closed") else ""}):')
+        print(news_text(me, [(chs()[key], p) for p in posts(key, topic=topic)], intro=False))
+        return 0
+    only = resolve(me, opt(a, '--to')) if '--to' in a else None
+    if not member_of(me):
+        join(me, only or resolve(me))
+    if '--all' in a:
+        for key in [only] if only else member_of(me):
+            ps = posts(key, limit=30)
+            print(f'Channel {chs()[key]["name"]}, the last {len(ps)} posts:' if ps else f'Channel {chs()[key]["name"]}: nothing posted yet')
+            if ps:
+                print(news_text(me, [(chs()[key], p) for p in ps], intro=False))
+        return 0
+    wait = '--wait' in a
+    t = float(a[a.index('--wait') + 1]) if wait and a.index('--wait') + 1 < len(a) and re.fullmatch(r'[\d.]+', a[a.index('--wait') + 1]) else 600
+    end = time.time() + t
+    while True:
+        items = news(me, only=only)
+        if items:
+            print(news_text(me, items))
+            return 0
+        if not wait or time.time() >= end:
+            break
+        time.sleep(2)
+    print(f'no new posts on {", ".join(chs()[k]["name"] for k in ([only] if only else member_of(me)))}' + (f' in {int(t)}s' if wait else '') + ' (amail read --all: the last ones)')
+    return 2 if wait else 0
 
 def main(argv):
     as_ = None
@@ -1121,8 +1538,18 @@ def main(argv):
             src = os.path.dirname(path('mail', me, box, 'x'))
             for f in os.listdir(src):
                 os.replace(os.path.join(src, f), path('mail', new, box, f))
+        for k in member_of(me):  # (and its place on channels and in discussions)
+            os.replace(seen_file(k, me), seen_file(k, new))
+            for t in topics(k):
+                if me in t['members']:
+                    put(path('channels', k, 'topics', f'{t["id"]}.json'), {**t, 'members': sorted(set(t['members']) - {me} | {new})})
         print(f'{me} is now {new}')
         return 0
+    if c in ('post', 'read', 'topic', 'topics'):
+        try:
+            return channel_cmd(me, c, a)
+        except ValueError as e:
+            sys.exit(f'amail: {e}')
     if c in ('send', 'ask'):
         if len(a) < 2:
             sys.exit(f'usage: amail {c} TO TEXT...')
