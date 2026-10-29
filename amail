@@ -455,13 +455,16 @@ def channels():
 def posts(key, since=0, topic=None, limit=None):
     """A channel's posts after SINCE, oldest first (only one discussion's: TOPIC)."""
     d = os.path.dirname(path('channels', key, 'posts', 'x'))
+    names = sorted(f for f in os.listdir(d) if f.endswith('.json'))
+    if limit and topic is None:
+        names = names[-limit:]  # (the last ones only: a long channel is not read whole)
     out = []
-    for f in sorted(os.listdir(d)):
+    for f in names:
         try:
             at = float(f.split('-', 1)[0])
         except ValueError:
             continue
-        if at <= since or not f.endswith('.json'):
+        if at <= since:
             continue
         m = get(os.path.join(d, f))
         if m and (topic is None or m.get('topic') == topic):

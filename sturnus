@@ -16,8 +16,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 APP = os.path.dirname(os.path.realpath(__file__))
 SHARE = os.path.expanduser('~/.local/share/sturnus')
-CONF = os.path.expanduser('~/.config/sturnus/config.json')
-CACHE = os.path.expanduser('~/.cache/sturnus')
+CONF = os.environ.get('STURNUS_CONF') or os.path.expanduser('~/.config/sturnus/config.json')  # (another one: a second deck to try things on)
+CACHE = os.environ.get('STURNUS_CACHE') or os.path.expanduser('~/.cache/sturnus')
+DRY = bool(os.environ.get('STURNUS_DRY'))  # (a deck to try things on: it types into no pane and queues into no Codex thread)
 WASM = os.path.join(SHARE, 'zellij-jump.wasm')  # (one path for every version: Zellij's grant is by path)
 MAC = sys.platform == 'darwin'
 LABEL = 'com.giomni.sturnus'  # (macOS: the LaunchAgent's)
@@ -1169,6 +1170,279 @@ class Talk:
         return items[:300]
 
 
+# ---------- workspaces, projects, work items ----------
+# A workspace is a folder of projects (config "workspaces", else the folder above each git repository the sessions work
+# in); a project is a git repository (all its worktrees one project) or a plain folder in a workspace; a work item is one
+# of its worktrees and that worktree's branch. A session belongs to the project of the folder it is in now; one at the
+# workspace's top by the files it works on; else to the workspace itself. The person can say otherwise.
+
+GENERIC = {'workspace', 'workspaces', 'projects', 'project', 'src', 'code', 'repos', 'work', 'dev', 'git'}
+USER_HOME = os.path.expanduser('~')
+TOUCH = {'Edit': 3, 'Write': 3, 'MultiEdit': 3, 'NotebookEdit': 3, 'Read': 1, 'Grep': 1, 'Glob': 1}
+CD = re.compile(r'(?:^|[;&|(]\s*)(?:cd|pushd)\s+("[^"]+"|\'[^\']+\'|[^\s;&|)]+)|\bgit\s+-C\s+("[^"]+"|\'[^\']+\'|[^\s;&|)]+)')
+PATCH = re.compile(r'^\*\*\* (?:Update|Add|Delete) File: (.+)$', re.M)
+
+
+def git(cwd, *args, timeout=6):
+    r = run(['git', '-C', cwd, *args], timeout=timeout)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def ws_name(p):
+    """A workspace's name: its folder's, or the one above when that is a generic word (…/software/workspace: software)."""
+    b, up = os.path.basename(p), os.path.dirname(p)
+    return os.path.basename(up) if b.lower() in GENERIC and up not in ('/', USER_HOME) else b
+
+
+def web_url(remote):
+    """A remote's page: git@host:o/r.git or ssh://git@host/o/r and https ones, as https://host/o/r."""
+    if not remote:
+        return None
+    m = re.match(r'^(?:ssh://)?[^@/]+@([^:/]+)(?::\d+)?[:/](.+?)(?:\.git)?/?$', remote) or re.match(r'^https?://(?:[^@/]+@)?([^/]+)/(.+?)(?:\.git)?/?$', remote)
+    return f'https://{m.group(1)}/{m.group(2)}' if m else None
+
+
+class Projects:
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.places = {}  # folder -> (when, where it is)
+        self.facts = {}  # project key -> its git facts (refreshed by facts_loop)
+        self.known = {}  # project key -> {key, name, path, git, workspace}
+        self.touches = {}  # transcript -> (size, when, {project key: weight, work path: weight})
+        self.kids = {}  # workspace -> (when, its projects)
+        self.wpaths = {}  # workspace key -> its folder
+        self.mfile = os.path.join(CACHE, 'attrib.json')
+        self.manual = A.get(self.mfile, {}) or {}  # session id -> project key, or 'w:' + workspace key (the person's word)
+
+    def configured(self):
+        return [os.path.realpath(os.path.expanduser(p)) for p in self.cfg.get('workspaces') or []]
+
+    def ws_of(self, root):
+        """The workspace a project's folder is in: a configured one around it, else the folder above it."""
+        inside = [w for w in self.configured() if root == w or root.startswith(w + '/')]
+        return max(inside, key=len) if inside else os.path.dirname(root)
+
+    def is_ws(self, p):
+        """A folder of projects: configured, above a project seen, or holding two git repositories or more."""
+        if p in self.configured() or any(x['workspace'] == p for x in self.known.values()):
+            return True
+        if p in (USER_HOME, '/'):
+            return False
+        try:
+            subs = [e.path for e in os.scandir(p) if e.is_dir() and not e.name.startswith('.')][:80]
+        except OSError:
+            return False
+        return sum(os.path.exists(os.path.join(d, '.git')) for d in subs) >= 2
+
+    def where(self, p):
+        """Where a folder is: {project: {key, name, path, git, workspace} | None, work: worktree path, branch, workspace}."""
+        if not p:
+            return {'project': None, 'workspace': None}
+        p = os.path.realpath(os.path.expanduser(p))
+        hit = self.places.get(p)
+        if hit and time.time() - hit[0] < 120:
+            return hit[1]
+        out = {'project': None, 'workspace': None, 'work': None, 'branch': None}
+        rows = (git(p, 'rev-parse', '--path-format=absolute', '--git-common-dir', '--show-toplevel') or '').splitlines() if os.path.isdir(p) else []
+        if len(rows) == 2:
+            common, top = os.path.realpath(rows[0]), os.path.realpath(rows[1])
+            root = os.path.dirname(common) if common.endswith('/.git') else common
+            proj = {'key': A.key_of('p', common), 'name': os.path.basename(root), 'path': root, 'git': True, 'workspace': self.ws_of(root)}
+            self.known[proj['key']] = proj
+            out.update(project=proj, workspace=proj['workspace'], work=top, branch=git(top, 'symbolic-ref', '--short', '-q', 'HEAD') or '')
+        else:
+            ws = next((w for w in sorted(self.configured(), key=len, reverse=True) if p.startswith(w + '/')), None)
+            up = p
+            while not ws and up not in ('/', USER_HOME) and up.count('/') > 2:
+                if self.is_ws(up):
+                    ws = up
+                up = os.path.dirname(up)
+            if ws:
+                out['workspace'] = ws
+                if p != ws:  # (a plain folder in a workspace: its first level is the project)
+                    root = os.path.join(ws, os.path.relpath(p, ws).split('/')[0])
+                    proj = {'key': A.key_of('d', root), 'name': os.path.basename(root), 'path': root, 'git': False, 'workspace': ws}
+                    self.known[proj['key']] = proj
+                    out.update(project=proj, work=root)
+        self.places[p] = (time.time(), out)
+        return out
+
+    def touched(self, s):
+        """The projects (and worktrees) a session's recent tool calls worked in, weighted: edits 3, cd and git -C 2, reads 1."""
+        path = transcript_of(s)
+        if not path or path.endswith('/store.db'):
+            return {}
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            return {}
+        hit = self.touches.get(path)
+        if hit and (hit[0] == size or time.time() - hit[1] < 60):
+            return hit[2]
+        weights, cwd = {}, s.get('cwd') or USER_HOME
+        def add(p, w):
+            if not p:
+                return
+            p = p.strip('"\'')
+            p = os.path.normpath(os.path.join(cwd, os.path.expanduser(p)))
+            d = p if os.path.isdir(p) else os.path.dirname(p)
+            at = self.where(d)
+            if at.get('project'):
+                weights[at['project']['key']] = weights.get(at['project']['key'], 0) + w
+                weights[at['work']] = weights.get(at['work'], 0) + w
+        calls = 0
+        for line in reversed(tail_lines(path, 900000)):
+            if calls >= 200:
+                break
+            if 'tool_use' not in line and 'function_call' not in line and 'custom_tool_call' not in line:
+                continue
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            items = ((d.get('message') or {}).get('content') if isinstance(d.get('message'), dict) else None) or []
+            for x in items if isinstance(items, list) else []:
+                if isinstance(x, dict) and x.get('type') == 'tool_use':
+                    calls += 1
+                    i = x.get('input') if isinstance(x.get('input'), dict) else {}
+                    if x.get('name') in TOUCH:
+                        add(i.get('file_path') or i.get('notebook_path') or i.get('path'), TOUCH[x['name']])
+                    elif x.get('name') == 'Bash':
+                        for a, b in CD.findall(str(i.get('command') or '')):
+                            add(a or b, 2)
+            p = d.get('payload') if isinstance(d.get('payload'), dict) else {}
+            if p.get('type') == 'function_call':
+                calls += 1
+                try:
+                    args = json.loads(p.get('arguments') or '{}')
+                except ValueError:
+                    args = {}
+                if isinstance(args, dict):
+                    add(args.get('workdir') or args.get('cwd'), 2)
+                    cmd = args.get('command')
+                    for a, b in CD.findall(' '.join(cmd) if isinstance(cmd, list) else str(cmd or '')):
+                        add(a or b, 2)
+            elif p.get('type') == 'custom_tool_call':
+                calls += 1
+                for f in PATCH.findall(str(p.get('input') or '')):
+                    add(f, 3)
+        self.touches[path] = (size, time.time(), weights)
+        return weights
+
+    def attribute(self, s):
+        """A session's project, work item and workspace, and how that was found: the person's word, its folder, its files."""
+        at = self.where(s.get('cwd'))
+        how = 'cwd'
+        m = self.manual.get(s['id'])
+        if m:
+            how = 'manual'
+            if m.startswith('w:'):
+                ws = next((w for w in self.workspace_paths() if A.key_of('w', w) == m[2:]), at.get('workspace'))
+                at = {'project': None, 'workspace': ws, 'work': None, 'branch': None}
+            elif m in self.known:
+                p = self.known[m]
+                same = at.get('project') and at['project']['key'] == m
+                at = {'project': p, 'workspace': p['workspace'], 'work': at['work'] if same else None, 'branch': at['branch'] if same else None}
+        elif not at.get('project'):
+            w = self.touched(s)
+            best = max((k for k in w if k in self.known), key=lambda k: w[k], default=None)
+            if best:
+                p, how = self.known[best], 'files'
+                work = max((k for k in w if k.startswith('/') and (self.where(k).get('project') or {}).get('key') == best), key=w.get, default=None)
+                at = {'project': p, 'workspace': p['workspace'], 'work': work, 'branch': work and self.where(work).get('branch')}
+            else:
+                how = 'workspace' if at.get('workspace') else ''
+        p = at.get('project')
+        s['project'] = p and p['key']
+        s['workspace'] = at.get('workspace') and A.key_of('w', at['workspace'])
+        if s['workspace']:
+            self.wpaths[s['workspace']] = at['workspace']
+        s['work'], s['branch'], s['attrib'] = at.get('work'), at.get('branch') or '', how
+
+    def set_manual(self, sid, value):
+        if value:
+            self.manual[sid] = value
+        else:
+            self.manual.pop(sid, None)
+        A.put(self.mfile, self.manual)
+
+    def workspace_paths(self):
+        return list(dict.fromkeys(self.configured() + [p['workspace'] for p in self.known.values()] + list(self.wpaths.values())))
+
+    def channel(self, p):
+        """A project as amail's channel (its key is the project's)."""
+        return p and {'key': p['key'], 'name': p['name'], 'path': p['path'], 'kind': 'project'}
+
+    def ws_channel(self, wkey):
+        w = self.wpaths.get(wkey) or next((x for x in self.workspace_paths() if A.key_of('w', x) == wkey), None)
+        return w and {'key': wkey, 'name': ws_name(w), 'path': w, 'kind': 'workspace'}
+
+    def projects_in(self, ws):
+        """A workspace's projects: its git repositories (not worktrees of another) and plain folders, cached 5 min."""
+        hit = self.kids.get(ws)
+        if hit and time.time() - hit[0] < 300:
+            return hit[1]
+        out = []
+        try:
+            subs = sorted(e.path for e in os.scandir(ws) if e.is_dir() and not e.name.startswith('.'))[:120]
+        except OSError:
+            subs = []
+        for d in subs:
+            d = os.path.realpath(d)
+            if os.path.isdir(os.path.join(d, '.git')):
+                out.append(self.where(d)['project'])
+            elif not os.path.exists(os.path.join(d, '.git')):  # (a plain folder; a worktree has a .git file and is its repository's)
+                proj = {'key': A.key_of('d', d), 'name': os.path.basename(d), 'path': d, 'git': False, 'workspace': ws}
+                self.known.setdefault(proj['key'], proj)
+                out.append(proj)
+        out = [p for p in out if p]
+        self.kids[ws] = (time.time(), out)
+        return out
+
+    def git_facts(self, p):
+        """A repository now: its main branch and worktrees (branch, ahead of / behind main, uncommitted files, last commit),
+        upstream, last tag, remote page."""
+        root = p['path']
+        rows = git(root, 'worktree', 'list', '--porcelain') or ''
+        works, cur = [], None
+        for line in rows.splitlines():
+            if line.startswith('worktree '):
+                cur = {'path': os.path.realpath(line[9:]), 'branch': ''}
+                works.append(cur)
+            elif cur and line.startswith('branch '):
+                cur['branch'] = line[7:].removeprefix('refs/heads/')
+            elif cur and line == 'detached':
+                cur['branch'] = ''
+        if not works:
+            return None
+        main = works[0]['branch'] or 'HEAD'
+        for w in works:
+            w['main'] = w['path'] == works[0]['path']
+            w['dirty'] = len((git(w['path'], 'status', '--porcelain') or '').splitlines()) if os.path.isdir(w['path']) else None
+            last = (git(w['path'], 'log', '-1', '--format=%ct%x09%h%x09%s') or '').split('\t') if os.path.isdir(w['path']) else []
+            w['at'], w['head'], w['subject'] = (float(last[0]), last[1], last[2][:160]) if len(last) == 3 else (0, '', '')
+            if not w['main'] and w['branch']:
+                n = (git(root, 'rev-list', '--left-right', '--count', f'{main}...{w["branch"]}') or '').split()
+                w['behind'], w['ahead'] = (int(n[0]), int(n[1])) if len(n) == 2 else (None, None)
+        up = (git(root, 'rev-list', '--left-right', '--count', f'{main}...{main}@{{u}}') or '').split()
+        return {'main': main, 'works': works, 'ahead': int(up[0]) if len(up) == 2 else None, 'behind': int(up[1]) if len(up) == 2 else None,
+                'tag': git(root, 'describe', '--tags', '--abbrev=0', main) or '', 'url': web_url(git(root, 'remote', 'get-url', 'origin')), 'at': time.time()}
+
+    def facts_loop(self, deck):
+        """Git facts, the projects with sessions first, every half minute (one with nothing going on, every ten)."""
+        while True:
+            try:
+                busy = {s.get('project') for s in getattr(deck, 'all', [])}
+                for p in list(self.known.values()):
+                    f = self.facts.get(p['key'])
+                    if not p['git'] or p['key'] not in getattr(deck, 'shown', busy) or (f and time.time() - f['at'] < (30 if p['key'] in busy else 600)):
+                        continue
+                    self.facts[p['key']] = self.git_facts(p) or {'at': time.time(), 'works': [], 'none': True}
+            except Exception as e:
+                deck.note(f'读 git 出错：{e!r}', False)
+            time.sleep(5)
+
+
 # ---------- the deck ----------
 
 ORDER_RANK = {'waiting': 0, 'working': 1, 'idle': 2}
@@ -1193,6 +1467,8 @@ class Deck:
         self.qfile = os.path.join(CACHE, 'queue.json')
         self.queue = A.get(self.qfile, []) or []
         self._dirs, self._dirs_at = [], 0
+        self.projects = Projects(self.cfg)
+        self.chan_at, self.boards_at = {}, {}  # (channel -> the last post looked at for calling sessions in; the page's view of it)
         self.lock = threading.Lock()
 
     def note(self, text, ok=True):
@@ -1216,6 +1492,7 @@ class Deck:
             r = raw.get(name) or {}
             if r.get('state') == 'waiting' and (r.get('at') or 0) >= (s['at'] - 1):
                 s['state'], s['waiting_for'] = 'waiting', r.get('waiting_for')
+            s['prompting'] = s['state'] == 'waiting'  # (at a permission or choice prompt: typed text would answer it)
             if kind == 'claude' and name in reg:
                 s['loc'] = place_of(reg[name]['pid']) or s['loc']
             if kind == 'codex':
@@ -1282,6 +1559,8 @@ class Deck:
                              'since': l['at'], 'at': now, 'cwd': l['cwd'], 'loc': loc, 'unknown': True, 'starting': True,
                              'summary': '刚开起来，还没登记成会话' if slow else '正在启动…',
                              'needs_you': '去它的窗格看一眼：多半在等你确认（比如是否信任这个目录）' if slow else ''})
+        for s in sessions:
+            self.projects.attribute(s)
         by_name = {s['name']: s for s in sessions}
         by_pid = {s['pid']: s for s in sessions if s.get('pid')}
         for s in sessions:
@@ -1331,8 +1610,11 @@ class Deck:
                 locks.append({**l, 'key': os.path.basename(f)[:-5]})
         self.all = sessions
         self.publish(sessions)
+        workspaces, projects = self.layout(sessions)
+        boards = self.boards_view()
         with self.lock:
             self.state = {'sessions': [s for s in sessions if not s['hidden']], 'talk': self.talk.all(), 'groups': zs, 'locks': locks,
+                          'workspaces': workspaces, 'projects': projects, 'boards': boards,
                           'muxes': [m for m in ('zellij', 'tmux') if shutil.which(m)], 'voice': self.voice_view(),
                           'at': now, 'version': VERSION, 'summarizer': {'busy': self.sums.busy, 'error': self.sums.error},
                           'decisions': list(reversed(self.sums.decisions[-60:])), 'models': self.models_view(),
@@ -1348,6 +1630,71 @@ class Deck:
                                     'summaries': len(self.sums.data)}}
         if self.cfg.get('pane_titles', True):
             self.retitle(sessions, zs)
+
+    def layout(self, sessions):
+        """The workspaces (those with sessions on them, and the configured ones) with their projects; each project with
+        its git facts, how many sessions work on it, when it last moved."""
+        P, projects, wss = self.projects, {}, {}
+        def entry(p):
+            if p['key'] not in projects:
+                projects[p['key']] = {'key': p['key'], 'name': p['name'], 'path': p['path'], 'git': p['git'], 'workspace': A.key_of('w', p['workspace']),
+                                      'facts': P.facts.get(p['key']), 'live': 0, 'at': 0}
+            return projects[p['key']]
+        for w in P.workspace_paths():
+            k = A.key_of('w', w)
+            wss[k] = {'key': k, 'name': ws_name(w), 'path': w, 'projects': [], 'live': 0, 'groups': {}}
+        for s in sessions:
+            on = not s['hidden'] and not s.get('stale') and s['state'] not in ('gone', 'ended')
+            p = P.known.get(s.get('project'))
+            if p and not s['hidden']:
+                e = entry(p)
+                e['live'] += on
+                e['at'] = max(e['at'], s.get('at') or 0)
+            w = wss.get(s.get('workspace'))
+            if w and on:
+                w['live'] += 1
+                if s.get('loc'):
+                    w['groups'][s['loc']['session']] = w['groups'].get(s['loc']['session'], 0) + 1
+        shown = [w for w in wss.values() if w['live'] or w['path'] in P.configured()]
+        for w in shown:
+            for p in P.projects_in(w['path']):
+                entry(p)
+        for e in projects.values():
+            f = e['facts'] or {}
+            e['at'] = max([e['at']] + [x['at'] for x in f.get('works') or []])
+            if e['workspace'] in wss:
+                wss[e['workspace']]['projects'].append(e['key'])
+        self.shown = set(projects)
+        for w in shown:
+            w['projects'].sort(key=lambda k: (-projects[k]['live'], -projects[k]['at']))
+            w['groups'] = sorted(w['groups'], key=lambda g: -w['groups'][g])
+        return sorted(shown, key=lambda w: (-w['live'], w['name'])), projects
+
+    def boards_view(self):
+        """Every channel as the page lists it: what is new for the person, the last post, its discussions, who is on it."""
+        out = {}
+        for k, meta in A.channels().items():
+            d = os.path.join(A.HOME, 'channels', k)
+            mt = lambda x: os.stat(os.path.join(d, x)).st_mtime if os.path.isdir(os.path.join(d, x)) else 0
+            seen = (A.get(os.path.join(d, 'seen', f'{ME_NAME}.json')) or {}).get('at', 0)
+            sig_ = (mt('posts'), mt('topics'), mt('seen'), seen)
+            hit = self.boards_at.get(k)
+            if hit and hit[0] == sig_:
+                out[k] = hit[1]
+                continue
+            new = [p for p in A.posts(k, since=seen) if p.get('from') != ME_NAME]
+            last = (A.posts(k, since=seen) or [None])[-1] if seen else None
+            if not last:
+                names = sorted(f for f in os.listdir(os.path.join(d, 'posts')) if f.endswith('.json')) if mt('posts') else []
+                last = names and A.get(os.path.join(d, 'posts', names[-1]))
+            v = {'key': k, 'name': meta.get('name') or k, 'kind': meta.get('kind') or 'project', 'path': meta.get('path'),
+                 'unread': len(new), 'calls': sum(A.calls(p, ME_NAME) for p in new),
+                 'last': last and {'from': last.get('from'), 'kind': last.get('kind'), 'text': (last.get('text') or '')[:240], 'at': last.get('at'), 'topic': last.get('topic')},
+                 'topics': [{k2: t.get(k2) for k2 in ('id', 'title', 'closed', 'members', 'at', 'max', 'by')} for t in A.topics(k)[:30]],
+                 'members': [m for m in A.members(k) if m != ME_NAME]}
+            self.boards_at[k] = (sig_, v)
+            out[k] = v
+        return out
 
     @staticmethod
     def window(kind, pid, loc, start, cwd, transcript, session):
@@ -1414,7 +1761,8 @@ class Deck:
             out[s['name']] = {'name': s['name'], 'kind': s['kind'], 'state': st, 'label': label, 'title': s.get('title') or '',
                               'summary': s.get('summary') or '', 'needs_you': s.get('needs_you') or '', 'since': s.get('since'), 'at': s.get('at'),
                               'where': loc and f'{loc["session"].removeprefix("tmux:")} pane {loc["pane"]}', 'parent': s.get('parent') if s.get('parent_id') else None,
-                              'origin': s.get('origin')}
+                              'origin': s.get('origin'), 'project': self.projects.channel(self.projects.known.get(s.get('project'))),
+                              'workspace': s.get('workspace') and self.projects.ws_channel(s['workspace']), 'branch': s.get('branch') or ''}
         reps = {v['name']: {**v['r'], 'at': v['at']} for v in self.reports.data.values() if v.get('r') and v.get('name') in out}
         A.put(A.path('deck.json'), {'at': time.time(), 'sessions': out, 'reports': reps})
 
@@ -1466,18 +1814,20 @@ class Deck:
         except Exception as e:
             return False, f'助手没答上来：{e}'[:300]
 
-    def recommend(self, text, group):
+    def recommend(self, text, group, project=''):
         if not text:
             return False, '先写要做的事'
         live = [s for s in getattr(self, 'all', []) if not s.get('parent_id') and not s.get('unknown') and s['state'] not in ('gone', 'ended')
-                and (not group or (s.get('loc') or {}).get('session') == group)]
+                and (s.get('project') == project if project else not group or (s.get('loc') or {}).get('session') == group)]
+        proj = self.projects.known.get(project)
         def line(s):
             st, label = standing(s)
             decs = [d['what'] for d in self.sums.decisions if d['sid'] == s['id']][-3:]
             g = (s.get('loc') or {}).get('session', '').removeprefix('tmux:') or '未托管'
             return (f'- {s["name"]}（{s["kind"]}，组 {g}，{label}，目录 {(s.get("cwd") or "?").replace(os.path.expanduser("~"), "~")}）：'
                     f'{s.get("title") or ""} — {s.get("summary") or ""}' + (f'；定过：{"；".join(decs)}' if decs else ''))
-        scope = f'只在组「{group.removeprefix("tmux:")}」里挑。' if group else '尽量在同一个组里挑。'
+        scope = (f'只在项目「{proj["name"]}」（{proj["path"]}）的会话里挑；新开的会话也开在这个项目里。' if proj
+                 else f'只在组「{group.removeprefix("tmux:")}」里挑。' if group else '尽量在同一个组里挑。')
         try:
             out = ask_model(RECOMMEND.format(scope=scope, text=text, sessions='\n'.join(map(line, live)) or '（这里还没有会话）'), self.cfg, 'assist')
             r = json.loads(re.search(r'\{.*\}', out, re.S).group(0))
@@ -1486,7 +1836,10 @@ class Deck:
         to = next((s for s in live if s['name'] == r.get('to')), None)
         new = r.get('new') if isinstance(r.get('new'), dict) else None
         if new:
-            new = {'kind': new.get('kind') if new.get('kind') in ('claude', 'codex', 'cursor') else 'claude', 'cwd': new.get('cwd') or (to or {}).get('cwd') or '~',
+            cwd = new.get('cwd') or (to or {}).get('cwd') or '~'
+            if proj and not os.path.realpath(os.path.expanduser(cwd)).startswith(proj['path']):
+                cwd = proj['path']
+            new = {'kind': new.get('kind') if new.get('kind') in ('claude', 'codex', 'cursor') else 'claude', 'cwd': cwd,
                    'name': new.get('name') if NAME.fullmatch(str(new.get('name') or '')) else '', 'why': str(new.get('why') or '')[:200],
                    'group': group or ((to or {}).get('loc') or {}).get('session') or next(iter(self.state['groups']), '')}
         return True, {'to': to and {'name': to['name'], 'id': to['id'], 'title': to.get('title') or '', 'group': (to.get('loc') or {}).get('session')},
@@ -1498,17 +1851,35 @@ class Deck:
             self.wake(to)
 
     def wake(self, name):
-        """An idle session is told it has mail: a Codex thread by its queue, else a line typed into its pane (its hook
-        then hands it the mail). Never one at a prompt of the person's, or at work (its next step brings the mail)."""
+        """An idle session is told it has mail or a call on a channel: a Codex thread by its queue, else a line typed into
+        its pane (its hook then hands it over). Never one at a prompt of the person's, or at work (its next step brings it)."""
         s = next((x for x in getattr(self, 'all', []) if x['name'] == name and not x.get('unknown')), None)
-        if not s or s['state'] != 'idle':
+        if not s or s['state'] != 'idle' or s.get('prompting'):
             return False
         if s['kind'] == 'codex' and s.get('session'):
-            mails = A.take(name)
-            return not mails or A.wake_codex({'session': s['session']}, A.mail_text(name, mails))[0]
-        if s.get('loc') and not in_view(s['loc']):  # (someone at that pane may be typing: its next turn brings the mail)
-            return self.type_in(s, '[amail] 有新邮件', True)[0]
+            mails, items = A.take(name), A.news(name)
+            text = '\n'.join(x for x in [mails and A.mail_text(name, mails), items and A.news_text(name, items)] if x)
+            return not text or DRY or A.wake_codex({'session': s['session']}, text)[0]
+        if s.get('loc') and not in_view(s['loc']):  # (someone at that pane may be typing: its next turn brings it)
+            return self.type_in(s, '[amail] 有新消息', True)[0]
         return False
+
+    def call_in(self):
+        """Who a channel's new posts call in: a discussion's members, those named (@NAME, @all: everyone on it) — woken
+        when idle; the rest of a channel waits for their next turn."""
+        for k in A.channels():
+            if k not in self.chan_at:
+                self.chan_at[k] = time.time()  # (from now on: what was posted before is not news to wake for)
+                continue
+            for p in A.posts(k, since=self.chan_at[k]):
+                self.chan_at[k] = max(self.chan_at[k], p['at'])
+                on, who = set(A.members(k)), set()
+                t = p.get('topic') and A.topic_get(k, p['topic'])
+                if t and not t.get('closed'):
+                    who |= set(t['members'])
+                who |= on if 'all' in (p.get('to') or ()) else set(p.get('to') or ()) & on
+                for n in sorted(who - {p.get('from'), ME_NAME, 'sturnus', 'amail'}):
+                    self.wake(n)
 
     def mind_loop(self):
         self.prev, self.stopped, self.woken, self.checked, self.lock_seen = {}, {}, set(), {}, None
@@ -1543,6 +1914,7 @@ class Deck:
             if r:
                 for n in self.route(r, ss):
                     A.send(r['from'], n, r['text'], r.get('kind'), routed=True)
+        self.call_in()
         locks = {os.path.basename(f): A.get(f) or {} for f in glob.glob(A.path('locks', '*.json'))}
         for k, old in (self.lock_seen or {}).items():  # (a lock let go: those it turned away are told)
             if old.get('waiters') and (k not in locks or locks[k].get('holder') != old.get('holder')):
@@ -1628,6 +2000,35 @@ class Deck:
     # actions
     def act(self, what, body):
         s = self.find(body.get('id')) if body.get('id') else None
+        if what == 'say':  # (words for a session, as the person's: how they get there follows how it stands)
+            text = (body.get('text') or '').strip()
+            if not s or not text:
+                return False, '先写要说的话'
+            how = say_how(s, bool(body.get('now')))
+            if how == 'gone':
+                return False, f'{s["name"]} 已经退出了'
+            if how == 'menu':
+                return False, f'{s["name"]} 停在一个授权或选择提示上，打进去的字会被当成对它的回答：先进终端处理它'
+            if how == 'type':
+                return self.type_in(s, text, True)
+            if how == 'queue':
+                return self.queue_act({'do': 'add', 'text': text, 'to': s['name'], 'mode': 'plain'})
+            if not A.send(ME_NAME, s['name'], text, 'question'):
+                return False, '发不出去'
+            self.wake(s['name'])
+            return True, f'放进了 {s["name"]} 的信箱：它不在 Zellij 或 tmux 里，下一步就会看到'
+        if what == 'attribute':  # (the person's word on which project a session works on; '' goes back to what was found)
+            v = str(body.get('project') or '')
+            if not s:
+                return False, '找不到这个会话'
+            if v and v not in self.projects.known and not (v.startswith('w:') and self.projects.ws_channel(v[2:])):
+                return False, '没有这个项目'
+            self.projects.set_manual(s['id'], v)
+            self.projects.attribute(s)
+            p = self.projects.known.get(v)
+            return True, f'{s["name"]} 算作' + (f'项目 {p["name"]} 的' if p else '工作区本身的' if v else '按它的目录和改的文件找到的项目的') + '会话'
+        if what in ('board_post', 'board_seen', 'topic_new', 'topic_close'):
+            return self.board_act(what, str(body.get('key') or ''), body)
         if what == 'jump':
             if not s:
                 return False, '找不到这个会话'
@@ -1659,8 +2060,8 @@ class Deck:
             return True, {'path': d, 'show': d.replace(h, '~', 1) if d == h or d.startswith(h + '/') else d, 'dirs': names[:500], 'more': max(0, len(names) - 500)}
         if what == 'assistant':  # (a question to the deck's assistant)
             return self.assist(str(body.get('q') or '').strip(), body.get('history') or [])
-        if what == 'recommend':  # (who should take a task: within a group, or a new session there)
-            return self.recommend(str(body.get('text') or '').strip(), str(body.get('group') or ''))
+        if what == 'recommend':  # (who should take a task: within a project or a group, or a new session there)
+            return self.recommend(str(body.get('text') or '').strip(), str(body.get('group') or ''), str(body.get('project') or ''))
         if what == 'stop':  # (a session another one started: it and the processes under it)
             if not s or not s.get('parent_id') or not s.get('pid') or s['state'] in ('gone', 'ended'):
                 return False, '只能停止由别的会话启动、还在跑的子 agent'
@@ -1780,6 +2181,38 @@ class Deck:
             return True, '窗格标题：' + ('开' if self.cfg['pane_titles'] else '关')
         return False, f'不认识的操作 {what}'
 
+    def board_act(self, what, key, body):
+        """The person on a channel: posts, starts or closes a discussion, has read it."""
+        meta = A.channels().get(key)
+        if not meta:  # (a project's or a workspace's that nobody has posted to yet)
+            ch = self.projects.channel(self.projects.known.get(key)) or self.projects.ws_channel(key)
+            if not ch:
+                return False, '没有这个讨论区'
+            A.chan_ensure(ch)
+            meta = ch
+        try:
+            if what == 'board_seen':
+                A.put(A.seen_file(key, ME_NAME), {'at': time.time(), 'ids': [], 'auto': False})
+                return True, {}
+            if what == 'board_post':
+                text = (body.get('text') or '').strip()
+                if not text:
+                    return False, '先写要说的话'
+                m = A.post(ME_NAME, key, text, body.get('topic') or None)
+                A.put(A.seen_file(key, ME_NAME), {'at': m['at'], 'ids': [], 'auto': False})
+                return True, f'发到了 {meta["name"]} 的讨论区' + (f'，叫了 {"、".join(m["to"])}' if m['to'] else '')
+            if what == 'topic_new':
+                title = (body.get('title') or '').strip()
+                invite = [n for n in body.get('invite') or [] if isinstance(n, str) and NAME.fullmatch(n)]
+                if not title:
+                    return False, '给讨论起个题目'
+                t = A.topic_new(ME_NAME, key, title, (body.get('text') or '').strip(), invite, int(body.get('max') or A.TOPIC_MAX))
+                return True, {'msg': f'在 {meta["name"]} 发起了讨论「{t["title"]}」' + (f'，叫了 {"、".join(invite)}' if invite else ''), 'topic': t['id']}
+            t = A.topic_close(ME_NAME, key, str(body.get('topic') or ''))
+            return True, f'讨论「{t["title"]}」结束了'
+        except ValueError as e:
+            return False, str(e)
+
     # ---------- the queue: things to hand a session once it is free, checked by the assistant first ----------
     def qsave(self):
         A.put(self.qfile, self.queue[-300:])
@@ -1791,10 +2224,12 @@ class Deck:
             if not text:
                 return False, '写下要做的事'
             to, group = (b.get('to') or '').strip(), (b.get('group') or '').strip()
-            item = {'id': os.urandom(5).hex(), 'text': text[:4000], 'to': to, 'group': group, 'mode': 'remind' if b.get('mode') == 'remind' else 'auto',
+            item = {'id': os.urandom(5).hex(), 'text': text[:4000], 'to': to, 'group': group, 'mode': b.get('mode') if b.get('mode') in ('remind', 'plain') else 'auto',
                     'status': 'waiting', 'created': time.time(), 'note': ''}
             self.queue.append(item)
             self.qsave()
+            if item['mode'] == 'plain':
+                return True, f'{to} 正在做事：等它这一轮做完，把你的原话发给它'
             where = f'等 {to} 空闲' if to else f'等{group + " 组里" if group else ""}有会话空闲'
             return True, f'排上了：{where}，' + ('到时先由助手确认再发' if item['mode'] == 'auto' else '到时提醒你')
         item = next((q for q in self.queue if q['id'] == b.get('id')), None)
@@ -1859,6 +2294,13 @@ class Deck:
                 if not t:
                     item.update(status='held', note=f'{item["to"]} 不在了：换一个会话，或删掉', checked=now)
                     self.qsave()
+                    continue
+                if item['mode'] == 'plain':  # (the person's own words, held while it worked: as they are, once it stops)
+                    if t['state'] in ('idle', 'waiting') and not t.get('prompting') and not t.get('unknown'):
+                        ok, msg = self.deliver(t, item['text'])
+                        item.update(status='sent' if ok else 'held', sent_to=t['name'] if ok else None, sent_at=now if ok else None, checked=now,
+                                    note='它这一轮做完了，原话发出' if ok else f'没发出去：{msg}'[:200])
+                        self.qsave()
                     continue
                 cands = [t] if self.free(t) else []
             else:
@@ -1989,6 +2431,9 @@ class Deck:
         """Type into a session's pane as if at its keyboard (and press Enter)."""
         if not s or not s.get('loc'):
             return False, '这个会话不在 Zellij 或 tmux 里'
+        if DRY:
+            self.note(f'（试用，没有真的输入）{s["name"]}：{text[:80]}')
+            return True, f'（试用）会在 {s["name"]} 的终端里输入'
         loc = s['loc']
         if loc['mux'] == 'tmux':
             return (True, f'已在 {s["name"]} 的终端里输入') if TMUX.type(loc, text, enter) else (False, '写不进它的 tmux 窗格')
@@ -2069,6 +2514,19 @@ class Deck:
             return False, (r.stderr or r.stdout).strip()[:200]
         self.titles = {}
         return True, f'{s["name"]} 改名为 {new}（amail、Zellij 窗格{"、Codex 会话" if s["kind"] == "codex" else ""}都已同步）'
+
+
+def say_how(s, now=False):
+    """How the person's words for a session get there: typed into its pane when it is idle (or now, if asked); held until
+    its turn ends while it works; not at all while it sits at a permission or choice prompt (they would answer it); by
+    mail when it is in no pane."""
+    if s['state'] in ('gone', 'ended'):
+        return 'gone'
+    if s.get('prompting'):
+        return 'menu'
+    if not s.get('loc'):
+        return 'mail'
+    return 'queue' if s['state'] == 'working' and not now else 'type'
 
 
 def codex_set_name(thread, name):
@@ -2554,6 +3012,13 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith('/api/state'):
             with DECK.lock:
                 return self.send_json(DECK.state)
+        if self.path.startswith('/api/board'):  # (a channel: its posts, discussions, who is on it)
+            from urllib.parse import urlparse, parse_qs
+            key = (parse_qs(urlparse(self.path).query).get('key') or [''])[0]
+            meta = A.channels().get(key)
+            if not meta:
+                return self.send_json({'meta': None, 'posts': [], 'topics': [], 'members': []})
+            return self.send_json({'meta': meta, 'posts': A.posts(key, limit=400), 'topics': A.topics(key), 'members': [m for m in A.members(key) if m != ME_NAME]})
         if self.path.startswith('/api/transcript'):
             from urllib.parse import urlparse, parse_qs
             sid = (parse_qs(urlparse(self.path).query).get('id') or [''])[0]
@@ -2624,6 +3089,7 @@ def serve():
     threading.Thread(target=DECK.summarize_loop, daemon=True).start()
     threading.Thread(target=DECK.queue_loop, daemon=True).start()
     threading.Thread(target=DECK.mind_loop, daemon=True).start()
+    threading.Thread(target=DECK.projects.facts_loop, args=(DECK,), daemon=True).start()
     cfg = DECK.cfg
     global ACCESS_
     ACCESS_ = Access()
