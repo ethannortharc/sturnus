@@ -43,6 +43,8 @@ A **work item is a worktree and its branch**. A project collects those work item
 
 Open a session to read its **Overview**, **Conversation**, or **Report**. Continue in the browser's **Terminal** tab, or use **Switch to it in my terminal** to focus its pane in an attached terminal. Reports gather the goal, completed work, decisions, current state, and next steps.
 
+A session can keep working while it waits for your answer. It is then marked **Working · needs you**, and what it asked stays listed on the right of its Overview and Conversation tabs, with its own words, until you mark it handled or a later summary sees that you answered.
+
 ### 3. Keep the next instruction in context
 
 Write directly to a session, queue work for later, or use the project's shared channel when several agents need the same context. The assistant can help choose an existing session—or suggest a new one—for a task.

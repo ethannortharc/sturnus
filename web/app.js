@@ -129,7 +129,7 @@ const MARK = {  // (each agent's mark, drawn here: evocative of each, not the ma
 };
 function mark(kind, state, size = '') {
   const k = MARK[kind] ? kind : 'other';
-  const spin = kind === 'claude' && state === 'working' ? ' class="spin"' : '';
+  const spin = kind === 'claude' && ['working', 'asking'].includes(state) ? ' class="spin"' : '';
   return `<span class="mark ${k === 'shell' ? 'sh' : k} ${size}" title="${esc(FULL[kind] || (kind === 'user' ? t('你') : kind || ''))}"><svg viewBox="0 0 24 24"${spin}>${MARK[kind] || ''}</svg>${state ? `<i class="sd ${state}"></i>` : ''}</span>`;
 }
 const byName = n => (S && S.sessions.find(s => s.name === n)) || null;
@@ -143,10 +143,10 @@ function face(n) {
 // what a session asks of the person, and how it stands, in one word each
 function attention(s) {
   if (['gone', 'ended'].includes(s.state) || s.stale || (s.unknown && !s.starting && !s.summary)) return null;
-  if (s.state === 'waiting' || s.status === 'waiting_user') return 'decide';
+  if (s.state === 'waiting' || s.status === 'waiting_user' || asking(s)) return 'decide';
   if (s.status === 'blocked') return 'blocked';
   if (s.status === 'review') return 'review';
-  if (s.needs_you) return 'decide';
+  if (s.needs_you || (s.asks || []).length) return 'decide';
   return null;
 }
 const ATT = { decide: ['等你决定', 'waiting'], blocked: ['卡住了', 'blocked'], review: ['可以验收', 'review'] };
@@ -154,7 +154,7 @@ function standing(s) {
   if (s.state === 'gone') return ['gone', t('已离开')];
   if (s.state === 'ended') return ['ended', t('已结束')];
   const a = attention(s);
-  if (a === 'decide') return ['waiting', t('等你')];
+  if (a === 'decide') return s.state === 'working' && !asking(s) ? ['asking', t('工作中 · 等你确认')] : ['waiting', t('等你')];  // (works on, and still waits on you for what it asked)
   if (a === 'blocked') return ['blocked', t('卡住')];
   if (a === 'review') return ['review', t('待验收')];
   if (s.state === 'working') return ['working', t('工作中')];
@@ -181,6 +181,13 @@ Object.assign(EN, {
 "有件事要做？写下来，选个项目，助手按各会话在做的事帮你挑交给谁，或者新开一个": "Something to get done? Write it down, pick a project, and the assistant picks who should take it from what each session is doing, or starts a new one",
 "交给谁": "Who takes it",
 "需要你": "Needs you",
+"工作中 · 等你确认": "Working · needs you",
+"等你确认": "Waiting on you",
+"它停在终端里的一个选择上，进终端回答": "It is stopped at a choice in its terminal: answer it there",
+"写信给你": "Wrote to you",
+"已处理": "Handled",
+"{n} 件": "{n}",
+"现在没有等你确认的事。它要你确认的事会一直列在这里，直到你点「已处理」，或者它之后的总结看出你已经回应了。": "Nothing waits on you now. What it asks you to confirm stays here until you mark it handled, or a later summary sees that you have answered.",
 "工作区": "Workspaces",
 "进行中的工作": "Work in progress",
 "有会话在上面、或者还没合进 main 的工作项": "work items with a session on them, or not yet merged into main",
@@ -738,7 +745,7 @@ const attachCmd = k => (muxOf(k) === 'tmux' ? `tmux attach -t ${groupName(k)}` :
 const muxTag = k => (k !== '~none' && muxOf(k) === 'tmux' ? '<span class="mux">tmux</span>' : '');
 const webOk = s => !!s.loc;  // (the terminal in the page: Zellij or tmux)
 const big = n => (n > 999 ? '999+' : n);  // (a count on a badge: a busy channel holds thousands)
-const ORDER = s => ({ waiting: 0, blocked: 1, review: 2, working: 3, idle: 4, ended: 5, gone: 6 }[standing(s)[0]] ?? 9);
+const ORDER = s => ({ waiting: 0, asking: 1, blocked: 2, review: 3, working: 4, idle: 5, ended: 6, gone: 7 }[standing(s)[0]] ?? 9);
 const isToday = t => new Date(t * 1000).toDateString() === new Date().toDateString();
 
 // ---------- the rail and the column beside it ----------
@@ -809,7 +816,7 @@ function drawRail() {
 }
 function drawSide() {
   const sp = space(), cur = route.name === 'session' ? S.sessions.find(x => x.id === route.id) : null, tops = roots(S.sessions);
-  draw('side', [sp, route, [...quietOpen], S.sessions.map(s => [s.id, s.title, s.state, s.status, s.needs_you && 1, s.stale, s.kind, s.project, s.workspace, s.branch, (s.subs || []).map(a => [a.id, a.state, a.task])]), Math.floor(Date.now() / 60000), (S.workspaces || []).map(w => [w.key, w.live, w.projects.length]),
+  draw('side', [sp, route, [...quietOpen], S.sessions.map(s => [s.id, s.title, s.state, s.status, s.needs_you && 1, (s.asks || []).length, asking(s), s.stale, s.kind, s.project, s.workspace, s.branch, (s.subs || []).map(a => [a.id, a.state, a.task])]), Math.floor(Date.now() / 60000), (S.workspaces || []).map(w => [w.key, w.live, w.projects.length]),
     Object.values(S.boards || {}).map(b => [b.key, b.unread]), Object.entries(S.groups || {}).map(([g, z]) => [g, z.clients.length, z.agents]), (S.queue || []).map(i => i.status), railTab, [...quietOpen],
     Object.values(S.projects || {}).map(p => [p.key, p.facts && p.facts.at]), (S.workspaces || []).map(w => w.groups)], () => {
     const head = (x, sub, extra = '') => `<div class="sp-head"><b>${t(x)}</b>${sub ? `<span>${t(sub)}</span>` : ''}${extra}</div>`;
@@ -819,11 +826,11 @@ function drawSide() {
       const subs = s.subs || [], on = subs.filter(a => a.state !== 'done'), done = subs.filter(a => a.state === 'done'), k = 'subs:' + s.id, open = quietOpen.has(k);
       if (!subs.length) return '';
       const r = a => `<div class="side-sub${route.sub === a.id ? ' on' : ''}" data-go="${esc(s.id)}" data-tab="sub/${esc(a.id)}" title="${subWho(a)} · ${subLabel(a)}"><i class="${a.state}"></i><b>${esc(a.task || a.type)}</b><span>${esc(a.type)}</span></div>`;
-      return `<div class="side-subs">${on.map(r).join('')}${done.length ? `<div class="side-sub more" data-quiet="${esc(k)}">${chev(open)}${tt(`已完成的子 agent ${done.length} 个`, `${done.length} finished sub-agent${done.length > 1 ? 's' : ''}`)}</div>${open ? done.map(r).join('') : ''}` : ''}</div>`;
+      return `<div class="side-subs">${on.map(r).join('')}${done.length ? `<div class="side-sub more" data-quiet="${esc(k)}">${chev(open)}${tt(`已结束的子 agent ${done.length} 个`, `${done.length} ended sub-agent${done.length > 1 ? 's' : ''}`)}</div>${open ? done.map(r).join('') : ''}` : ''}</div>`;
     };
     const byState = (list, k, pre) => {
       const act = list.filter(s => !s.stale && !['gone', 'ended'].includes(s.state)), quiet = list.filter(s => s.stale), qOpen = quietOpen.has(k);
-      const groups = [['等你', act.filter(s => ['waiting', 'blocked', 'review'].includes(standing(s)[0]))], ['工作中', act.filter(s => standing(s)[0] === 'working')], ['空闲', act.filter(s => standing(s)[0] === 'idle')]];
+      const groups = [['等你', act.filter(s => ['waiting', 'asking', 'blocked', 'review'].includes(standing(s)[0]))], ['工作中', act.filter(s => standing(s)[0] === 'working')], ['空闲', act.filter(s => standing(s)[0] === 'idle')]];
       return groups.filter(([, l]) => l.length).map(([x, l]) => {
         const gk = `${k}:${x}`, open = quietOpen.has(gk), shown = open || l.length <= 12 ? l : l.filter((s, i) => i < 10 || (cur && cur.id === s.id));
         return `<div class="side-gh"><span>${t(x)} · ${l.length}</span></div>${shown.map(s => row(s, pre && pre(s)) + subLines(s)).join('')}`
@@ -893,7 +900,7 @@ function drawAttn(wkey) {
   const locks = (S.lock_issues || []).filter(l => !wkey || ((projOf('p-' + l.key) || {}).workspace === wkey)), n = need.length + inbox.length + locks.length;
   const typing = document.activeElement && document.activeElement.closest && document.activeElement.closest('#attn');
   const allNeed = quietOpen.has('attn'), cut = !allNeed && need.length > 8 ? need.length - 6 : 0;
-  if (!typing) draw('attn', [wkey, allNeed, need.map(([s, a]) => [s.id, a, s.title, s.summary, s.needs_you, s.waiting_for, s.name, s.kind]), inbox.map(m => m.id), locks.map(l => [l.key, l.why, l.waiters]), tick()], () => {
+  if (!typing) draw('attn', [wkey, allNeed, need.map(([s, a]) => [s.id, a, standing(s)[0], s.title, s.summary, s.needs_you, (s.asks || []).map(x => x.id), s.waiting_for, s.name, s.kind]), inbox.map(m => m.id), locks.map(l => [l.key, l.why, l.waiters]), tick()], () => {
     $('#attnSub').textContent = n ? t('{n} 件，按要你花的心思排', { n }) : '';
     $('#attn').innerHTML = n ? `<div class="attn">${inbox.map(m => `
       <div class="attn-row mail">
@@ -909,9 +916,9 @@ function drawAttn(wkey) {
         <div class="acts"><button class="btn" data-unlock="${esc(l.key)}">${t('释放')}</button></div>
       </div>`).join('')}${(cut ? need.slice(0, 6) : need).map(([s, a]) => `
       <div class="attn-row ${ATT[a][1]}" data-go="${esc(s.id)}">
-        <span class="bar4"></span>${mark(s.kind, ATT[a][1], 'sm')}
-        <div class="t"><div class="k">${t(ATT[a][0])}<span>${esc(s.name)}${!wkey && wsOf(s.workspace) ? ` · ${esc(wsOf(s.workspace).name)}` : ''}${projOf(s.project) ? ` · ${esc(projOf(s.project).name)}` : ''}${parentOf(s) ? ` · ${t('启动自 {n}', { n: esc(parentOf(s).name) })}` : ''} · ${ago(s.since)}</span></div>
-          <b>${esc(titleOf(s))}</b><p>${esc(s.state === 'waiting' && s.waiting_for ? t('在等你批准：{w}', { w: s.waiting_for }) : s.needs_you || s.summary || '')}</p></div>
+        <span class="bar4"></span>${mark(s.kind, standing(s)[0] === 'asking' ? 'asking' : ATT[a][1], 'sm')}
+        <div class="t"><div class="k">${standing(s)[0] === 'asking' ? t('工作中 · 等你确认') : t(ATT[a][0])}<span>${esc(s.name)}${!wkey && wsOf(s.workspace) ? ` · ${esc(wsOf(s.workspace).name)}` : ''}${projOf(s.project) ? ` · ${esc(projOf(s.project).name)}` : ''}${parentOf(s) ? ` · ${t('启动自 {n}', { n: esc(parentOf(s).name) })}` : ''} · ${ago(s.since)}</span></div>
+          <b>${esc(titleOf(s))}</b><p>${esc(needOf(s) || s.summary || '')}</p></div>
         <div class="acts"><button class="btn" data-go="${esc(s.id)}" data-tab="overview">${I.reply}${t('回复')}</button><button class="btn dark" data-go="${esc(s.id)}" data-tab="term" ${webOk(s) ? '' : 'disabled'}>${I.term}${t('终端')}</button></div>
       </div>`).join('')}${cut ? `<button class="attn-more" data-quiet="attn">${chev(false)}${tt(`还有 ${cut} 件`, `${cut} more`)}</button>` : allNeed && need.length > 8 ? `<button class="attn-more" data-quiet="attn">${chev(true)}${tt('收起', 'Fold')}</button>` : ''}</div>` : `<div class="calm">${I.check}${t('现在没有要你决定或验收的事，它们都在各自干活。')}</div>`;
   });
@@ -937,10 +944,10 @@ function drawTodoProjects(keys) {
 
 // ---------- all workspaces ----------
 function wsCard(w) {
-  const mine = roots(S.sessions).filter(s => s.workspace === w.key && live(s)), c = k => mine.filter(s => standing(s)[0] === k).length, need = wsNeed(w), b = boardOf(w.key);
+  const mine = roots(S.sessions).filter(s => s.workspace === w.key && live(s)), c = k => mine.filter(s => standing(s)[0] === k).length + (k === 'working' ? mine.filter(s => standing(s)[0] === 'asking').length : 0), need = wsNeed(w), b = boardOf(w.key);
   const works = workRows(w).length;
   return `<a class="ws-card${w.live ? '' : ' quiet'}" href="#/w/${encodeURIComponent(w.key)}"><div class="top"><span class="wsdot lg" style="--t:${wsColor(w)}">${esc(w.name.slice(0, 1).toUpperCase())}</span><div><b>${esc(w.name)}</b><span class="path">${esc(home(w.path))}</span></div>${need ? `<span class="n hot">${need}</span>` : ''}</div>
-    <div class="stats">${w.live ? [['waiting', '等你', c('waiting') + c('blocked') + c('review')], ['working', '工作中', c('working')], ['idle', '空闲', c('idle')]].filter(x => x[2]).map(([k, l, v]) => `<span class="chip"><span class="dot ${k}"></span><b>${v}</b>${t(l)}</span>`).join('') : `<span class="chip">${w.at ? t('{t}前动过', { t: ago(w.at) }) : t('安静')}</span>`}
+    <div class="stats">${w.live ? [['waiting', '等你', c('waiting') + c('asking') + c('blocked') + c('review')], ['working', '工作中', c('working')], ['idle', '空闲', c('idle')]].filter(x => x[2]).map(([k, l, v]) => `<span class="chip"><span class="dot ${k}"></span><b>${v}</b>${t(l)}</span>`).join('') : `<span class="chip">${w.at ? t('{t}前动过', { t: ago(w.at) }) : t('安静')}</span>`}
       <span class="chip"><b>${w.projects.length}</b>${t('个项目')}</span>${works ? `<span class="chip"><b>${works}</b>${t('个工作项在进行')}</span>` : ''}${b && b.unread ? `<span class="chip">${I.chat}<b>${b.unread}</b>${t('条新讨论')}</span>` : ''}</div></a>`;
 }
 function renderHome() {
@@ -1015,17 +1022,17 @@ function renderWs() {
   }
   const w = wsOf(key);
   if (!w) { draw('wshead', ['none', key], () => { $('#wsHead').innerHTML = `<div class="t"><h2>${t('没有这个工作区')}</h2></div>`; $('#wsBody').innerHTML = `<a class="btn" href="#/">${I.back}${t('回到总览')}</a>`; }); return; }
-  const mine = roots(S.sessions).filter(s => s.workspace === w.key), on = mine.filter(live), c = k => on.filter(s => standing(s)[0] === k).length, b = boardOf(w.key);
+  const mine = roots(S.sessions).filter(s => s.workspace === w.key), on = mine.filter(live), c = k => on.filter(s => standing(s)[0] === k).length + (k === 'working' ? on.filter(s => standing(s)[0] === 'asking').length : 0), b = boardOf(w.key);
   $('#crumbs').innerHTML = `${I.chev}<a href="#/w/${encodeURIComponent(w.key)}">${esc(w.name)}</a>${I.chev}<b>${t(route.tab === 'projects' ? '项目' : route.tab === 'works' ? '工作项' : '仪表盘')}</b>`;
-  draw('wshead', [w.key, w.name, w.path, w.projects.length, c('working'), c('waiting') + c('blocked'), c('review'), c('idle'), b && b.unread], () => {
+  draw('wshead', [w.key, w.name, w.path, w.projects.length, c('working'), c('waiting') + c('asking') + c('blocked'), c('review'), c('idle'), b && b.unread], () => {
     $('#wsHead').innerHTML = `<span class="wsdot xl" style="--t:${wsColor(w)}">${esc(w.name.slice(0, 1).toUpperCase())}</span><div class="t"><h2>${esc(w.name)}<em>${t('{name} 工作区', { name: '' }).trim()}</em></h2>
         <div class="sub"><span class="nm">${esc(home(w.path))}</span><span>${t('{n} 个项目', { n: w.projects.length })}</span><span>${t('{n} 个工作项在进行', { n: workRows(w).length })}</span></div></div>
-      <div class="right"><span class="legend">${[['waiting', '等你', c('waiting') + c('blocked') + c('review')], ['working', '工作中', c('working')], ['idle', '空闲', c('idle')]]
+      <div class="right"><span class="legend">${[['waiting', '等你', c('waiting') + c('asking') + c('blocked') + c('review')], ['working', '工作中', c('working')], ['idle', '空闲', c('idle')]]
         .map(([k, l, v]) => `<span class="chip"><span class="dot ${k}"></span><b>${v}</b>${t(l)}</span>`).join('')}</span>
         <a class="btn" href="#/b/${encodeURIComponent(w.key)}" title="${t('这个工作区里所有会话都收得到')}">${I.chat}${t('讨论区')}${b && b.unread ? ` · ${big(b.unread)}` : ''}</a><button class="btn" data-newp-ws="${esc(w.key)}">${I.plus}${t('新建会话')}</button></div>`;
   });
   const sig_ = [w.key, route.tab, w.projects, Object.values(S.projects || {}).filter(p => p.workspace === w.key).map(p => [p.key, p.facts && p.facts.at, p.at]),
-    mine.map(s => [s.id, s.state, s.status, s.title, s.summary, s.work, s.project, s.stale, s.needs_you, s.tool, subsOn(s).map(a => [a.id, a.state])]), Object.values(S.boards || {}).map(b => [b.key, b.unread, b.last && b.last.at]), (S.decisions || []).length, Object.keys(S.reports || {}).length, tick(), sig.worksAll, quietOpen.has('cards:' + w.key)];
+    mine.map(s => [s.id, s.state, s.status, s.title, s.summary, s.work, s.project, s.stale, s.needs_you, (s.asks || []).length, s.tool, subsOn(s).map(a => [a.id, a.state])]), Object.values(S.boards || {}).map(b => [b.key, b.unread, b.last && b.last.at]), (S.decisions || []).length, Object.keys(S.reports || {}).length, tick(), sig.worksAll, quietOpen.has('cards:' + w.key)];
   if (route.tab === 'projects') {
     draw('wsbody', sig_, () => { $('#wsBody').innerHTML = `<div class="h-title"><h2>${t('项目')}</h2><span class="sub">${t('{n} 个 · 有会话的在前', { n: w.projects.length })}</span></div>${projGrid(w.projects)}`; });
     return;
@@ -1084,6 +1091,7 @@ async function takeTodo(which) {
 const subsOn = s => (s.subs || []).filter(a => a.state !== 'done');
 function spanT(sec) { sec = Math.max(0, sec); return sec < 3600 ? t('{n} 分钟', { n: Math.max(1, Math.round(sec / 60)) }) : t('{n} 小时', { n: Math.floor(sec / 3600) }); }
 function subLabel(a) {
+  if (a.state === 'done' && a.stopped) return tt(`中途停了 · ${ago(a.at)}`, `Stopped partway · ${ago(a.at)}`);
   if (a.state === 'done') return tt(`已完成 · 跑了 ${spanT(a.at - a.start)}`, `Finished · ran ${spanT(a.at - a.start)}`);
   if (a.state === 'working') return tt(`运行中 · 已跑 ${spanT(Date.now() / 1000 - a.start)}`, `Running · for ${spanT(Date.now() / 1000 - a.start)}`);
   return tt(`没有动静 · ${ago(a.at)}`, `Quiet · ${ago(a.at)}`);
@@ -1114,7 +1122,7 @@ function card(s) {
     <div class="desc${desc ? '' : ' none'}">${esc(desc || (s.unknown ? t('这个窗口开得比 amail 早，它下次干活就能认出来') : t('还没有总结')))}</div>
     ${s.origin ? `<div class="origin">${I.term}${esc(originT(s.origin))}</div>` : ''}
     ${kidRows(s)}
-    ${a && (s.needs_you || s.waiting_for) ? `<div class="need ${ATT[a][1]}"><span><b>${t(ATT[a][0])}</b>${esc(s.state === 'waiting' && s.waiting_for ? t('批准：{w}', { w: s.waiting_for }) : s.needs_you)}</span></div>` : ''}
+    ${a && needOf(s) ? `<div class="need ${ATT[a][1]}"><span><b>${st === 'asking' ? t('等你确认') : t(ATT[a][0])}</b>${esc(needOf(s))}</span></div>` : ''}
     <div class="foot"><span class="st ${st}"><i></i>${label} ${ago(s.since)}</span>${tool}${br ? `<span class="br" title="${esc(home(s.work))}">${I.branch}${esc(s.branch)}</span>` : decs ? `<span>${t('{n} 个决定', { n: decs })}</span>` : ''}<span class="nm" title="${esc((s.loc ? `${groupName(s.loc.session)} › ${t('窗格 {n}', { n: s.loc.pane })} · ` : '') + home(s.cwd))}">${esc(s.name)}</span></div>
     ${s.unread ? `<span class="unread" title="${t('还没读的消息')}">${s.unread}</span>` : ''}
     <div class="hover-acts">${webOk(s) ? `<button data-go="${esc(s.id)}" data-tab="term" title="${t('进入它的终端')}">${I.enter}</button>` : ''}<button data-go="${esc(s.id)}" data-tab="report" title="${t('它的报告')}">${I.doc}</button><button data-go="${esc(s.id)}" data-tab="overview" title="${t('回复它')}">${I.reply}</button></div>
@@ -1213,11 +1221,11 @@ function drawOverview(s, k) {
   const decs = (S.decisions || []).filter(d => d.sid === s.id);
   const typing = document.activeElement && ['rText', 'rName'].includes(document.activeElement.id);
   if (typing && sig.ov) return drawSay(s);
-  draw('ov', [s.id, s.summary, s.needs_you, s.waiting_for, a, s.said, s.loc, s.cwd, s.session, decs.length, s.summary_at && Math.floor(s.summary_at / 30), tick(), kidsOf(s).map(c => [c.id, c.state, c.status, c.summary]), (s.subs || []).map(x => [x.id, x.state, x.at]),
+  draw('ov', [s.id, s.summary, s.needs_you, s.waiting_for, a, asksSig(s), s.said, s.loc, s.cwd, s.session, decs.length, s.summary_at && Math.floor(s.summary_at / 30), tick(), kidsOf(s).map(c => [c.id, c.state, c.status, c.summary]), (s.subs || []).map(x => [x.id, x.state, x.at]),
     s.project, s.workspace, s.attrib, s.work, s.branch, Object.keys(S.projects || {}).length], () => {
     const keep = $('#rText') ? $('#rText').value : '';
     $('#tabBody').innerHTML = `<div class="s-body"><div class="s-grid"><div>
-      ${a ? `<div class="need-box ${ATT[a][1]}"><div class="k">${t(ATT[a][0])}</div><p>${esc(s.state === 'waiting' && s.waiting_for ? t('在等你批准：{w}', { w: s.waiting_for }) : s.needs_you || s.summary || '')}</p>${replyBox(s)}</div>`
+      ${a ? `<div class="need-box ${ATT[a][1]}"><div class="k">${standing(s)[0] === 'asking' ? t('工作中 · 等你确认') : t(ATT[a][0])}</div><p>${esc(needOf(s) || s.summary || '')}</p>${replyBox(s)}</div>`
         : `<div class="panel"><h4>${t('写给它')}</h4>${replyBox(s)}</div>`}
       <div class="panel"><h4>${t('现在在做')}<span class="r hint">${s.summary_at ? t('总结于 {t}前', { t: ago(s.summary_at) }) : ''}</span></h4><div class="now ${k === 'claude' ? 'serif' : k === 'codex' ? 'mono' : ''}">${esc(s.summary || t('还没有总结'))}</div></div>
       ${s.said ? `<div class="panel"><h4>${t('它最后说的话')}</h4><div class="said">${md(s.said)}</div></div>` : ''}
@@ -1226,6 +1234,7 @@ function drawOverview(s, k) {
         <div class="kid-row">${mark(c.kind, st, 'sm')}<div data-go="${esc(c.id)}"><b>${esc(titleOf(c))}</b><p>${esc(label)} ${ago(c.since)} · ${esc(c.name)}${c.summary ? ' · ' + esc(c.summary) : ''}</p></div>
           ${['gone', 'ended'].includes(c.state) ? '' : `<button class="btn" data-stop="${esc(c.id)}">${t('停止')}</button>`}</div>`; }).join('')}</div></div>` : ''}
     </div><div>
+      ${asksPanel(s)}
       <div class="panel"><h4>${t('决定')}<span class="r hint">${t('{n} 条', { n: decs.length })}</span></h4><div class="d-list">${decs.length ? decs.map(d => `<div class="dec"><span class="by ${d.by}">${d.by === 'user' ? t('你') : 'AI'}</span><div class="w">${esc(d.what)}</div><time>${clock(d.at)}</time></div>`).join('') : `<div class="hint">${t('还没有记下决定。会话里拍板的事会自动记在这里。')}</div>`}</div></div>
       <div class="panel"><h4>${t('在哪里')}</h4><dl class="kv">${parentOf(s) ? `<dt>${t('启动者')}</dt><dd><a data-go="${esc(parentOf(s).id)}">${esc(parentOf(s).name)}</a></dd>` : s.origin ? `<dt>${t('启动方式')}</dt><dd>${esc(originT(s.origin))}</dd>` : ''}
         <dt>${tt('项目', 'Project')}</dt><dd>${projSelect(s)}</dd><dt>${tt('工作项', 'Work item')}</dt><dd>${s.work ? esc(home(s.work)) + (s.branch ? ` (${esc(s.branch)})` : '') : '—'}</dd>
@@ -1237,6 +1246,26 @@ function drawOverview(s, k) {
     if ($('#rText')) $('#rText').value = keep;
   });
   drawSay(s);
+}
+// what it waits on you for, in a line: the prompt it sits at, or what it asked (the latest summary's, else the oldest still open)
+function needOf(s) {
+  if (s.state === 'waiting' && s.waiting_for) return t('在等你批准：{w}', { w: s.waiting_for });
+  if (asking(s)) return t('它停在终端里的一个选择上，进终端回答');
+  return s.needs_you || ((s.asks || [])[0] || {}).what || '';
+}
+// ... and all of it, kept on the right of its page: a session that works on scrolls what it asked out of its conversation
+const asksSig = s => [(s.asks || []).map(a => [a.id, a.quote && 1]), (S.inbox || []).filter(m => m.from === s.name).map(m => m.id), s.state, s.waiting_for, asking(s)];
+function asksPanel(s) {
+  const asks = s.asks || [], mails = (S.inbox || []).filter(m => m.from === s.name);
+  const now = s.state === 'waiting' && s.waiting_for || asking(s) ? needOf(s) : '', n = asks.length + mails.length + (now ? 1 : 0);
+  return `<div class="panel asks${n ? '' : ' none'}"><h4>${t('等你确认')}<span class="r hint">${n ? t('{n} 件', { n }) : ''}</span></h4>${now ? `
+    <div class="ask now"><div class="ask-k">${t('现在')}</div><p>${esc(now)}</p><div class="ask-acts"><button class="btn dark" data-tab-go="term" ${webOk(s) ? '' : 'disabled'}>${I.term}${t('终端')}</button></div></div>` : ''}${mails.map(m => `
+    <div class="ask mail"><div class="ask-k">${t('写信给你')} · ${clock(m.at)}</div><div class="ask-md">${md(m.text)}</div>
+      <form class="m-reply" data-mid="${esc(m.id)}" hidden><input class="field" id="mr-${esc(m.id)}" placeholder="${t('回复 {n}……', { n: esc(m.from) })}" autocomplete="off">${micBtn('mr-' + m.id)}<button class="btn primary" type="submit">${t('发送')}</button></form>
+      <div class="ask-acts"><button class="btn" data-mreply="${esc(m.id)}">${I.reply}${t('回复')}</button><button class="btn" data-mread="${esc(m.id)}">${t('知道了')}</button></div></div>`).join('')}${asks.map(x => `
+    <div class="ask"><div class="ask-k">${clock(x.at)} · ${agoT(x.at)}</div><p>${esc(x.what)}</p>${x.quote ? `<blockquote>${esc(x.quote)}</blockquote>` : ''}
+      <div class="ask-acts"><button class="btn" data-ask-done="${esc(x.id)}">${I.check}${t('已处理')}</button></div></div>`).join('')}${n ? '' : `
+    <div class="hint">${t('现在没有等你确认的事。它要你确认的事会一直列在这里，直到你点「已处理」，或者它之后的总结看出你已经回应了。')}</div>`}</div>`;
 }
 function drawSay(s) { draw('say', [s.id, sayHow(s), S.voice && S.voice.on, sig.ov], () => { if ($('#sayRow')) $('#sayRow').innerHTML = sayRow(s); }); }
 // words for it: one way to send, which follows how it stands (as the deck's say_how)
@@ -1287,7 +1316,7 @@ function renderProject() {
     if (!$('#boardBox')) { $('#tabBody').innerHTML = `<div class="s-body wide" id="boardBox"></div>`; BD.key = null; }
     drawBoard(p.key, $('#boardBox'));
   } else if (tab === 'sessions') {
-    draw('tab', ['psess', p.key, ss.map(x => [x.id, x.state, x.status, x.title, x.summary, x.stale, x.needs_you, x.tool]), tick()], () => {
+    draw('tab', ['psess', p.key, ss.map(x => [x.id, x.state, x.status, x.title, x.summary, x.stale, x.needs_you, (x.asks || []).length, x.tool]), tick()], () => {
       $('#tabBody').innerHTML = `<div class="s-body wide">${ss.length ? `<div class="cards">${ss.map(card).join('')}</div>` : `<div class="calm">${t('现在没有会话在这个项目上。')}</div>`}</div>`;
     });
   } else drawProjOverview(p, ss);
@@ -1457,9 +1486,10 @@ let chatTimer = null;
 async function drawChat(s, k) {
   if (sig.chatFor !== s.id) {
     sig.chatFor = s.id;
-    $('#tabBody').innerHTML = `<div class="s-body"><div class="convo" id="convo"><div class="hint">${t('读取对话……')}</div></div><div class="chat-say">${replyBox(s)}</div></div>`;
+    $('#tabBody').innerHTML = `<div class="s-body wide"><div class="chat-grid"><div class="chat-main"><div class="convo" id="convo"><div class="hint">${t('读取对话……')}</div></div><div class="chat-say">${replyBox(s)}</div></div><aside class="chat-side" id="chatSide"></aside></div></div>`;
   }
   drawSay(s);
+  if (!document.activeElement || !document.activeElement.closest || !document.activeElement.closest('#chatSide')) draw('chatside', [s.id, asksSig(s), tick()], () => { $('#chatSide').innerHTML = asksPanel(s); });
   if (chatTimer && Date.now() - chatTimer < 5000) return;
   chatTimer = Date.now();
   try {
@@ -1634,7 +1664,7 @@ function palPlaces() {  // (workspaces and projects whose name matches: before t
 }
 function palItems() {
   const q = $('#paletteQ').value.trim().toLowerCase();
-  const order = s => ({ waiting: 0, blocked: 1, review: 2, working: 3, idle: 4 }[standing(s)[0]] ?? 9);
+  const order = s => ({ waiting: 0, asking: 1, blocked: 2, review: 3, working: 4, idle: 5 }[standing(s)[0]] ?? 9);
   return S.sessions.filter(s => !q || [s.name, s.title, s.summary, s.cwd, FULL[s.kind], s.loc && s.loc.session].some(x => String(x || '').toLowerCase().includes(q)))
     .sort((a, b) => order(a) - order(b) || (b.at || 0) - (a.at || 0));
 }
@@ -1979,6 +2009,7 @@ document.addEventListener('click', async e => {
   if ((el = q('[data-stop]'))) { if (confirm(t('停止这个子 agent？它和它启动的进程都会被结束。'))) post('stop', { id: el.dataset.stop }); return; }
   if ((el = q('[data-mreply]'))) { const f = document.querySelector(`.m-reply[data-mid="${CSS.escape(el.dataset.mreply)}"]`); if (f) { f.hidden = !f.hidden; if (!f.hidden) f.querySelector('input').focus(); } return; }
   if ((el = q('[data-mread]'))) { post('mail_read', { mid: el.dataset.mread }); return; }
+  if ((el = q('[data-ask-done]'))) { post('ask_done', { ask: el.dataset.askDone }); return; }
   if ((el = q('[data-unlock]'))) { if (confirm(t('释放这把推送锁？在等它的会话会收到通知。'))) post('unlock', { key: el.dataset.unlock }); return; }
   if ((el = q('[data-quiet]'))) { toggle(quietOpen, 'deck.quietOpen', el.dataset.quiet); return; }
   if ((el = q('[data-report]'))) { e.stopPropagation(); el.disabled = true; el.textContent = t('正在写…'); post('report', { id: el.dataset.report }); return; }

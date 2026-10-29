@@ -12,7 +12,7 @@ is (its Zellij session and pane), what they say to each other. Jump to one, writ
   sturnus uninstall [--purge]      take everything out again (--purge: its settings and caches too)
   sturnus status | open | serve | version
 """
-import base64, fcntl, functools, ipaddress, glob, hashlib, hmac, importlib.machinery, importlib.util, json, os, plistlib, pty, re, secrets, shutil, signal, socket, sqlite3, struct, subprocess, sys, termios, threading, time, urllib.error, urllib.request
+import base64, difflib, fcntl, functools, ipaddress, glob, hashlib, hmac, importlib.machinery, importlib.util, json, os, plistlib, pty, re, secrets, shutil, signal, socket, sqlite3, struct, subprocess, sys, termios, threading, time, urllib.error, urllib.request
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -481,6 +481,24 @@ SUB = re.compile(r'[0-9a-f]{6,40}')
 _subs = {}
 
 
+def sub_end(path):
+    """How a sub-agent's conversation ends: 'said' on its last answer (the assistant's, with no tool call pending),
+    'maybe' on assistant words that may go on, '' on anything else. (Claude Code seldom marks one finished.)"""
+    for line in reversed(tail_lines(path, 60000)):
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(d, dict) or d.get('type') not in ('user', 'assistant'):
+            continue
+        m = d.get('message') if isinstance(d.get('message'), dict) else {}
+        c = m.get('content')
+        if d['type'] != 'assistant' or any(isinstance(x, dict) and x.get('type') == 'tool_use' for x in (c if isinstance(c, list) else [])):
+            return ''
+        return 'said' if m.get('stop_reason') in ('end_turn', 'stop_sequence', 'max_tokens') else 'maybe'
+    return ''
+
+
 def subagents_of(s):
     """A Claude Code session's own sub-agents (its Agent tool: they have no process or hooks of their own), from the
     files Claude Code keeps beside its conversation: <session>/subagents/agent-<id>.meta.json (type, task, finished)
@@ -508,10 +526,15 @@ def subagents_of(s):
         if not hit or hit[0] != (mt, jt):
             m = A.get(mf, {}) or {}
             hit = ((mt, jt), {'id': aid, 'type': str(m.get('agentType') or ''), 'task': str(m.get('description') or '')[:200], 'finished': bool(m.get('finished')),
-                               'start': (_subs.get(mf) or (None, {}))[1].get('start') or first_time(jf) or mt, 'at': max(mt, jt)})
+                               'start': (_subs.get(mf) or (None, {}))[1].get('start') or first_time(jf) or mt, 'at': max(mt, jt), 'end': sub_end(jf)})
             _subs[mf] = hit
-        a = dict(hit[1])
-        a['state'] = 'done' if a['finished'] else 'working' if now - a['at'] < 120 else 'quiet'  # (quiet: no word for two minutes)
+        a, end = dict(hit[1]), hit[1].get('end', '')
+        quiet = now - a['at']
+        if a['finished'] or end == 'said' or (end == 'maybe' and quiet > 120) or quiet > 1800:
+            a['state'], a['stopped'] = 'done', not a['finished'] and not end  # (stopped: half an hour quiet with no last word: cut off)
+        else:
+            a['state'] = 'working' if quiet < 120 else 'quiet'  # (quiet: no word for two minutes)
+        a.pop('end', None)
         a['model'] = agent_model(a['type'])
         out.append(a)
     return sorted(out, key=lambda a: (a['state'] == 'done', -a['at']))[:20]
@@ -962,12 +985,17 @@ def ask_model(prompt, cfg, role='summary', m=None, key=None):
 # ---------- summaries and decisions ----------
 
 PROMPT = '''你在为一位开发者的「会话总览」写状态。下面是一个 AI 编码会话（{kind}，名字 {name}，目录 {cwd}）最近的对话片段，最后几行最新。
-只输出一行 JSON，不要别的：{{"title": "...", "summary": "...", "status": "...", "needs_you": "...", "decisions": [{{"what": "...", "by": "..."}}]}}
+只输出一行 JSON，不要别的：{{"title": "...", "summary": "...", "status": "...", "needs_you": "...", "ask_quote": "...", "resolved": [], "decisions": [{{"what": "...", "by": "..."}}]}}
 - title：不超过 14 个汉字的任务名，像给这件事起的标题（例如「发布 faw 0.8.2」「复现 Mantis 1349608」）。
 - summary：不超过 40 个汉字。说清做到哪一步、下一步是什么。要具体（带上分支、功能、版本、文件等名字），不要空话。
 - status：working（正在干活）、waiting_user（在等用户回答或拍板）、review（做完了，等用户检查结果）、blocked（卡住或出错）、done（这件事做完了，不用再看）、idle（没有任务）之一。
-- needs_you：只有当它在等用户决定、批准、回答、检查结果或亲手做某件事时，才用一句话说清要用户做什么、怎么做；否则必须是空字符串（不要写「无需…」「暂无」之类）。
+- needs_you：只有当它在等用户决定、批准、回答、检查结果或亲手做某件事时（它一边接着干活一边等用户回答的也算），才用一句话说清要用户做什么、怎么做；否则必须是空字符串（不要写「无需…」「暂无」之类）。就是下面「还在等用户的事」里的某一条时，照抄那一条。
+- ask_quote：needs_you 不为空时，从片段里原样摘出它向用户提出这件事的原话，不超过 300 字；否则空字符串。
+- resolved：下面「还在等用户的事」里，片段显示用户已经回应过、或已经不再需要用户的那些的编号（数字）；看不出来就给空列表。
 - decisions：片段里已经做出的决定（方案取舍、批准、范围、放弃什么），每条不超过 40 个汉字；by 是 user（用户定的）或 agent（它自己定的）。没有就给空列表。
+
+还在等用户的事（编号：内容）：
+{held}
 
 片段：
 {text}
@@ -981,6 +1009,9 @@ class Summaries:
         self.dfile = os.path.join(CACHE, 'decisions.json')
         self.data = A.get(self.file, {}) or {}
         self.decisions = A.get(self.dfile, []) or []
+        self.afile = os.path.join(CACHE, 'asks.json')
+        self.asks = A.get(self.afile, []) or []  # (what the sessions asked of the person, kept until it is answered)
+        self.alock = threading.Lock()  # (the summaries' thread and the person's ticks both change it)
         self.error = ''
         self.busy = None
 
@@ -1010,7 +1041,9 @@ class Summaries:
             lines = [f'助手: {s["said"]}']
         if not lines:
             return
-        prompt = PROMPT.format(kind=s['kind'], name=s['name'], cwd=s.get('cwd') or '?', text='\n'.join(lines))
+        held = self.open_asks(s['id'])
+        prompt = PROMPT.format(kind=s['kind'], name=s['name'], cwd=s.get('cwd') or '?', text='\n'.join(lines),
+                               held='\n'.join(f'{i}：{a["what"]}' for i, a in enumerate(held, 1)) or '（没有）')
         self.busy = s['id']
         try:
             out = ask_model(prompt, cfg, 'summary')
@@ -1024,6 +1057,7 @@ class Summaries:
             self.data[s['id']] = {'title': str(r.get('title') or '')[:24], 'summary': str(r.get('summary') or '')[:120],
                                   'status': r.get('status') or '', 'needs_you': need[:200], 'at': time.time(), 'basis': basis}
             self.note_decisions(s, r.get('decisions') or [])
+            self.note_asks(s, need[:200], str(r.get('ask_quote') or ''), r.get('resolved'), held)
             self.error = ''
             os.makedirs(CACHE, exist_ok=True)
             A.put(self.file, self.data)
@@ -1032,6 +1066,47 @@ class Summaries:
             self.data.setdefault(s['id'], {})['at'] = time.time()  # (do not hammer a failing model)
         finally:
             self.busy = None
+
+    def open_asks(self, sid):
+        return [a for a in self.asks if a['sid'] == sid and not a.get('done')]
+
+    def note_asks(self, s, need, quote, resolved, held):
+        """Keep each thing a session asks of the person until the person has answered it (as a later summary sees) or
+        ticks it off: a session that works on scrolls its question out of the excerpt the summaries read."""
+        with self.alock:
+            self._note_asks(s, need, quote, resolved, held)
+
+    def _note_asks(self, s, need, quote, resolved, held):
+        now, changed = time.time(), False
+        for i in resolved if isinstance(resolved, list) else []:
+            i = int(i) if str(i).strip().isdigit() else 0
+            if 1 <= i <= len(held) and not held[i - 1].get('done'):
+                held[i - 1].update(done=now, by='seen')
+                changed = True
+        key = lambda t: re.sub(r'\W+', '', t).lower()
+        same = next((a for a in held if not a.get('done') and difflib.SequenceMatcher(None, key(a['what']), key(need)).ratio() > .75), None) if need else None
+        if same and quote and not same.get('quote'):
+            same['quote'], changed = quote.strip()[:400], True
+        elif need and not same:
+            self.asks.append({'id': secrets.token_hex(6), 'sid': s['id'], 'name': s['name'], 'what': need, 'quote': quote.strip()[:400], 'at': now})
+            changed = True
+        if changed:
+            self.save_asks()
+
+    def ask_done(self, aid):
+        with self.alock:
+            a = next((a for a in self.asks if a['id'] == aid and not a.get('done')), None)
+            if not a:
+                return False, tx('这件已经处理过了', 'This one is already handled')
+            a.update(done=time.time(), by='user')
+            self.save_asks()
+        return True, {}
+
+    def save_asks(self):
+        now = time.time()
+        self.asks = [a for a in self.asks if now - (a.get('done') or a['at']) < 7 * DAY][-300:]  # (a week on, handled or not, it goes)
+        os.makedirs(CACHE, exist_ok=True)
+        A.put(self.afile, self.asks)
 
     def note_decisions(self, s, found):
         """Keep each decision once (the same excerpt is read again on the next summary)."""
@@ -1078,19 +1153,23 @@ def one_line(x, n):
 
 
 def standing(s):
-    """How a session stands, in a word and in words: as the page shows it."""
+    """How a session stands, in a word and in words: as the page shows it (the page also marks one that works on while
+    something it asked waits on the person)."""
     st = s.get('status')
     if s['state'] in ('gone', 'ended'):
         return s['state'], 'exited'
     if s.get('stale'):
         return 'quiet', 'quiet for a day'
-    if s['state'] == 'waiting' or st == 'waiting_user' or (s.get('needs_you') and st not in ('blocked', 'review')):
+    asks = s.get('needs_you') or s.get('asks')
+    if s['state'] == 'waiting' or at_menu(s) or (s['state'] != 'working' and (st == 'waiting_user' or (asks and st not in ('blocked', 'review')))):
         return 'waiting', 'waits on the person'
     if st == 'blocked':
         return 'blocked', 'blocked'
     if st == 'review':
         return 'review', 'ready for review'
-    return ('working', 'working') if s['state'] == 'working' else ('idle', 'idle')
+    if s['state'] == 'working':  # (it can work on and still wait on the person for something it asked)
+        return 'working', 'working; also waits on the person' if asks or st == 'waiting_user' else 'working'
+    return 'idle', 'idle'
 
 
 class Reports:
@@ -1724,6 +1803,7 @@ class Deck:
                 need = ''
             s['summary'], s['status'], s['needs_you'], s['summary_at'] = sm.get('summary'), sm.get('status'), need, sm.get('at')
             s['title'] = sm.get('title') or ''
+            s['asks'] = [{k: a.get(k) for k in ('id', 'what', 'quote', 'at')} for a in self.sums.open_asks(s['id'])]
             if s['state'] == 'idle' and s['status'] == 'waiting_user' and sm.get('at', 0) >= s['at'] - 5:
                 s['state'] = 'waiting'  # (it stopped on a question to the person)
             s['stale'] = s['state'] != 'working' and now - (s['at'] or s['since'] or 0) > 24 * 3600  # (a day without a stir: out of the way, still there to open)
@@ -2267,6 +2347,8 @@ class Deck:
             l = A.get(f) or {}
             os.remove(f)
             return True, tx(f'释放了 {l.get("holder")} 在 {os.path.basename(l.get("repo") or "")} 上的 {l.get("branch")} 推送锁', f'Released the push lock of {l.get("holder")} on {l.get("branch")} in {os.path.basename(l.get("repo") or "")}')
+        if what == 'ask_done':  # (something a session asked of the person: handled)
+            return self.sums.ask_done(str(body.get('ask') or ''))
         if what in ('mail_read', 'mail_reply'):  # (mail to the person: read, or answered, which wakes the writer)
             mid = str(body.get('mid') or '')
             f = next(iter(glob.glob(A.path('mail', ME_NAME, 'new', f'*-{mid}.json')))) if re.fullmatch(r'[0-9a-f]{12}', mid) else None
@@ -2711,13 +2793,18 @@ class Deck:
 ASKS = ('AskUserQuestion', 'ExitPlanMode')  # (tools that put a choice to the person in the terminal)
 
 
+def at_menu(s):
+    """At a permission or choice prompt in its terminal: typed text would answer it."""
+    return bool(s.get('prompting') or (s.get('tool') in ASKS and s['state'] == 'working' and (s.get('tool_at') or 0) > (s.get('tool_end') or 0)))
+
+
 def say_how(s, now=False):
     """How the person's words for a session get there: typed into its pane when it is idle (or now, if asked); held until
     its turn ends while it works; not at all while it sits at a permission or choice prompt (they would answer it); by
     mail when it is in no pane."""
     if s['state'] in ('gone', 'ended'):
         return 'gone'
-    if s.get('prompting') or (s.get('tool') in ASKS and s['state'] == 'working' and (s.get('tool_at') or 0) > (s.get('tool_end') or 0)):
+    if at_menu(s):
         return 'menu'
     if not s.get('loc'):
         return 'mail'
