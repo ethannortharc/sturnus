@@ -933,11 +933,33 @@ def is_agent(pid, comm):
 
 
 def agent_pid(kind):
+    up = ancestors()
+    if kind == 'cursor':  # (its CLI runs as node, its command name "MainThread" on Linux: known by its command line)
+        hit = next((pid for pid, name in up if name not in ('claude', 'codex') and is_agent(pid, name)), None)
+        if hit:
+            return hit
     want = {'claude': ('claude',), 'codex': ('codex',), 'cursor': ('cursor-agent', 'agent', 'node')}[kind]
-    for pid, name in ancestors():
-        if name in want:
-            return pid
-    return None
+    return next((pid for pid, name in up if name in want), None)
+
+
+HEADLESS = {'claude': {'-p', '--print'}, 'codex': {'exec', 'e', 'review'}, 'cursor': {'-p', '--print'}}
+
+
+def headless(kind, pid):
+    """A run with no window of its own (claude -p, codex exec, cursor-agent -p): another session or a script started
+    it, and the pane in its environment is that one's."""
+    args = proc_args(pid) if pid else None
+    return bool(args) and bool(HEADLESS[kind] & set(args[1:]))
+
+
+def env_pane():
+    """The pane in this process's environment, as the board keeps it (the innermost multiplexer: tmux run in a Zellij
+    pane is tmux's)."""
+    if os.environ.get('TMUX_PANE') and os.environ.get('TMUX'):
+        return {'tmux': {'sock': os.environ['TMUX'].split(',')[0], 'pane': os.environ['TMUX_PANE']}}
+    if os.environ.get('ZELLIJ_PANE_ID'):
+        return {'zellij': {'session': os.environ.get('ZELLIJ_SESSION_NAME'), 'pane': os.environ['ZELLIJ_PANE_ID']}}
+    return {}
 
 
 def hook(kind):
@@ -984,12 +1006,17 @@ def on_event(kind, ev, p):
     e['pid'] = agent_pid(kind) or e.get('pid')
     if 'parent' not in e:  # (once, at its first event)
         e['parent'] = parent_of(e['pid'], me)
-    if kind != 'codex' and os.environ.get('TMUX_PANE') and os.environ.get('TMUX'):  # (the innermost multiplexer: tmux run in a Zellij pane is tmux's)
-        e['tmux'] = {'sock': os.environ['TMUX'].split(',')[0], 'pane': os.environ['TMUX_PANE']}
-        e.pop('zellij', None)
-    elif kind != 'codex' and os.environ.get('ZELLIJ_PANE_ID'):  # (a Codex hook runs in its daemon: its Zellij env is not the window's)
-        e['zellij'] = {'session': os.environ.get('ZELLIJ_SESSION_NAME'), 'pane': os.environ['ZELLIJ_PANE_ID']}
+    pane = env_pane()
+    if headless(kind, e['pid']):
+        # (the pane it was started from: its starter is found there when the process chain is broken, as for a
+        # `codex exec` put in the background, which the init process takes over once the starting shell exits)
+        e.setdefault('from', pane or None)
         e.pop('tmux', None)
+        e.pop('zellij', None)
+    elif kind != 'codex' and pane:  # (a Codex hook runs in its daemon: its env is not the window's)
+        e.pop('tmux', None)
+        e.pop('zellij', None)
+        e.update(pane)
     if p.get('transcript_path'):
         e['transcript'] = p['transcript_path']
     if p.get('hook_event_name') == 'Notification' and 'permission' not in (p.get('message') or '').lower():

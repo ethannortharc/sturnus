@@ -1713,7 +1713,8 @@ class Deck:
                  'state': e.get('state') or 'idle', 'since': e.get('since') or e.get('at') or 0, 'at': e.get('at') or 0,
                  'cwd': e.get('cwd'), 'tool': e.get('tool'), 'tool_at': e.get('tool_at'), 'tool_end': e.get('tool_end'), 'said': e.get('said'),
                  'unread': e.get('unread', 0), 'pid': e.get('pid'), 'transcript': e.get('transcript'), 'loc': place_from(e),
-                 'parent': (e.get('parent') or {}).get('name'), 'parent_pid': (e.get('parent') or {}).get('pid')}
+                 'parent': (e.get('parent') or {}).get('name'), 'parent_pid': (e.get('parent') or {}).get('pid'),
+                 'from': place_from(e['from']) if isinstance(e.get('from'), dict) else None}  # (a headless run: the pane it was started from)
             r = raw.get(name) or {}
             if r.get('state') == 'waiting' and (r.get('at') or 0) >= (s['at'] - 1):
                 s['state'], s['waiting_for'] = 'waiting', r.get('waiting_for')
@@ -1763,7 +1764,9 @@ class Deck:
                 continue
             seen_panes.add(key)
             hit = next((s for s in sessions if s['kind'] == 'cursor' and ((loc and s.get('loc') == loc) or s.get('pid') == p['pid']) and s['state'] not in ('gone', 'ended')), None)
-            if not hit:
+            if hit:
+                hit['window_pid'] = p['pid']  # (its hooks may not know its process: a run it starts names it as parent)
+            else:
                 chat = cursor_chat(p['pid'])
                 sessions.append(self.window('cursor', p['pid'], loc, p['start'], cwd_of(p['pid']), chat, chat and chat.split('/')[-2]))
         now = time.time()
@@ -1795,6 +1798,16 @@ class Deck:
         by_name = {s['name']: s for s in sessions}
         by_pid = {s['pid']: s for s in sessions if s.get('pid')}
         for s in sessions:
+            if s.get('window_pid'):
+                by_pid.setdefault(s['window_pid'], s)
+        born = {p['pid']: p['start'] for p in ps}
+        def starter(s):  # (who started a headless run: the live session in the pane it was started from, started before it)
+            if not s.get('from'):
+                return None
+            ref = born.get(s.get('pid')) or s.get('at') or 0  # (one that has ended: before its last word)
+            return next((x for x in sessions if x is not s and not x.get('from') and x.get('loc') == s['from'] and x['state'] not in ('gone', 'ended')
+                         and born.get(x.get('pid') or x.get('window_pid'), 0) <= ref), None)
+        for s in sessions:
             if s.get('starting'):
                 s['stale'] = s['hidden'] = False
                 continue
@@ -1809,7 +1822,7 @@ class Deck:
                 s['state'] = 'waiting'  # (it stopped on a question to the person)
             s['stale'] = s['state'] != 'working' and now - (s['at'] or s['since'] or 0) > 24 * 3600  # (a day without a stir: out of the way, still there to open)
             s['hidden'] = s['state'] in ('gone', 'ended')  # (a session that has exited leaves the page)
-            p = by_name.get(s.get('parent')) or by_pid.get(s.get('parent_pid'))
+            p = by_name.get(s.get('parent')) or by_pid.get(s.get('parent_pid')) or starter(s)
             if p and p is not s:
                 s['parent'] = p['name']  # (started by another session: shown with it; when done, there for half an hour more)
                 s['parent_id'], s['stale'] = p['id'], False
