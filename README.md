@@ -1,12 +1,37 @@
 # sturnus
 
-One page for the Claude Code, Codex and Cursor sessions on this machine. For each session it shows:
+One page for the Claude Code, Codex and Cursor sessions on this machine. You keep using each one through its own command line; Sturnus is the layer across them. For each session it shows:
 
 - what it is doing (a one-line summary by a model),
-- where it is (its Zellij or tmux session and pane: a session is a group, a pane an agent),
+- which project it works on, and in which worktree and branch,
+- where it is (its Zellij or tmux session and pane),
 - what the sessions say to each other.
 
 From the page you can jump to a session's pane, write to it, or give it one name that is used everywhere.
+
+## Workspaces, projects, work items
+
+- A **workspace** is a folder of projects, like `~/Projects/software/workspace`. By default it is the folder above each git repository a session works in; list your own under `workspaces` in the settings.
+- A **project** is a git repository (all its worktrees are one project) or a plain folder in a workspace.
+- A **work item** is one of a project's worktrees and its branch. Sessions come and go; a work item stays until it is merged and its worktree removed.
+- A session belongs to the project of the folder it is in now. One at the top of a workspace belongs to the project whose files it works on (edits count most), else to the workspace itself. On its page you can say otherwise.
+
+The home page shows a workspace's projects with the sessions on them; a project's page shows its work items (ahead of or behind main, files not committed, the last commit) with their sessions, its channel, the decisions taken and what came out.
+
+## Channels
+
+Every project has a channel, and so does every workspace: a room that every session on it reads, whatever agent it is.
+
+- `amail post "..."` posts to the channel of your project. The other sessions on it get it at the start of their next turn.
+- `@NAME` in a post calls that session (`@all`: everyone on the channel). A call reaches it mid-work too, and Sturnus wakes it if it is idle. One called that is not on the channel gets it by mail.
+- `amail topic "Debate: …" --invite a,b` starts a discussion with the sessions you name. Its posts reach those in it mid-work, a stop picks them up, and Sturnus wakes them when idle, so they can go back and forth. It closes after 24 posts (`--max N`), or when someone closes it.
+- `amail read` shows what is new; `amail read --all` the last posts; `amail topics` the open discussions.
+
+On the page, a project's "讨论" tab is its channel: post, start a discussion with any sessions, close it.
+
+## Writing to a session
+
+A session's page has one send button, and what it does follows how the session stands: typed into its terminal when it is idle, held until its turn ends while it works (or typed right away, if you say so), not typed at all while it sits at a permission or choice prompt (the text would answer the prompt), put in its mailbox when it runs in no Zellij or tmux pane.
 
 It runs on Linux and macOS, with the Python 3 the system has (3.9 or newer) and nothing else to install.
 
@@ -54,8 +79,13 @@ To give Zellij more room, raise the limit in the shell it is started from, e.g. 
 - `https_port` (7443);
 - `pane_titles`;
 - `zellij_max_files` (macOS: the open-file limit your Zellij sessions start with, once you have raised it);
+- `workspaces`: the folders of projects (default: the folder above each git repository a session works in);
 - `summarizer.cmd`, which defaults to `claude -p --model haiku`;
 - `summarizer.api`, to use an OpenAI-compatible endpoint instead: `{"url", "model", "key_env"}`.
+
+## Trying a change
+
+A second deck can run beside the installed one: `STURNUS_CONF`, `STURNUS_CACHE` and `AMAIL_HOME` point it at its own settings (with another `port`), caches and mail, and `STURNUS_DRY=1` keeps it from typing into any pane.
 
 ## Building
 
