@@ -820,27 +820,21 @@ table.works .when { color: var(--muted); white-space: nowrap; font-variant-numer
 #hero.compact .s-hero .hbtn { height: 28px; padding: 0 10px; font-size: 12px; }
 #hero.compact .tabs { margin-top: 6px; } #hero.compact .tabs > button { padding: 6px 12px 8px; }
 
-/* the logo heads the rail (the rail runs from the top of the window) and folds it; the column beside the rail folds on its own */
+/* the logo heads the rail (the rail runs from the top of the window); the column beside the rail folds */
 .lay-btn { width: 62px; height: calc(100% + 1px); align-self: flex-start; display: grid; place-items: center; border: 0; padding: 0; flex: none; border-radius: 0; position: relative; z-index: 2;
   background: color-mix(in srgb, var(--sunk) 70%, var(--canvas)); border-right: 1px solid var(--hair); }
 .lay-btn .logo { width: 40px; height: 40px; border-radius: 12px; transition: transform .15s var(--ease), box-shadow .15s; }
 .lay-btn:hover .logo { transform: scale(.94); box-shadow: 0 0 0 3px var(--accent-soft), 0 3px 10px -4px rgba(0, 0, 0, .45); }
 .lay-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -6px; }
-.app.rail-off .lay-btn { background: none; border-right-color: transparent; height: auto; align-self: stretch; }
 .brand .word { margin-left: 14px; }
 .shell { position: relative; }
 .app.side-off .shell { grid-template-columns: 62px minmax(0, 1fr); }
-.app.rail-off .shell { grid-template-columns: 248px minmax(0, 1fr); }
-.app.rail-off.side-off .shell { grid-template-columns: minmax(0, 1fr); }
-.app.side-off .side, .app.rail-off .rail { display: none; }
+.app.side-off .side { display: none; }
 /* (a strip along the column's edge, on the page's side of it: hovering anywhere along it shows the handle) */
 .side-edge { position: absolute; top: 0; bottom: 0; left: calc(62px + 248px); width: 14px; z-index: 7; }
 .app.side-off .side-edge { left: 62px; }
-.app.rail-off .side-edge { left: 248px; }
-.app.rail-off.side-off .side-edge { left: 0; }
 .side-handle { position: absolute; top: 50%; left: -9px; width: 18px; height: 44px; margin-top: -22px; border-radius: 9px; border: 1px solid var(--hair); background: var(--panel);
   color: var(--muted); display: grid; place-items: center; padding: 0; box-shadow: var(--shadow-1); opacity: 0; transition: opacity .15s; }
-.app.rail-off.side-off .side-handle { left: 2px; }
 .side-handle svg { width: 13px; height: 13px; }
 .side-edge:hover .side-handle, .side-handle:focus-visible { opacity: 1; }
 .side-handle:hover { color: var(--ink); }

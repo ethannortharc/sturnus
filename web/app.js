@@ -377,21 +377,15 @@ function railWs() {  // (the workspaces on the rail, in order)
   const sp = space(), seen = store.get('deck.wsSeen', []), ws = S.workspaces || [];
   return ws.filter(w => w.live || wsNeed(w) || (sp.t === 'ws' && sp.key === w.key) || seen.includes(w.key));
 }
-// (the left folds in two parts: the rail, from the logo at its top; the column beside it, from the rail's selected place
-// clicked again, a handle at its edge, or ⌘B)
-const oldLay = store.get('deck.lay', '');
-let railOff = store.get('deck.railOff', oldLay === 'none'), sideOff = store.get('deck.sideOff', oldLay === 'rail' || oldLay === 'none');
+// (the column beside the rail folds: the rail's selected place clicked again, a handle at its edge, or ⌘B; the rail stays)
+let sideOff = store.get('deck.sideOff', ['rail', 'none'].includes(store.get('deck.lay', '')));
 function applyFold() {
   const app = document.querySelector('.app');
-  app.classList.toggle('rail-off', railOff);
   app.classList.toggle('side-off', sideOff);
-  const b = $('#layBtn');
-  if (b) { b.title = railOff ? '展开最左边那栏' : '收起最左边那栏'; b.setAttribute('aria-label', b.title); }
   const h = $('#sideHandle');
   if (h) { h.title = `${sideOff ? '展开' : '收起'}旁边那栏（⌘B）`; h.setAttribute('aria-label', h.title); h.innerHTML = sideOff ? I.chev : I.chev.replace('<svg', '<svg style="transform:scaleX(-1)"'); }
   fitTerm();
 }
-function setRail(off) { railOff = off; store.set('deck.railOff', off); applyFold(); }
 function setSide(off) { sideOff = off; store.set('deck.sideOff', off); applyFold(); }
 function drawRail() {
   const sp = space(), ws = S.workspaces || [], on = railWs(), rest = ws.length - on.length;
@@ -1428,7 +1422,6 @@ document.addEventListener('click', async e => {
   let el;
   if (q('[data-close]')) { closeOverlays(); return; }
   if ((el = q('[data-new]'))) { e.stopPropagation(); openNew(el.dataset.new); return; }
-  if (q('#layBtn')) { setRail(!railOff); return; }
   if (q('#sideHandle')) { setSide(!sideOff); return; }
   if ((el = q('.rail .tile')) && !e.metaKey && !e.ctrlKey && !e.shiftKey) {  // (the place already selected: folds or unfolds its column; another one: opens it)
     if (el.classList.contains('on')) { e.preventDefault(); setSide(!sideOff); } else if (sideOff) setSide(false);
