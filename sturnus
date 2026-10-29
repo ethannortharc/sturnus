@@ -528,6 +528,8 @@ def transcript_of(s):
         found = next(iter(glob.glob(os.path.expanduser(f'~/.claude/projects/*/{s["session"]}.jsonl'))), None)
     elif s['kind'] == 'codex' and s.get('session'):
         found = next(iter(sorted(glob.glob(os.path.expanduser(f'~/.codex/sessions/*/*/*/rollout-*-{s["session"]}.jsonl')))), None)
+    elif s['kind'] == 'cursor' and s.get('session'):  # (its sessionStart hook gives no transcript_path yet)
+        found = next(iter(glob.glob(os.path.expanduser(f'~/.cursor/projects/*/agent-transcripts/{s["session"]}/{s["session"]}.jsonl'))), None)
     if found:
         _transcripts[key] = found
     return found
@@ -565,9 +567,33 @@ def cursor_chat(pid):
     return None
 
 
+def cursor_message(d):
+    """A Cursor message, from its chat store or its transcript file, as {role, content}: a person's words without the
+    wrappers Cursor puts around them, and what Cursor itself tells the agent left out."""
+    m = d.get('message')  # (the transcript file nests it: {role, message: {content}})
+    d = {'role': d.get('role'), 'content': m.get('content') if isinstance(m, dict) else d.get('content')}
+    if d['role'] == 'user':
+        t, _ = text_of(d['content'])
+        q = re.search(r'<user_query>\s*(.*?)\s*</user_query>', t, re.S)
+        d['content'] = q.group(1) if q else ''
+    return d
+
+
+def cursor_lines(lines):
+    """A Cursor transcript file's lines (the transcript_path its hooks give) as its chat store's messages."""
+    out = []
+    for line in lines:
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(d, dict) and d.get('role'):  # (not its {"type": "turn_ended"} marks)
+            out.append(json.dumps(cursor_message(d)))
+    return out
+
+
 def cursor_messages(path):
-    """A Cursor chat's messages {role, content}, in order (its latest root lists them by id); a person's words
-    without the wrappers Cursor puts around them, and what Cursor itself tells the agent left out."""
+    """A Cursor chat's messages {role, content}, in order (its latest root lists them by id)."""
     out = []
     try:
         db = sqlite3.connect(f'file:{path}?mode=ro', uri=True)
@@ -582,12 +608,7 @@ def cursor_messages(path):
             db.close()
     except (sqlite3.Error, TypeError, ValueError, KeyError):
         return []
-    for d in out:
-        if d.get('role') == 'user':
-            t, _ = text_of(d.get('content'))
-            q = re.search(r'<user_query>\s*(.*?)\s*</user_query>', t, re.S)
-            d['content'] = q.group(1) if q else ''
-    return out
+    return [cursor_message(d) for d in out]
 
 
 _said = {}
@@ -606,18 +627,20 @@ def last_said(path, at):
 def lines_of(path, size=400000):
     if path.endswith('/store.db'):
         return [json.dumps(d) for d in cursor_messages(path)]
-    return tail_lines(path, size)
+    lines = tail_lines(path, size)
+    return cursor_lines(lines) if '/.cursor/projects/' in path else lines
 
 
 def tail_lines(path, size=400000):
     try:
         with open(path, 'rb') as f:
-            f.seek(max(0, os.path.getsize(path) - size))
+            start = max(0, os.path.getsize(path) - size)
+            f.seek(start)
             data = f.read().decode('utf-8', 'replace')
     except OSError:
         return []
     lines = data.splitlines()
-    return lines[1:] if len(lines) > 1 else lines
+    return lines[1:] if start and len(lines) > 1 else lines  # (read from mid-file, its first line is cut)
 
 
 def text_of(content):
@@ -738,6 +761,8 @@ def opening(path, budget=2500):
                 lines = f.read(600000).decode('utf-8', 'replace').splitlines()[:-1]
         except OSError:
             return []
+        if '/.cursor/projects/' in path:
+            lines = cursor_lines(lines)
     out, n = [], 0
     for who, t in items_of(lines):
         if who != '用户' or t.lstrip().startswith('<'):
@@ -1274,7 +1299,7 @@ class Talk:
 
 GENERIC = {'workspace', 'workspaces', 'projects', 'project', 'src', 'code', 'repos', 'work', 'dev', 'git'}
 USER_HOME = os.path.expanduser('~')
-TOUCH = {'Edit': 3, 'Write': 3, 'MultiEdit': 3, 'NotebookEdit': 3, 'Read': 1, 'Grep': 1, 'Glob': 1}
+TOUCH = {'Edit': 3, 'Write': 3, 'MultiEdit': 3, 'NotebookEdit': 3, 'StrReplace': 3, 'Read': 1, 'Grep': 1, 'Glob': 1}  # (Claude Code's tools, and Cursor's)
 CD = re.compile(r'(?:^|[;&|(]\s*)(?:cd|pushd)\s+("[^"]+"|\'[^\']+\'|[^\s;&|)]+)|\bgit\s+-C\s+("[^"]+"|\'[^\']+\'|[^\s;&|)]+)')
 PATCH = re.compile(r'^\*\*\* (?:Update|Add|Delete) File: (.+)$', re.M)
 
@@ -1412,8 +1437,9 @@ class Projects:
                     calls += 1
                     i = x.get('input') if isinstance(x.get('input'), dict) else {}
                     if x.get('name') in TOUCH:
-                        add(i.get('file_path') or i.get('notebook_path') or i.get('path'), TOUCH[x['name']])
-                    elif x.get('name') == 'Bash':
+                        add(i.get('file_path') or i.get('notebook_path') or i.get('path') or i.get('target_directory'), TOUCH[x['name']])
+                    elif x.get('name') in ('Bash', 'Shell'):  # (Claude Code, Cursor)
+                        add(i.get('working_directory'), 2)
                         for a, b in CD.findall(str(i.get('command') or '')):
                             add(a or b, 2)
             p = d.get('payload') if isinstance(d.get('payload'), dict) else {}

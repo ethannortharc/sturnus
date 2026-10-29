@@ -899,7 +899,7 @@ def last_said(p):
         except ValueError:
             continue
         m = d.get('message') if isinstance(d.get('message'), dict) else d.get('payload') if isinstance(d.get('payload'), dict) else d
-        if m.get('role') != 'assistant':
+        if m.get('role', d.get('role')) != 'assistant':  # (Cursor's transcript keeps the role outside its message)
             continue
         c = m.get('content')
         texts = [c] if isinstance(c, str) else [x.get('text') for x in c or [] if isinstance(x, dict) and x.get('type') in ('text', 'output_text')]
