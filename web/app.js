@@ -589,7 +589,12 @@ async function drawTerm(s) {
   ws.binaryType = 'arraybuffer';
   const enc = new TextEncoder(), send = b => ws.readyState === 1 && ws.send(b);
   ws.onmessage = e => term.write(new Uint8Array(e.data));
-  ws.onclose = () => { if (xt && xt.ws === ws) termNote('连接断开了', '它的会话还在，只是这个网页终端断了。', true); };
+  ws.onclose = e => {
+    if (!xt || xt.ws !== ws) return;
+    if (e.code !== 4001) return termNote('连接断开了', '它的会话还在，只是这个网页终端断了。', true);
+    let r = {}; try { r = JSON.parse(e.reason); } catch {}
+    termNote('没有接上，免得 Zellij 崩掉', `这个 Zellij 已经开着 ${r.held} 个文件，上限 ${r.limit}。网页终端是它的又一个客户端，要再开约 ${r.need} 个；超过上限 Zellij 会崩掉，里面的会话全部结束。先关掉一个连着它的终端再试；要多连几个，调高上限后重启 Zellij（见 README）。`, true);
+  };
   term.onData(d => send(enc.encode(d)));
   term.onBinary(d => send(Uint8Array.from(d, c => c.charCodeAt(0) & 255)));
   term.onResize(({ cols, rows }) => send(JSON.stringify({ cols, rows })));

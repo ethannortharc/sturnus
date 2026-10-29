@@ -222,6 +222,33 @@ def proc_files(pid):
     return out
 
 
+def proc_nfiles(pid):
+    """How many files a process holds open, or None."""
+    if not MAC:
+        try:
+            return len(os.listdir(f'/proc/{pid}/fd'))
+        except OSError:
+            return None
+    n = _c.proc_pidinfo(int(pid), 1, 0, None, 0)  # (PROC_PIDLISTFDS: the room first, then the struct proc_fdinfo of each)
+    if n <= 0:
+        return None
+    n = _c.proc_pidinfo(int(pid), 1, 0, ctypes.create_string_buffer(n), n)
+    return n // 8 if n > 0 else None
+
+
+def proc_nofile(pid):
+    """How many files a process may hold open (its soft limit), or None where another process's limit cannot be read
+    (macOS)."""
+    if MAC:
+        return None
+    try:
+        with open(f'/proc/{pid}/limits') as f:
+            v = next(l.split()[3] for l in f if l.startswith('Max open files'))
+        return 1 << 30 if v == 'unlimited' else int(v)
+    except (OSError, StopIteration, IndexError, ValueError):
+        return None
+
+
 # ---------- who is who ----------
 
 def claude_sessions():

@@ -227,6 +227,30 @@ def zj(session, *args, timeout=5):
     return run(['zellij', '--session', session, *args], timeout=timeout)
 
 
+def zellij_server(session):
+    for p in A.pids():
+        r = A.proc(p)
+        if r and r[0] == 'zellij':
+            a = A.proc_args(p) or []
+            if len(a) >= 3 and a[1] == '--server' and os.path.basename(a[2]) == session:
+                return p
+    return None
+
+
+def zellij_room(session):
+    """Whether a session's Zellij can take one more client, as {'ok', 'held', 'limit', 'need'} (None when its server
+    cannot be read). Each client gets its own copy of every tab's bar plugins, each holding a few files open; a server
+    out of files dies, and every pane in it with it (macOS gives one started from a terminal 256)."""
+    pid = zellij_server(session)
+    held = pid and A.proc_nfiles(pid)
+    if not held:
+        return None
+    limit = A.proc_nofile(pid) or max(256, held)  # (macOS cannot tell another process's limit: its default, then)
+    tabs = len([l for l in zj(session, 'action', 'query-tab-names').stdout.splitlines() if l.strip()]) or 1
+    need = 8 * tabs + 8  # (measured: 58 more files per client of a 7-tab session with a tab bar and a status bar)
+    return {'ok': held + need + 16 <= limit, 'held': held, 'limit': limit, 'need': need}
+
+
 def focused(session):
     """Where the session's first client stands: the one its command line moves."""
     r = zj(session, 'action', 'list-clients')
@@ -2463,6 +2487,9 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(f'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n'.encode())
         self.wfile.flush()
         self.close_connection = True
+        room = zellij_room(loc['session']) if loc['mux'] == 'zellij' else None
+        if room and not room['ok']:  # (one more client would take the server down: the page says why, from close code 4001)
+            return ws_send(self.connection, 8, struct.pack('>H', 4001) + json.dumps({k: room[k] for k in ('held', 'limit', 'need')}).encode())
         size = lambda k, d: max(10, min(1000, int((q.get(k) or [d])[0]) if str((q.get(k) or [d])[0]).isdigit() else d))
         term_bridge(self.rfile, self.connection, loc, size('cols', 120), size('rows', 36))
 

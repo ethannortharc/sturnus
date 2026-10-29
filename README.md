@@ -22,7 +22,7 @@ Get a release (`sturnus-<version>.tar.gz`) or clone the repository, then, in tha
   - with Tailscale, https://\<machine\>.\<tailnet\>.ts.net:7443 (see below).
 - `sturnus token [--rotate]` — the sign-in token. Every browser needs it once, then stays signed in for 30 days. `--rotate` makes a new token and signs every browser out.
 - `sturnus status` — the version, the service, and every address it is on.
-- `sturnus upgrade` — reinstalls from the folder it was last installed from, when that folder's VERSION is newer (so: `git pull` or unpack a newer release there, then `sturnus upgrade`). Three versions are kept.
+- `sturnus upgrade` — reinstalls from the folder it was last installed from, when that folder's VERSION is newer (in a clone: `git pull`, then `sturnus upgrade`; a newer release archive: `./sturnus install` in its folder). Three versions are kept.
 - `sturnus uninstall [--purge]` — takes all of it out again (`--purge`: its settings, caches and mail too).
 - `amail help` — the mailbox the sessions use.
 
@@ -36,6 +36,14 @@ With Tailscale, the deck is also on this machine's tailnet, for your own Tailsca
 - http://\<machine\>:7788 and http://\<100.x address\>:7788 — the deck listening on the Tailscale address itself (the traffic is WireGuard-encrypted all the same).
 
 Set `"tailnet": false` in the config to stay on 127.0.0.1. Its terminal in the page (xterm.js in `web/vendor`, MIT) is a Zellij or tmux client run by the deck in a pseudo-terminal, behind the same sign-in; a tmux one is a session grouped with the agent's, gone when the page closes.
+
+## Zellij's open files
+
+Every client of a Zellij session (each terminal attached to it, the page's terminal too) loads its own copy of each tab's tab bar and status bar, and each copy holds a few files open: about 58 more files per client for a session of 7 tabs. A Zellij server that runs out of files dies, and every pane in it ends. macOS lets a server started from a terminal or an ssh login hold 256 (Linux usually 1024), which 7 tabs reach at the fourth client.
+
+So the page does not open its terminal when that client would take the server past its limit, and says why. macOS does not tell one process another's limit, so there the deck takes it as 256 unless the server already holds more.
+
+To give Zellij more room, raise the limit in the shell it is started from, e.g. `ulimit -n 10240` in `~/.zshenv`, then start the Zellij session again: a running server keeps the limit it started with.
 
 ## Settings
 
