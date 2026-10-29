@@ -10,7 +10,7 @@ is (its Zellij session and pane), what they say to each other. Jump to one, writ
   sturnus uninstall [--purge]      take everything out again (--purge: its settings and caches too)
   sturnus status | open | serve | version
 """
-import base64, fcntl, functools, ipaddress, glob, hashlib, hmac, importlib.machinery, importlib.util, json, os, pty, re, secrets, shutil, signal, sqlite3, struct, subprocess, sys, termios, threading, time, urllib.error, urllib.request
+import base64, fcntl, functools, ipaddress, glob, hashlib, hmac, importlib.machinery, importlib.util, json, os, plistlib, pty, re, secrets, shutil, signal, socket, sqlite3, struct, subprocess, sys, termios, threading, time, urllib.error, urllib.request
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -19,7 +19,11 @@ SHARE = os.path.expanduser('~/.local/share/sturnus')
 CONF = os.path.expanduser('~/.config/sturnus/config.json')
 CACHE = os.path.expanduser('~/.cache/sturnus')
 WASM = os.path.join(SHARE, 'zellij-jump.wasm')  # (one path for every version: Zellij's grant is by path)
-UNIT = os.path.expanduser('~/.config/systemd/user/sturnus.service')
+MAC = sys.platform == 'darwin'
+LABEL = 'com.giomni.sturnus'  # (macOS: the LaunchAgent's)
+UNIT = os.path.expanduser(f'~/Library/LaunchAgents/{LABEL}.plist' if MAC else '~/.config/systemd/user/sturnus.service')
+LOG = os.path.expanduser('~/Library/Logs/sturnus.log')  # (macOS; on Linux the journal has it)
+GRANTS = os.path.expanduser('~/Library/Caches/org.Zellij-Contributors.Zellij/permissions.kdl' if MAC else '~/.cache/zellij/permissions.kdl')
 BIN = os.path.expanduser('~/.local/bin')
 VERSION = open(os.path.join(APP, 'VERSION')).read().strip()
 ME_NAME = 'user'  # (who the person is on amail when writing from this page)
@@ -69,27 +73,15 @@ def run(argv, timeout=10, **kw):
 
 # ---------- processes and Zellij ----------
 
-BOOT = next(float(l.split()[1]) for l in open('/proc/stat') if l.startswith('btime'))
-TICK = os.sysconf('SC_CLK_TCK')
-
-
 def procs():
     out = []
-    for p in os.listdir('/proc'):
-        if not p.isdigit():
+    for pid in A.pids():
+        p = A.proc(pid)
+        if not p or p[0] not in ('claude', 'codex', 'zellij', 'cursor-agent', 'agent', 'node', 'MainThread'):
             continue
-        try:
-            with open(f'/proc/{p}/comm') as f:
-                comm = f.read().strip()
-            if comm not in ('claude', 'codex', 'zellij', 'cursor-agent', 'agent', 'node', 'MainThread'):
-                continue
-            with open(f'/proc/{p}/cmdline', 'rb') as f:
-                args = [a.decode('utf-8', 'replace') for a in f.read().split(b'\0') if a]
-            with open(f'/proc/{p}/stat') as f:
-                start = BOOT + int(f.read().rsplit(')', 1)[1].split()[19]) / TICK
-            out.append({'pid': int(p), 'comm': comm, 'args': args, 'start': start})
-        except OSError:
-            continue
+        args = A.proc_args(pid)
+        if args is not None:
+            out.append({'pid': pid, 'comm': p[0], 'args': args, 'start': p[2]})
     return out
 
 
@@ -97,11 +89,7 @@ def procs():
 # {'mux': 'zellij' | 'tmux', 'session': <group>, 'pane': <id>, 'sock': <tmux server socket>}.
 
 def environ(pid):
-    try:
-        with open(f'/proc/{pid}/environ', 'rb') as f:
-            return dict(x.decode('utf-8', 'replace').split('=', 1) for x in f.read().split(b'\0') if b'=' in x)
-    except OSError:
-        return {}
+    return A.proc_env(pid)
 
 
 def place_of(pid):
@@ -136,7 +124,7 @@ class Tmux:
         return run(['tmux', '-S', sock, *args], timeout=timeout)
 
     def sockets(self):
-        default = os.path.join(os.environ.get('TMUX_TMPDIR') or '/tmp', f'tmux-{os.getuid()}', 'default')
+        default = os.path.realpath(os.path.join(os.environ.get('TMUX_TMPDIR') or '/tmp', f'tmux-{os.getuid()}', 'default'))
         return sorted(x for x in self.socks | {default} if os.path.exists(x))
 
     def names(self, sock):  # (pane -> session, read once every couple of seconds per server)
@@ -149,6 +137,7 @@ class Tmux:
     def place(self, sock, pane):
         if not sock or not pane:
             return None
+        sock = os.path.realpath(sock)  # (/tmp is /private/tmp on macOS: one server, one name)
         self.socks.add(sock)
         name = self.names(sock).get(pane)
         return name and {'mux': 'tmux', 'session': f'tmux:{name}', 'pane': pane, 'sock': sock}
@@ -206,21 +195,12 @@ TMUX = Tmux()
 
 
 def env_of(pid, key):
-    try:
-        with open(f'/proc/{pid}/environ', 'rb') as f:
-            for x in f.read().split(b'\0'):
-                if x.startswith(key.encode() + b'='):
-                    return x.split(b'=', 1)[1].decode()
-    except OSError:
-        pass
+    return A.proc_env(pid).get(key)
     return None
 
 
 def cwd_of(pid):
-    try:
-        return os.readlink(f'/proc/{pid}/cwd')
-    except OSError:
-        return None
+    return A.proc_cwd(pid)
 
 
 def zellij_clients(ps):
@@ -284,17 +264,9 @@ def kdl(s):
 
 def marked(marker):
     """The place of the process started with STURNUS_NEW=marker, once it runs."""
-    want = f'STURNUS_NEW={marker}'.encode()
-    for p in os.listdir('/proc'):
-        if not p.isdigit():
-            continue
-        try:
-            with open(f'/proc/{p}/environ', 'rb') as f:
-                env = f.read()
-        except OSError:
-            continue
-        if want in env.split(b'\0'):
-            loc = place_of(int(p))
+    for p in A.pids():
+        if A.proc_env(p).get('STURNUS_NEW') == marker:
+            loc = place_of(p)
             if loc:
                 return loc
     return None
@@ -342,34 +314,34 @@ def in_view(loc):
 
 TERMS = {'gnome-terminal-server': 'GNOME 终端', 'kgx': 'GNOME Console', 'ptyxis-agent': 'Ptyxis', 'konsole': 'Konsole', 'xterm': 'xterm',
          'alacritty': 'Alacritty', 'kitty': 'kitty', 'wezterm-gui': 'WezTerm', 'foot': 'foot', 'terminator': 'Terminator', 'tilix': 'Tilix',
-         'xfce4-terminal': 'Xfce 终端', 'mate-terminal': 'MATE 终端', 'urxvt': 'urxvt', 'st': 'st', 'ghostty': 'Ghostty'}
+         'xfce4-terminal': 'Xfce 终端', 'mate-terminal': 'MATE 终端', 'urxvt': 'urxvt', 'st': 'st', 'ghostty': 'Ghostty',
+         'Terminal': '终端', 'iTerm2': 'iTerm2', 'WezTerm': 'WezTerm', 'Alacritty': 'Alacritty', 'Warp': 'Warp'}
 
 
 def origin_of(pid):
     """How a session outside Zellij and tmux was started, in words: what stands above its process."""
     chain = A.ancestors(pid)[1:] if pid else []
     for p, comm in chain:
-        try:
-            exe = os.readlink(f'/proc/{p}/exe').lower()
-        except OSError:
-            exe = ''
+        exe = A.proc_exe(p).lower()
         if comm in ('sshd', 'sshd-session'):
             return 'ssh 登录的终端'
         if comm in TERMS or comm.startswith('gnome-terminal'):
             return f'终端窗口（{TERMS.get(comm, comm)}）'
         if comm.lower() == 'screen':
             return 'screen 会话'
-        if comm == 'code' or exe.endswith('/code'):
+        if comm == 'code' or exe.endswith('/code') or '/visual studio code.app/' in exe:
             return 'VS Code 的终端'
-        if comm == 'cursor' or (exe.endswith('/cursor') and 'cursor-agent' not in exe):
+        if comm == 'cursor' or (exe.endswith('/cursor') and 'cursor-agent' not in exe) or '/cursor.app/' in exe:
             return 'Cursor 编辑器的终端'
-        if comm == 'ChatGPT' or '/chatgpt/' in exe:
+        if comm == 'ChatGPT' or '/chatgpt/' in exe or '/chatgpt.app/' in exe:
             return 'Codex 桌面应用'
         if comm == 'cron':
             return 'cron 定时任务'
         if comm == 'systemd':
             return '后台服务（systemd）'
-    first = next((c for _, c in chain if c not in ('bash', 'zsh', 'sh', 'fish', 'dash', 'env', 'sudo', 'timeout', 'nohup', 'setsid')), None)
+        if comm == 'launchd':
+            return '后台服务（launchd）'
+    first = next((c for _, c in chain if c not in ('bash', 'zsh', 'sh', 'fish', 'dash', 'env', 'sudo', 'timeout', 'nohup', 'setsid', 'login')), None)
     return f'由 {first} 启动' if first else '来源不明'
 
 
@@ -442,11 +414,7 @@ def codex_launch_thread(start, cwd):
 
 def cursor_chat(pid):
     """The chat a Cursor window shows: the store it holds open."""
-    for fd in glob.glob(f'/proc/{pid}/fd/*'):
-        try:
-            p = os.readlink(fd)
-        except OSError:
-            continue
+    for p in A.proc_files(pid):
         if p.endswith('/store.db') and '/.cursor/chats/' in p:
             return p
     return None
@@ -1640,7 +1608,7 @@ class Deck:
         if what == 'stop':  # (a session another one started: it and the processes under it)
             if not s or not s.get('parent_id') or not s.get('pid') or s['state'] in ('gone', 'ended'):
                 return False, '只能停止由别的会话启动、还在跑的子 agent'
-            kids = [int(p) for p in os.listdir('/proc') if p.isdigit() and any(a == s['pid'] for a, _ in A.ancestors(int(p))[1:])]
+            kids = [p for p in A.pids() if any(a == s['pid'] for a, _ in A.ancestors(p)[1:])]
             for pid in [s['pid']] + kids:
                 try:
                     os.kill(pid, signal.SIGTERM)
@@ -2192,10 +2160,22 @@ class Access:
 _tailnet = {'at': 0}
 
 
+@functools.lru_cache(None)
+def tailscale():
+    """The tailscale command, as the start of an argv; None without one. On macOS the app's own (a Homebrew one can be
+    older than the app's daemon), through sh with stdin from /dev/null: run straight from a launchd job, it starts as the
+    app and fails, not as the command line."""
+    app = '/Applications/Tailscale.app/Contents/MacOS/Tailscale'
+    if MAC and os.path.exists(app):
+        return ['/bin/sh', '-c', 'exec "$0" "$@" < /dev/null', app]
+    found = shutil.which('tailscale')
+    return [found] if found else None
+
+
 def tailnet_self():
     """This machine's tailnet name and its owner's login (looked up again every few minutes), or (None, None)."""
     if time.time() - _tailnet['at'] > 300:
-        r = run(['tailscale', 'status', '--json'], timeout=5) if shutil.which('tailscale') else None
+        r = run([*tailscale(), 'status', '--json'], timeout=5) if tailscale() else None
         try:
             d = json.loads(r.stdout)
             me = d['Self']
@@ -2220,7 +2200,7 @@ def tailnet_login(ip):
         return None
     hit = _whois.get(ip)
     if not hit or time.time() - hit[0] > 300:
-        r = run(['tailscale', 'whois', '--json', ip], timeout=5)
+        r = run([*(tailscale() or ['tailscale']), 'whois', '--json', ip], timeout=5)
         try:
             d = json.loads(r.stdout)
             hit = (time.time(), d['UserProfile']['LoginName'], (d.get('Node') or {}).get('ComputedName') or (d.get('Node') or {}).get('Name', '').split('.')[0])
@@ -2234,7 +2214,28 @@ def tailnet_urls(cfg):
     name, _ = tailnet_self()
     if not cfg.get('tailnet', True) or not name:
         return ''
-    return '  ·  '.join([f'http://{name.split(".")[0]}:{cfg["port"]}'] + [f'http://{ip}:{cfg["port"]}' for ip in _tailnet.get('ips') or []])
+    https = [f'https://{name}:{cfg.get("https_port", 7443)}'] if cfg.get('https') else []
+    return '  ·  '.join(https + [f'http://{name.split(".")[0]}:{cfg["port"]}'] + [f'http://{ip}:{cfg["port"]}' for ip in _tailnet.get('ips') or []])
+
+
+def serve_https(cfg, on=True):
+    """https://<machine>.<tailnet>.ts.net:<https_port>, by tailscale serve to the deck on 127.0.0.1: Tailscale's
+    certificate is for the machine's name (an address gets none); who comes in is checked as on the address.
+    Returns the address, or why there is none."""
+    ts, port = tailscale(), int(cfg.get('https_port', 7443))
+    if not on:
+        if ts and cfg.get('https'):
+            run([*ts, 'serve', f'--https={port}', 'off'], timeout=20)
+        return ''
+    if not ts or not cfg.get('tailnet', True):
+        return ''
+    r = run([*ts, 'serve', '--bg', f'--https={port}', f'http://127.0.0.1:{cfg["port"]}'], timeout=30)
+    name, _ = tailnet_self()
+    if r.returncode != 0 or not name:
+        why = (r.stderr or r.stdout).strip()[-300:]
+        hint = '; sudo tailscale set --operator=$USER lets this user run it' if 'denied' in why.lower() else ''
+        return f'https: not set up ({why}{hint})'
+    return f'https://{name}:{port}'
 
 
 def bind_tailnet(port):
@@ -2548,7 +2549,7 @@ def serve():
     ACCESS_ = Access()
     srv = ThreadingHTTPServer((cfg['host'], int(cfg['port'])), Handler)
     print(f'sturnus {VERSION} on http://{cfg["host"]}:{cfg["port"]}', flush=True)
-    if cfg.get('tailnet', True) and shutil.which('tailscale'):
+    if cfg.get('tailnet', True) and tailscale():
         threading.Thread(target=bind_tailnet, args=(int(cfg['port']),), daemon=True).start()
     srv.serve_forever()
 
@@ -2565,7 +2566,7 @@ def save_config(patch):
 PLUGIN_GRANTS = ['ChangeApplicationState', 'ReadApplicationState', 'ReadCliPipes', 'WriteToStdin', 'StartWebServer']
 def grant_zellij():
     """Zellij asks the person before a plugin may act; the deck's plugin gets its three grants once, by its path."""
-    f = os.path.expanduser('~/.cache/zellij/permissions.kdl')
+    f = GRANTS
     os.makedirs(os.path.dirname(f), exist_ok=True)
     s = open(f).read() if os.path.exists(f) else ''
     s = re.sub(r'"' + re.escape(WASM) + r'" \{[^}]*\}\n?', '', s)
@@ -2574,7 +2575,7 @@ def grant_zellij():
 
 
 def ungrant_zellij(wasm=WASM):
-    f = os.path.expanduser('~/.cache/zellij/permissions.kdl')
+    f = GRANTS
     if os.path.exists(f):
         s = re.sub(r'"' + re.escape(wasm) + r'" \{[^}]*\}\n?', '', open(f).read())
         with open(f, 'w') as w:
@@ -2583,6 +2584,59 @@ def ungrant_zellij(wasm=WASM):
 
 def systemctl(*a):
     return run(['systemctl', '--user', *a], timeout=20)
+
+
+def write_unit(cur):
+    argv = [A.PYTHON, os.path.join(cur, 'sturnus'), 'serve']
+    os.makedirs(os.path.dirname(UNIT), exist_ok=True)
+    if MAC:
+        with open(UNIT, 'wb') as u:
+            plistlib.dump({'Label': LABEL, 'ProgramArguments': argv, 'RunAtLoad': True, 'KeepAlive': {'SuccessfulExit': False},
+                           'ThrottleInterval': 3, 'ProcessType': 'Interactive', 'StandardOutPath': LOG, 'StandardErrorPath': LOG,
+                           'EnvironmentVariables': {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'PYTHONUTF8': '1'}}, u)
+        return
+    with open(UNIT, 'w') as u:
+        u.write(f'''[Unit]
+Description=sturnus: the sessions on this machine, one page
+After=default.target
+
+[Service]
+ExecStart={' '.join(argv)}
+Restart=on-failure
+RestartSec=3
+Environment=PATH={os.environ.get("PATH", "/usr/bin:/bin")}
+
+[Install]
+WantedBy=default.target
+''')
+
+
+def service(do):
+    """The user service, systemd's on Linux and launchd's on macOS: 'start' (afresh, now and at every login), 'stop'
+    (and not at login), 'gone' (its unit file was removed), or 'state'."""
+    if not MAC:
+        if do == 'start':
+            systemctl('daemon-reload')
+            systemctl('enable', 'sturnus.service')
+            return systemctl('restart', 'sturnus.service')
+        if do == 'state':
+            r = systemctl('is-active', 'sturnus.service')
+            return r.stdout.strip() or r.stderr.strip()
+        return systemctl('daemon-reload') if do == 'gone' else systemctl('disable', '--now', 'sturnus.service')
+    job = f'gui/{os.getuid()}/{LABEL}'
+    if do == 'state':
+        m = re.search(r'^\s*state = (\S+)', run(['launchctl', 'print', job]).stdout, re.M)
+        return 'active' if m and m.group(1) == 'running' else (m.group(1) if m else 'inactive')
+    if do == 'gone':
+        return None
+    r = run(['launchctl', 'bootout', job], timeout=20)
+    if do == 'start':
+        for _ in range(20):  # (bootout returns before launchd has let go of the job)
+            r = run(['launchctl', 'bootstrap', f'gui/{os.getuid()}', UNIT], timeout=20)
+            if r.returncode == 0:
+                break
+            time.sleep(0.5)
+    return r
 
 
 FILES = ['sturnus', 'amail', 'VERSION', 'README.md', 'web', 'zellij-jump.wasm']
@@ -2601,18 +2655,18 @@ def move_into(old, new):
     shutil.rmtree(old, ignore_errors=True)
 
 
-def adopt(service=True):
+def adopt(with_service=True):
     """The first install takes over an agentdeck one (this app's name before): its settings, sign-ins, keys and caches
     move here, its service, its plugin's grant and its folder go. Run once this version's own links are in place."""
     old = {k: os.path.expanduser(v) for k, v in (('share', '~/.local/share/agentdeck'), ('conf', '~/.config/agentdeck'),
                                                  ('cache', '~/.cache/agentdeck'), ('unit', '~/.config/systemd/user/agentdeck.service'))}
     if not any(os.path.lexists(p) for p in old.values()):
         return ''
-    if service and os.path.exists(old['unit']):
+    if with_service and os.path.exists(old['unit']):
         systemctl('disable', '--now', 'agentdeck.service')  # (before this one's service takes the port)
     if os.path.exists(old['unit']):
         os.remove(old['unit'])
-        if service:
+        if with_service:
             systemctl('daemon-reload')
     move_into(old['conf'], os.path.dirname(CONF))
     move_into(old['cache'], CACHE)
@@ -2628,7 +2682,7 @@ def adopt(service=True):
     return 'took over agentdeck: its settings, sign-ins and caches moved here; its service and folder removed'
 
 
-def install(src, service=True):
+def install(src, with_service=True):
     src = os.path.realpath(src)
     ver = open(os.path.join(src, 'VERSION')).read().strip()
     dest = os.path.join(SHARE, 'versions', ver)
@@ -2659,9 +2713,10 @@ def install(src, service=True):
         if os.path.lexists(link):
             os.remove(link)
         os.symlink(os.path.join(cur, name), link)
-    took = adopt(service)
+    took = adopt(with_service)
     c = A.get(CONF, {}) or {}
-    c.setdefault('source', src)
+    if not src.startswith(os.path.realpath(SHARE) + os.sep):
+        c['source'] = src  # (where upgrade looks: the folder last installed from, never the deck's own copy)
     if not os.path.exists(CONF):
         c.update({'host': DEFAULTS['host'], 'port': DEFAULTS['port']})
     save_config(c)
@@ -2669,29 +2724,16 @@ def install(src, service=True):
     for repo in c.get('lock_repos', []):  # (the push lock's git hook, in the repos it guards)
         if os.path.isdir(os.path.expanduser(repo)):
             run([sys.executable, os.path.join(cur, 'amail'), 'install-git', os.path.expanduser(repo)])
-    if not service:
+    if not with_service:
         return '\n'.join(x for x in (f'sturnus {ver} installed (no service)', took, hooks.stdout.strip()) if x)
-    os.makedirs(os.path.dirname(UNIT), exist_ok=True)
-    with open(UNIT, 'w') as u:
-        u.write(f'''[Unit]
-Description=sturnus: the sessions on this machine, one page
-After=default.target
-
-[Service]
-ExecStart={sys.executable} {os.path.join(cur, 'sturnus')} serve
-Restart=on-failure
-RestartSec=3
-Environment=PATH={os.environ.get("PATH", "/usr/bin:/bin")}
-
-[Install]
-WantedBy=default.target
-''')
-    systemctl('daemon-reload')
-    systemctl('enable', 'sturnus.service')
-    systemctl('restart', 'sturnus.service')
+    write_unit(cur)
+    service('start')
     access_data()
+    https = serve_https(config())
+    if https.startswith('https://'):
+        save_config({'https': True})
     reach = tailnet_urls(config())
-    reach = f'\ntailnet (your own devices): {reach}' if reach else ''
+    reach = '\n'.join(x for x in (f'\ntailnet (your own devices): {reach}' if reach else '', https if not https.startswith('https://') else '') if x)
     for old in sorted(glob.glob(os.path.join(SHARE, 'versions', '*')), key=os.path.getmtime)[:-3]:  # (keep three to go back to)
         if os.path.realpath(old) != os.path.realpath(dest):
             shutil.rmtree(old, ignore_errors=True)
@@ -2700,14 +2742,15 @@ WantedBy=default.target
                                  'sign in with the token from: sturnus token', took, hooks.stdout.strip()) if x)
 
 
-def uninstall(purge, service=True):
+def uninstall(purge, with_service=True):
     out = []
-    if service:
-        systemctl('disable', '--now', 'sturnus.service')
+    if with_service:
+        service('stop')
+        serve_https(config(), on=False)
     if os.path.exists(UNIT):
         os.remove(UNIT)
-        if service:
-            systemctl('daemon-reload')
+        if with_service:
+            service('gone')
     out.append('service removed')
     amail = os.path.join(SHARE, 'current', 'amail')
     if os.path.exists(amail):
@@ -2758,13 +2801,14 @@ def main(argv):
         print(uninstall('--purge' in argv, '--no-service' not in argv))
     elif c == 'status':
         cfg = config()
-        r = systemctl('is-active', 'sturnus.service')
-        print(f'sturnus {VERSION} ({APP})\nservice: {r.stdout.strip() or r.stderr.strip()}\nhttp://{cfg["host"]}:{cfg["port"]}')
+        reach = tailnet_urls(cfg)
+        print(f'sturnus {VERSION} ({APP})\nservice: {service("state")}' + (f' (log: {LOG})' if MAC else '') +
+              f'\nhttp://{cfg["host"]}:{cfg["port"]}' + (f'\ntailnet: {reach}' if reach else ''))
     elif c == 'open':
         cfg = config()
         url = f'http://{cfg["host"]}:{cfg["port"]}'
         print(url)
-        run(['xdg-open', url])
+        run(['open' if MAC else 'xdg-open', url])
     elif c == 'token':  # (the sign-in token, for the person at this terminal; --rotate signs every browser out)
         d = access_data('--rotate' in argv)
         if '--rotate' in argv:

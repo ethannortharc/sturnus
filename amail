@@ -23,7 +23,7 @@
 Who I am: --as NAME, else $AMAIL_NAME, else the session this runs in (a Claude session's own name, codex-..., cursor-...).
 Mail lives in $AMAIL_HOME (default /tmp/amail-<uid>: writable from Codex's and Cursor's sandboxes).
 """
-import hashlib, json, os, re, shutil, sqlite3, subprocess, sys, time, uuid
+import hashlib, json, os, re, shutil, sqlite3, struct, subprocess, sys, time, uuid
 
 HOME = os.environ.get('AMAIL_HOME') or f'/tmp/amail-{os.getuid()}'
 CLAUDE_SESSIONS = os.path.expanduser('~/.claude/sessions')
@@ -69,14 +69,156 @@ def ancestors(pid=None):
     pid = pid or os.getppid()
     out = []
     while pid and pid > 1 and len(out) < 30:
+        p = proc(pid)
+        if not p:
+            break
+        out.append((pid, p[0]))
+        pid = p[1]
+    return out
+
+
+# ---------- processes: /proc on Linux; libproc and sysctl on macOS (where one's own processes are readable) ----------
+
+MAC = sys.platform == 'darwin'
+if MAC:
+    import ctypes
+    _c = ctypes.CDLL('/usr/lib/libSystem.B.dylib')
+    _c.proc_listallpids.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    _c.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+    _c.proc_pidfdinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+    _c.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+    _c.sysctl.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_uint, ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p, ctypes.c_size_t]
+    _ARGMAX = []
+else:
+    BOOT = next(float(l.split()[1]) for l in open('/proc/stat') if l.startswith('btime'))
+    TICK = os.sysconf('SC_CLK_TCK')
+# (what hooks and the service run: macOS's /usr/bin/python3 reports the Xcode copy behind it, which moves with Xcode)
+PYTHON = '/usr/bin/python3' if MAC and sys.executable.startswith(('/Applications/Xcode', '/Library/Developer/')) else sys.executable
+
+
+def pids():
+    if not MAC:
+        return [int(p) for p in os.listdir('/proc') if p.isdigit()]
+    n = _c.proc_listallpids(None, 0)
+    buf = (ctypes.c_int * (max(n, 0) + 256))()
+    n = _c.proc_listallpids(buf, ctypes.sizeof(buf))
+    return [p for p in buf[:max(n, 0)] if p > 0]
+
+
+def proc(pid):
+    """(command name, parent pid, start time) of a process, or None."""
+    if not MAC:
         try:
             with open(f'/proc/{pid}/stat') as f:
                 s = f.read()
-            name, ppid = s[s.index('(') + 1:s.rindex(')')], int(s[s.rindex(')') + 2:].split()[1])
-        except (OSError, ValueError):
+            r = s[s.rindex(')') + 2:].split()
+            return s[s.index('(') + 1:s.rindex(')')], int(r[1]), BOOT + int(r[19]) / TICK
+        except (OSError, ValueError, IndexError):
+            return None
+    b = ctypes.create_string_buffer(136)  # (struct proc_bsdinfo)
+    if _c.proc_pidinfo(int(pid), 3, 0, b, 136) != 136:  # (PROC_PIDTBSDINFO)
+        return None
+    name = (b.raw[64:96].split(b'\0')[0] or b.raw[48:64].split(b'\0')[0]).decode('utf-8', 'replace')  # (pbi_name, else pbi_comm)
+    if re.fullmatch(r'[\d.]+', name):  # (Claude Code runs from a file named by its version: the name it was started by)
+        name = os.path.basename((_procargs(pid)[0] or [name])[0])
+    sec, usec = struct.unpack_from('QQ', b.raw, 120)
+    return name, struct.unpack_from('I', b.raw, 16)[0], sec + usec / 1e6
+
+
+def _procargs(pid):
+    """macOS: a process's (arguments, environment), from KERN_PROCARGS2: argc, the executable's path, padding, the
+    arguments, the environment, then an empty string."""
+    if not _ARGMAX:
+        v, n = ctypes.c_int(0), ctypes.c_size_t(4)
+        _c.sysctl((ctypes.c_int * 2)(1, 8), 2, ctypes.byref(v), ctypes.byref(n), None, 0)  # (KERN_ARGMAX)
+        _ARGMAX.append(v.value or 1 << 20)
+    b, n = ctypes.create_string_buffer(_ARGMAX[0]), ctypes.c_size_t(_ARGMAX[0])
+    if _c.sysctl((ctypes.c_int * 3)(1, 49, int(pid)), 3, b, ctypes.byref(n), None, 0) != 0 or n.value < 4:
+        return None, {}
+    raw = b.raw[:n.value]
+    parts, i = raw[4:].split(b'\0'), 1
+    while i < len(parts) and not parts[i]:
+        i += 1
+    argc = struct.unpack_from('i', raw)[0]
+    env = {}
+    for x in parts[i + argc:]:
+        if not x:
             break
-        out.append((pid, name))
-        pid = ppid
+        k, eq, v = x.decode('utf-8', 'replace').partition('=')
+        if eq:
+            env[k] = v
+    return [x.decode('utf-8', 'replace') for x in parts[i:i + argc] if x], env
+
+
+def proc_args(pid):
+    """A process's command line, or None when it cannot be read."""
+    if MAC:
+        return _procargs(pid)[0]
+    try:
+        with open(f'/proc/{pid}/cmdline', 'rb') as f:
+            return [a.decode('utf-8', 'replace') for a in f.read().split(b'\0') if a]
+    except OSError:
+        return None
+
+
+def proc_env(pid):
+    """A process's environment as it started ({} when it cannot be read)."""
+    if MAC:
+        return _procargs(pid)[1]
+    try:
+        with open(f'/proc/{pid}/environ', 'rb') as f:
+            return dict(x.decode('utf-8', 'replace').split('=', 1) for x in f.read().split(b'\0') if b'=' in x)
+    except OSError:
+        return {}
+
+
+def proc_cwd(pid):
+    if not MAC:
+        try:
+            return os.readlink(f'/proc/{pid}/cwd')
+        except OSError:
+            return None
+    b = ctypes.create_string_buffer(2352)  # (struct proc_vnodepathinfo: its pvi_cdir's path)
+    if _c.proc_pidinfo(int(pid), 9, 0, b, 2352) != 2352:  # (PROC_PIDVNODEPATHINFO)
+        return None
+    return b.raw[152:1176].split(b'\0')[0].decode('utf-8', 'replace') or None
+
+
+def proc_exe(pid):
+    if not MAC:
+        try:
+            return os.readlink(f'/proc/{pid}/exe')
+        except OSError:
+            return ''
+    b = ctypes.create_string_buffer(4096)
+    n = _c.proc_pidpath(int(pid), b, 4096)
+    return b.raw[:n].decode('utf-8', 'replace') if n > 0 else ''
+
+
+def proc_files(pid):
+    """The paths of the files a process holds open."""
+    out = []
+    if not MAC:
+        try:
+            fds = os.listdir(f'/proc/{pid}/fd')
+        except OSError:
+            return out
+        for fd in fds:
+            try:
+                out.append(os.readlink(f'/proc/{pid}/fd/{fd}'))
+            except OSError:
+                pass
+        return out
+    n = _c.proc_pidinfo(int(pid), 1, 0, None, 0)  # (PROC_PIDLISTFDS, first for the room it needs)
+    if n <= 0:
+        return out
+    b = ctypes.create_string_buffer(n)
+    n = _c.proc_pidinfo(int(pid), 1, 0, b, n)
+    v = ctypes.create_string_buffer(1200)  # (struct vnode_fdinfowithpath: its pvip's path)
+    for at in range(0, max(n, 0) - 7, 8):
+        fd, kind = struct.unpack_from('iI', b.raw, at)
+        if kind == 1 and _c.proc_pidfdinfo(int(pid), fd, 2, v, 1200) == 1200:  # (a vnode, PROC_PIDFDVNODEPATHINFO)
+            out.append(v.raw[176:1200].split(b'\0')[0].decode('utf-8', 'replace'))
     return out
 
 
@@ -370,10 +512,8 @@ def parent_of(pid, me):
 
 
 def is_agent(pid, comm):
-    try:
-        with open(f'/proc/{pid}/cmdline', 'rb') as f:
-            args = [x.decode('utf-8', 'replace') for x in f.read().split(b'\0') if x]
-    except OSError:
+    args = proc_args(pid)
+    if args is None:
         return False
     return comm in ('claude', 'codex') and not any('app-server' in x for x in args) or (
         bool(args) and args[0].endswith(('/agent', 'cursor-agent')) and 'worker' not in args)
@@ -624,7 +764,7 @@ def prepush():
 # ---------- installing ----------
 
 def cmd(kind):
-    return f'{sys.executable} {STABLE} hook {kind}'
+    return f'{PYTHON} {STABLE} hook {kind}'
 
 
 def install():
@@ -822,7 +962,7 @@ def install_git(repo):
         sys.exit(f'amail: {repo} uses core.hooksPath={hooks_path}; add "amail prepush" to its pre-push yourself')
     os.makedirs(os.path.dirname(f), exist_ok=True)
     with open(f, 'w') as h:
-        h.write(GIT_HOOK.format(me=STABLE, py=sys.executable))
+        h.write(GIT_HOOK.format(me=STABLE, py=PYTHON))
     os.chmod(f, 0o755)
     return f'installed {f}'
 

@@ -1,2 +1,4 @@
 zellij-jump/target/
 __pycache__/
+.claude/
+dist/
