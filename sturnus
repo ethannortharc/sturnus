@@ -1812,7 +1812,7 @@ class Deck:
             names = sorted(f for f in os.listdir(os.path.join(d, 'posts')) if f.endswith('.json')) if mt('posts') else []
             after = [f for f in names if post_at(f) > seen]
             new = [p for p in (A.get(os.path.join(d, 'posts', f)) for f in after[-500:]) if A.good_post(p) and p.get('from') != ME_NAME]
-            last = names and A.get(os.path.join(d, 'posts', names[-1]))
+            last = A.get(os.path.join(d, 'posts', names[-1])) if names else None  # (not `names and …`: an empty channel would send [] and break the page)
             v = {'key': k, 'name': meta.get('name') or k, 'kind': meta.get('kind') or 'project', 'path': meta.get('path'),
                  'unread': len(new) + max(0, len(after) - 500), 'calls': sum(A.calls(p, ME_NAME) for p in new),
                  'last': last and {'from': last.get('from'), 'kind': last.get('kind'), 'text': (last.get('text') or '')[:240], 'at': last.get('at'), 'topic': last.get('topic')},
