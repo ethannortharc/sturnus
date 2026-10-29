@@ -48,9 +48,7 @@ code { font: 12px var(--font-mono); background: var(--panel-2); border: 1px soli
 /* ---------- bar ---------- */
 .bar { display: flex; align-items: center; gap: 18px; padding: 0 20px 0 22px; border-bottom: 1px solid var(--hair); background: color-mix(in srgb, var(--panel) 70%, transparent); backdrop-filter: saturate(1.4) blur(18px); }
 .brand { display: flex; align-items: center; gap: 11px; }
-.logo { width: 26px; height: 26px; border-radius: 8px; padding: 6px; display: flex; flex-direction: column; justify-content: space-between; background: linear-gradient(145deg, #3b3b3f, #151517); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .16), 0 3px 10px -4px rgba(0, 0, 0, .45); }
-.logo i { display: block; height: 2.6px; border-radius: 2px; background: #fff; }
-.logo i:nth-child(2) { width: 68%; opacity: .78; } .logo i:nth-child(3) { width: 86%; opacity: .55; }
+.logo { width: 26px; height: 26px; border-radius: 8px; display: block; flex: none; box-shadow: 0 3px 10px -4px rgba(0, 0, 0, .45); }
 .word { font-weight: 650; font-size: 15px; letter-spacing: -.015em; }
 .crumbs { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); min-width: 0; }
 .crumbs b { color: var(--ink); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

@@ -2138,9 +2138,9 @@ def codex_set_name(thread, name):
 
 DECK = None
 TYPES = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml',
-         '.woff2': 'font/woff2'}
+         '.png': 'image/png', '.woff2': 'font/woff2'}
 STATIC = re.compile(r'^((fonts|vendor)/)?[A-Za-z0-9][A-Za-z0-9._-]*$')
-OPEN = re.compile(r'^/(fonts/[A-Za-z0-9._-]+|login\.html|style\.css)$')  # (what the sign-in page itself needs)
+OPEN = re.compile(r'^/(fonts/[A-Za-z0-9._-]+|login\.html|style\.css|icon\.svg|icon-180\.png)$')  # (what the sign-in page itself needs)
 
 
 # ---------- access: a login token, then a session cookie per browser ----------
