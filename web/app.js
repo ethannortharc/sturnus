@@ -112,6 +112,7 @@ const I = {
   auto: '<svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="6.5"/><path d="M10 3.5v13a6.5 6.5 0 0 0 0-13z" fill="currentColor" stroke="none"/></svg>',
   grid: '<svg viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="4.6" height="4.6" rx="1.2"/><rect x="8.9" y="2.5" width="4.6" height="4.6" rx="1.2"/><rect x="2.5" y="8.9" width="4.6" height="4.6" rx="1.2"/><rect x="8.9" y="8.9" width="4.6" height="4.6" rx="1.2"/></svg>',
   list: '<svg viewBox="0 0 16 16"><path d="M3 4.5h10M3 8h10M3 11.5h6"/></svg>',
+  panel: '<svg viewBox="0 0 16 16"><rect x="2" y="2.8" width="12" height="10.4" rx="2"/><path d="M6.3 2.8v10.4"/></svg>',
   chat: '<svg viewBox="0 0 16 16"><path d="M3.2 3.2h9.6a1.2 1.2 0 0 1 1.2 1.2v5.8a1.2 1.2 0 0 1-1.2 1.2H7.4L4.2 13.8v-2.4h-1A1.2 1.2 0 0 1 2 10.2V4.4a1.2 1.2 0 0 1 1.2-1.2z"/></svg>',
   branch: '<svg viewBox="0 0 16 16"><circle cx="4.5" cy="3.6" r="1.6"/><circle cx="4.5" cy="12.4" r="1.6"/><circle cx="11.5" cy="5.6" r="1.6"/><path d="M4.5 5.2v5.6M11.5 7.2c0 2.7-3.2 2.4-6.3 3.8"/></svg>',
 };
@@ -365,12 +366,20 @@ function space() {
   }
   return { t: 'home' };
 }
-const wsTone = w => tone(w.name + '/' + w.key);
 const wsNeed = w => S.sessions.filter(s => s.workspace === w.key && attention(s)).length;
 const wsWorking = w => S.sessions.some(s => s.workspace === w.key && s.state === 'working');
 function railWs() {  // (the workspaces on the rail, in order)
   const sp = space(), seen = store.get('deck.wsSeen', []), ws = S.workspaces || [];
   return ws.filter(w => w.live || wsNeed(w) || (sp.t === 'ws' && sp.key === w.key) || seen.includes(w.key));
+}
+let sideOff = store.get('deck.sideOff', false);
+function setSide(off) {
+  sideOff = off;
+  store.set('deck.sideOff', off);
+  document.querySelector('.shell').classList.toggle('side-off', off);
+  delete sig.railnav;
+  drawRail();
+  fitTerm();
 }
 function drawRail() {
   const sp = space(), ws = S.workspaces || [], on = railWs(), rest = ws.length - on.length;
@@ -382,17 +391,18 @@ function drawRail() {
     const w = wsOf(sp.key), seen = store.get('deck.wsSeen', []);
     if (w && !w.live && !seen.includes(w.key)) store.set('deck.wsSeen', [w.key, ...seen].slice(0, 3));
   }
-  draw('railnav', [sp, on.map(w => [w.key, w.name, wsNeed(w), wsWorking(w)]), rest, loose, need, bNew, bCalls, today, qReady], () => {
+  draw('railnav', [sideOff, sp, on.map(w => [w.key, w.name, wsNeed(w), wsWorking(w)]), rest, loose, need, bNew, bCalls, today, qReady], () => {
     const g = (href, on, icon, label, n, hot) => `<a class="tile g${on ? ' on' : ''}" href="${href}" title="${label}" aria-label="${label}">${icon}${n ? `<span class="badge${hot ? ' hot' : ''}">${n}</span>` : ''}</a>`;
     $('#rail').innerHTML = g('#/', sp.t === 'home', I.grid, '总览：所有工作区', need, true) + '<hr>'
-      + on.map((w, i) => `<a class="tile ws${sp.t === 'ws' && sp.key === w.key ? ' on' : ''}${w.live ? '' : ' quiet'}" href="#/w/${encodeURIComponent(w.key)}" style="--t:${wsTone(w)}" title="${esc(w.name)} · ${esc(home(w.path))}${i < 9 ? ` （⌘${i + 1}）` : ''}" aria-label="${esc(w.name)}">${esc(w.name.slice(0, 1).toUpperCase())}${wsNeed(w) ? `<span class="badge hot">${wsNeed(w)}</span>` : wsWorking(w) ? '<i class="pulse"></i>' : ''}</a>`).join('')
+      + on.map((w, i) => `<a class="tile ws${sp.t === 'ws' && sp.key === w.key ? ' on' : ''}${w.live ? '' : ' quiet'}" href="#/w/${encodeURIComponent(w.key)}" title="${esc(w.name)} · ${esc(home(w.path))}${i < 9 ? ` （⌘${i + 1}）` : ''}" aria-label="${esc(w.name)}">${esc(w.name.slice(0, 1).toUpperCase())}${wsNeed(w) ? `<span class="badge hot">${wsNeed(w)}</span>` : wsWorking(w) ? '<i class="pulse"></i>' : ''}</a>`).join('')
       + (rest > 0 ? g('#/workspaces', sp.t === 'workspaces', `<b>+${rest}</b>`, `所有工作区（还有 ${rest} 个安静的）`) : g('#/workspaces', sp.t === 'workspaces', I.plus, '所有工作区'))
       + (loose ? `<a class="tile g${sp.t === 'ws' && sp.key === '~' ? ' on' : ''}" href="#/w/~" title="不在工作区里的会话" aria-label="不在工作区里"><b>…</b><span class="badge">${loose}</span></a>` : '')
       + '<span class="push"></span>'
       + g('#/boards', sp.t === 'boards', I.chat, '讨论：所有讨论区', bCalls || bNew, bCalls > 0)
       + g('#/talk', sp.t === 'talk', I.mail, '消息：会话之间的信', today)
       + g('#/reports', sp.t === 'reports', I.doc, '报告：每个会话的简报', '')
-      + g('#/queue', sp.t === 'queue', I.list, '排队：等会话空了再发', qReady, true);
+      + g('#/queue', sp.t === 'queue', I.list, '排队：等会话空了再发', qReady, true)
+      + `<button class="tile g fold${sideOff ? ' off' : ''}" data-side-toggle title="${sideOff ? '展开' : '收起'}旁边那栏（⌘B）" aria-label="${sideOff ? '展开' : '收起'}旁边那栏">${I.panel}</button>`;
   });
 }
 function drawSide() {
@@ -454,7 +464,7 @@ function drawSide() {
 function wsListHtml() {
   const f = (sig.wsFilter || '').toLowerCase(), ws = (S.workspaces || []).filter(w => !f || (w.name + ' ' + w.path).toLowerCase().includes(f));
   return [['有会话', ws.filter(w => w.live)], ['安静', ws.filter(w => !w.live)]].filter(([, l]) => l.length).map(([t, l]) => `<div class="side-gh"><span>${t} · ${l.length}</span></div>`
-    + l.map(w => `<a class="nav-item" href="#/w/${encodeURIComponent(w.key)}"><span class="wsdot" style="--t:${wsTone(w)}">${esc(w.name.slice(0, 1).toUpperCase())}</span>${esc(w.name)}<span class="n">${w.live ? w.live + ' 个会话' : w.at ? ago(w.at) + '前' : ''}</span></a>`).join('')).join('')
+    + l.map(w => `<a class="nav-item" href="#/w/${encodeURIComponent(w.key)}"><span class="wsdot">${esc(w.name.slice(0, 1).toUpperCase())}</span>${esc(w.name)}<span class="n">${w.live ? w.live + ' 个会话' : w.at ? ago(w.at) + '前' : ''}</span></a>`).join('')).join('')
     || '<div class="side-empty">没有这个名字的工作区</div>';
 }
 
@@ -516,7 +526,7 @@ function drawTodoProjects(keys) {
 function wsCard(w) {
   const mine = roots(S.sessions).filter(s => s.workspace === w.key && live(s)), c = k => mine.filter(s => standing(s)[0] === k).length, need = wsNeed(w), b = boardOf(w.key);
   const works = workRows(w).length;
-  return `<a class="ws-card${w.live ? '' : ' quiet'}" href="#/w/${encodeURIComponent(w.key)}"><div class="top"><span class="wsdot lg" style="--t:${wsTone(w)}">${esc(w.name.slice(0, 1).toUpperCase())}</span><div><b>${esc(w.name)}</b><span class="path">${esc(home(w.path))}</span></div>${need ? `<span class="n hot">${need}</span>` : ''}</div>
+  return `<a class="ws-card${w.live ? '' : ' quiet'}" href="#/w/${encodeURIComponent(w.key)}"><div class="top"><span class="wsdot lg">${esc(w.name.slice(0, 1).toUpperCase())}</span><div><b>${esc(w.name)}</b><span class="path">${esc(home(w.path))}</span></div>${need ? `<span class="n hot">${need}</span>` : ''}</div>
     <div class="stats">${w.live ? [['waiting', '等你', c('waiting') + c('blocked') + c('review')], ['working', '工作中', c('working')], ['idle', '空闲', c('idle')]].filter(x => x[2]).map(([k, l, v]) => `<span class="chip"><span class="dot ${k}"></span><b>${v}</b>${l}</span>`).join('') : `<span class="chip">${w.at ? ago(w.at) + '前动过' : '安静'}</span>`}
       <span class="chip"><b>${w.projects.length}</b>个项目</span>${works ? `<span class="chip"><b>${works}</b>个工作项在进行</span>` : ''}${b && b.unread ? `<span class="chip">${I.chat}<b>${b.unread}</b>条新讨论</span>` : ''}</div></a>`;
 }
@@ -595,7 +605,7 @@ function renderWs() {
   const mine = roots(S.sessions).filter(s => s.workspace === w.key), on = mine.filter(live), c = k => on.filter(s => standing(s)[0] === k).length, b = boardOf(w.key);
   $('#crumbs').innerHTML = `${I.chev}<a href="#/w/${encodeURIComponent(w.key)}">${esc(w.name)}</a>${route.tab !== 'dash' ? `${I.chev}<b>${route.tab === 'projects' ? '项目' : '工作项'}</b>` : `${I.chev}<b>仪表盘</b>`}`;
   draw('wshead', [w.key, w.name, w.path, w.projects.length, c('working'), c('waiting') + c('blocked'), c('review'), c('idle'), b && b.unread], () => {
-    $('#wsHead').innerHTML = `<span class="wsdot xl" style="--t:${wsTone(w)}">${esc(w.name.slice(0, 1).toUpperCase())}</span><div class="t"><h2>${esc(w.name)}<em>工作区</em></h2>
+    $('#wsHead').innerHTML = `<span class="wsdot xl">${esc(w.name.slice(0, 1).toUpperCase())}</span><div class="t"><h2>${esc(w.name)}<em>工作区</em></h2>
         <div class="sub"><span class="nm">${esc(home(w.path))}</span><span>${w.projects.length} 个项目</span><span>${workRows(w).length} 个工作项在进行</span></div></div>
       <div class="right"><span class="legend">${[['waiting', '等你', c('waiting') + c('blocked') + c('review')], ['working', '工作中', c('working')], ['idle', '空闲', c('idle')]]
         .map(([k, l, v]) => `<span class="chip"><span class="dot ${k}"></span><b>${v}</b>${l}</span>`).join('')}</span>
@@ -1150,7 +1160,7 @@ function drawPalette() {
   const items = palAll();
   palIndex = Math.min(palIndex, Math.max(0, items.length - 1));
   $('#paletteList').innerHTML = items.length ? items.map((s, i) => s.href ? `
-    <div class="p-row${i === palIndex ? ' on' : ''}" data-pal="${i}">${s.ws ? `<span class="wsdot lg" style="--t:${wsTone(s.ws)}">${esc(s.label.slice(0, 1).toUpperCase())}</span>` : `<span class="mark sm pj">${I.folder}</span>`}
+    <div class="p-row${i === palIndex ? ' on' : ''}" data-pal="${i}">${s.ws ? `<span class="wsdot lg">${esc(s.label.slice(0, 1).toUpperCase())}</span>` : `<span class="mark sm pj">${I.folder}</span>`}
       <div class="t"><b>${esc(s.label)}</b><div>${esc(s.sub)}</div></div><span class="loc"></span></div>` : `
     <div class="p-row${i === palIndex ? ' on' : ''}" data-pal="${i}">${mark(s.kind, standing(s)[0], 'sm')}
       <div class="t"><b>${esc(titleOf(s))}</b><div>${esc(s.name)} · ${esc(s.summary || standing(s)[1])}</div></div>
@@ -1401,6 +1411,7 @@ document.addEventListener('click', async e => {
   let el;
   if (q('[data-close]')) { closeOverlays(); return; }
   if ((el = q('[data-new]'))) { e.stopPropagation(); openNew(el.dataset.new); return; }
+  if (q('[data-side-toggle]')) { setSide(!sideOff); return; }
   if ((el = q('[data-newp-ws]'))) { const w = wsOf(el.dataset.newpWs); if (w) openNew(w.groups[0] || '', { cwd: home(w.path) }); return; }
   if ((el = q('[data-works-all]'))) { sig.worksAll = el.dataset.worksAll; delete sig.wsbody; render(); return; }
   if ((el = q('tr[data-href]')) && !q('a, [data-go]')) { location.hash = el.dataset.href; return; }
@@ -1519,6 +1530,7 @@ document.addEventListener('keydown', e => {
   if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && document.activeElement.id === 'rText') { const b = document.querySelector('[data-act="say"]:not([disabled])'); if (b) b.click(); return; }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openPalette(); return; }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'j') { e.preventDefault(); asstToggle(); return; }
+  if (!typing && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') { e.preventDefault(); setSide(!sideOff); return; }
   if (!typing && (e.metaKey || e.ctrlKey) && /^[1-9]$/.test(e.key) && S) { const w = railWs()[+e.key - 1]; if (w) { e.preventDefault(); location.hash = `#/w/${encodeURIComponent(w.key)}`; } return; }
   if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === '/') { e.preventDefault(); openPalette(); }
@@ -1527,6 +1539,12 @@ document.addEventListener('keydown', e => {
 
 route = parseRoute();
 applyTheme();
+document.querySelector('.shell').classList.toggle('side-off', sideOff);
+// (a session's or project's head stays at the top while its page scrolls, folded to one line)
+document.addEventListener('scroll', e => {
+  const h = e.target && e.target.id === 'sess' && $('#hero');
+  if (h) { if (e.target.scrollTop > 60) h.classList.add('compact'); else if (e.target.scrollTop < 8) h.classList.remove('compact'); }  // (two thresholds: folding changes the height)
+}, true);
 build();
 load().then(() => asstToggle(ASST.open));
 setInterval(load, 2000);
