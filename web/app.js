@@ -369,7 +369,7 @@ function space() {
 // (a workspace's own color, muted, by its key; shown only in the 暗彩 and 色条 looks)
 const MUTED = ['#5d6b85', '#6b6a4a', '#7a6650', '#6c5f84', '#4f7569', '#86604f', '#7b5566', '#5a6f80', '#5f7550', '#80704a'];
 const wsColor = w => { let h = 0; for (const c of String(w.key)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return MUTED[h % MUTED.length]; };
-const WSC = { graphite: '石墨', muted: '暗彩', stripe: '石墨 + 色条' };
+const WSC = { graphite: '石墨', muted: '暗彩', stripe: '石墨加色条' };
 function applyWsColor() { const v = store.get('deck.wsColor', 'graphite'); document.documentElement.dataset.wsColor = WSC[v] ? v : 'graphite'; }
 const wsNeed = w => S.sessions.filter(s => s.workspace === w.key && attention(s)).length;
 const wsWorking = w => S.sessions.some(s => s.workspace === w.key && s.state === 'working');
@@ -1287,7 +1287,9 @@ function drawSettings() {
       ${S.summarizer && S.summarizer.error ? `<div class="code">最近一次总结出错：${esc(S.summarizer.error)}</div>` : ''}`,
     look: `<h3>显示</h3><p class="lead">这台机器上的显示偏好。</p>
       <div class="opt"><div><h4>主题</h4><p>跟随系统，或固定浅色、深色。</p></div><div class="seg">${[['auto', '跟随系统'], ['light', '浅色'], ['dark', '深色']].map(([k, l]) => `<button data-theme-set="${k}" class="${t === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
-      <div class="opt"><div><h4>工作区图标</h4><p>最左边那条栏里工作区的颜色：都用石墨色、每个工作区一种低饱和的颜色，或者石墨色加一道它的颜色。</p></div><div class="seg">${Object.entries(WSC).map(([k, l]) => `<button data-wscolor="${k}" class="${store.get('deck.wsColor', 'graphite') === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+      <div class="opt col"><div><h4>工作区图标</h4><p>最左边那条栏里工作区的颜色。</p></div>
+        <div class="wsc-pick">${Object.entries(WSC).map(([k, l]) => `<button class="wsc-card${store.get('deck.wsColor', 'graphite') === k ? ' on' : ''}" data-wscolor="${k}" aria-pressed="${store.get('deck.wsColor', 'graphite') === k}">
+          <span class="wsc-prev" data-look="${k}">${[['S', 0], ['N', 1], ['D', 3]].map(([c, i]) => `<i style="--t:${MUTED[i]}">${c}</i>`).join('')}</span><b>${l}</b></button>`).join('')}</div></div>
       <div class="opt"><div><h4>窗格标题</h4><p>用「状态 · 会话名 · 在做的事」做每个 agent 窗格的标题，在 Zellij 或 tmux 里一眼认出是哪个（tmux 要开 pane-border-status 才看得到）。</p></div><label class="switch"><input type="checkbox" id="paneTitles" ${S.pane_titles ? 'checked' : ''}></label></div>`,
     voice: voicePane(),
     access: `<h3>访问</h3><div id="accessBody"></div>`,
