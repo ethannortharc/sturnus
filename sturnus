@@ -1841,9 +1841,14 @@ class Deck:
                 cwd = proj['path']
             new = {'kind': new.get('kind') if new.get('kind') in ('claude', 'codex', 'cursor') else 'claude', 'cwd': cwd,
                    'name': new.get('name') if NAME.fullmatch(str(new.get('name') or '')) else '', 'why': str(new.get('why') or '')[:200],
-                   'group': group or ((to or {}).get('loc') or {}).get('session') or next(iter(self.state['groups']), '')}
+                   'group': group or ((to or {}).get('loc') or {}).get('session') or self.ws_group(proj) or next(iter(self.state['groups']), '')}
         return True, {'to': to and {'name': to['name'], 'id': to['id'], 'title': to.get('title') or '', 'group': (to.get('loc') or {}).get('session')},
                       'why': str(r.get('why') or '')[:200], 'new': new}
+
+    def ws_group(self, proj):
+        """Where a project's new session goes: the group most of its workspace's sessions are in."""
+        w = proj and next((w for w in self.state.get('workspaces') or [] if w['key'] == A.key_of('w', proj['workspace'])), None)
+        return w and (w['groups'] or [None])[0]
 
     def notify(self, to, text, kind='question'):
         """Mail from the deck itself, and the reader woken if it is idle."""
