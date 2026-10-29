@@ -1382,7 +1382,8 @@ class Projects:
         A.put(self.mfile, self.manual)
 
     def workspace_paths(self):
-        return [w for w in dict.fromkeys(self.configured() + [p['workspace'] for p in list(self.known.values())] + list(self.wpaths.values())) if w]
+        return [w for w in dict.fromkeys(self.configured() + [p['workspace'] for p in list(self.known.values())] + list(self.wpaths.values())
+                                         + sorted(w for w in self.ever if os.path.isdir(w))) if w]  # (and, after a restart, the remembered ones)
 
     def channel(self, p):
         """A project as amail's channel (its key is the project's)."""

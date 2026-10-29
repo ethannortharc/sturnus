@@ -357,6 +357,12 @@ function space() {
   if (r.name === 'session') { const s = S.sessions.find(x => x.id === r.id); return s ? { t: 'ws', key: s.workspace || '~' } : { t: 'home' }; }
   if (r.name === 'board') return wsOf(r.key) ? { t: 'ws', key: r.key, page: 'board' } : { t: 'boards' };
   if (['boards', 'talk', 'reports', 'queue', 'workspaces'].includes(r.name)) return { t: r.name };
+  if (r.name === 'gterm') {  // (a group's terminal: in the workspace most of its sessions are in)
+    const n = {};
+    for (const s of S.sessions) if (s.loc && s.loc.session === r.group && s.workspace) n[s.workspace] = (n[s.workspace] || 0) + 1;
+    const k = Object.keys(n).sort((a, b) => n[b] - n[a])[0];
+    return k ? { t: 'ws', key: k, page: 'term' } : { t: 'home' };
+  }
   return { t: 'home' };
 }
 const wsTone = w => tone(w.name + '/' + w.key);
@@ -376,7 +382,7 @@ function drawRail() {
     const w = wsOf(sp.key), seen = store.get('deck.wsSeen', []);
     if (w && !w.live && !seen.includes(w.key)) store.set('deck.wsSeen', [w.key, ...seen].slice(0, 3));
   }
-  draw('rail', [sp, on.map(w => [w.key, w.name, wsNeed(w), wsWorking(w)]), rest, loose, need, bNew, bCalls, today, qReady], () => {
+  draw('railnav', [sp, on.map(w => [w.key, w.name, wsNeed(w), wsWorking(w)]), rest, loose, need, bNew, bCalls, today, qReady], () => {
     const g = (href, on, icon, label, n, hot) => `<a class="tile g${on ? ' on' : ''}" href="${href}" title="${label}" aria-label="${label}">${icon}${n ? `<span class="badge${hot ? ' hot' : ''}">${n}</span>` : ''}</a>`;
     $('#rail').innerHTML = g('#/', sp.t === 'home', I.grid, '总览：所有工作区', need, true) + '<hr>'
       + on.map((w, i) => `<a class="tile ws${sp.t === 'ws' && sp.key === w.key ? ' on' : ''}${w.live ? '' : ' quiet'}" href="#/w/${encodeURIComponent(w.key)}" style="--t:${wsTone(w)}" title="${esc(w.name)} · ${esc(home(w.path))}${i < 9 ? ` （⌘${i + 1}）` : ''}" aria-label="${esc(w.name)}">${esc(w.name.slice(0, 1).toUpperCase())}${wsNeed(w) ? `<span class="badge hot">${wsNeed(w)}</span>` : wsWorking(w) ? '<i class="pulse"></i>' : ''}</a>`).join('')
@@ -392,7 +398,8 @@ function drawRail() {
 function drawSide() {
   const sp = space(), cur = route.name === 'session' ? S.sessions.find(x => x.id === route.id) : null, tops = roots(S.sessions);
   draw('side', [sp, route, S.sessions.map(s => [s.id, s.title, s.state, s.status, s.needs_you && 1, s.stale, s.kind, s.project, s.workspace, s.branch]), (S.workspaces || []).map(w => [w.key, w.live, w.projects.length]),
-    Object.values(S.boards || {}).map(b => [b.key, b.unread]), Object.entries(S.groups || {}).map(([g, z]) => [g, z.clients.length]), (S.queue || []).map(i => i.status), railTab, [...quietOpen], sig.wsFilter], () => {
+    Object.values(S.boards || {}).map(b => [b.key, b.unread]), Object.entries(S.groups || {}).map(([g, z]) => [g, z.clients.length, z.agents]), (S.queue || []).map(i => i.status), railTab, [...quietOpen],
+    Object.values(S.projects || {}).map(p => [p.key, p.facts && p.facts.at]), (S.workspaces || []).map(w => w.groups)], () => {
     const head = (t, sub, extra = '') => `<div class="sp-head"><b>${t}</b>${sub ? `<span>${sub}</span>` : ''}${extra}</div>`;
     const item = (href, on, icon, label, n, hot) => `<a class="nav-item${on ? ' on' : ''}" href="${href}">${icon}${label}${n ? `<span class="n${hot ? ' hot' : ''}">${n}</span>` : ''}</a>`;
     const row = (s, pre) => { const [st, label] = standing(s), p = projOf(s.project); return `<div class="side-s${cur && cur.id === s.id ? ' on' : ''}${s.stale ? ' quiet' : ''}" data-go="${esc(s.id)}" title="${esc(s.name)}">${mark(FULL[s.kind] ? s.kind : 'codex', st, 'sm')}<b>${esc(titleOf(s))}</b><span><em class="${st}">${label}</em> · ${pre ? esc(pre) + ' · ' : ''}${p ? esc(p.name) + (s.branch && s.work !== p.path ? ' · ' + esc(s.branch) : '') : s.workspace ? '工作区顶层' : esc(s.name)}</span></div>`; };
@@ -433,21 +440,26 @@ function drawSide() {
       html = head('排队', '等会话空了再发的事') + [['可以发了', ['ready']], ['排着', ['waiting', 'checking', 'held']], ['已发出', ['sent']], ['不用发了', ['dropped']]]
         .map(([l, st]) => `<div class="nav-item static">${I.list}${l}<span class="n${st[0] === 'ready' && c(st) ? ' hot' : ''}">${c(st) || ''}</span></div>`).join('');
     } else if (sp.t === 'workspaces') {
-      const f = (sig.wsFilter || '').toLowerCase(), ws = (S.workspaces || []).filter(w => !f || (w.name + ' ' + w.path).toLowerCase().includes(f));
+      if ($('#wsFilter') && $('#wsList')) { $('#wsList').innerHTML = wsListHtml(); return; }  // (the filter stays as it is: typing in it is never cut)
       html = head('所有工作区', `${(S.workspaces || []).length} 个 · 有会话的在前`, `<input class="field side-filter" id="wsFilter" placeholder="筛选工作区" value="${esc(sig.wsFilter || '')}" autocomplete="off">`)
-        + [['有会话', ws.filter(w => w.live)], ['安静', ws.filter(w => !w.live)]].filter(([, l]) => l.length).map(([t, l]) => `<div class="side-gh"><span>${t} · ${l.length}</span></div>`
-          + l.map(w => `<a class="nav-item" href="#/w/${encodeURIComponent(w.key)}"><span class="wsdot" style="--t:${wsTone(w)}">${esc(w.name.slice(0, 1).toUpperCase())}</span>${esc(w.name)}<span class="n">${w.live ? w.live + ' 个会话' : w.at ? ago(w.at) + '前' : ''}</span></a>`).join('')).join('');
+        + `<div id="wsList">${wsListHtml()}</div>`;
     } else {  // (all workspaces: every session, with the workspace it is in)
-      html = head('所有工作区', `${(S.workspaces || []).length} 个工作区 · ${tops.filter(live).length} 个会话`) + byState(tops, 'home', s => (wsOf(s.workspace) || { name: '不在工作区里' }).name);
+      const gs = Object.keys(S.groups || {});
+      html = head('所有工作区', `${(S.workspaces || []).length} 个工作区 · ${tops.filter(live).length} 个会话`) + byState(tops, 'home', s => (wsOf(s.workspace) || { name: '不在工作区里' }).name)
+        + (gs.length ? `<div class="side-gh"><span>终端</span></div>${gs.map(g => `<a class="side-g sm" href="#/term/${encodeURIComponent(g)}" title="${esc(attachCmd(g))}"><i class="${S.groups[g].clients.length ? 'live' : ''}"></i><span class="nm">${esc(groupName(g))}</span>${muxTag(g)}<span class="n">${S.groups[g].agents || ''}</span></a>`).join('')}` : '');
     }
-    const keep = document.activeElement && document.activeElement.id === 'wsFilter' ? document.activeElement.selectionStart : null;
     $('#side').innerHTML = html;
-    if (keep !== null && $('#wsFilter')) { $('#wsFilter').focus(); $('#wsFilter').selectionStart = $('#wsFilter').selectionEnd = keep; }
   });
 }
+function wsListHtml() {
+  const f = (sig.wsFilter || '').toLowerCase(), ws = (S.workspaces || []).filter(w => !f || (w.name + ' ' + w.path).toLowerCase().includes(f));
+  return [['有会话', ws.filter(w => w.live)], ['安静', ws.filter(w => !w.live)]].filter(([, l]) => l.length).map(([t, l]) => `<div class="side-gh"><span>${t} · ${l.length}</span></div>`
+    + l.map(w => `<a class="nav-item" href="#/w/${encodeURIComponent(w.key)}"><span class="wsdot" style="--t:${wsTone(w)}">${esc(w.name.slice(0, 1).toUpperCase())}</span>${esc(w.name)}<span class="n">${w.live ? w.live + ' 个会话' : w.at ? ago(w.at) + '前' : ''}</span></a>`).join('')).join('')
+    || '<div class="side-empty">没有这个名字的工作区</div>';
+}
 
-// a group folds; inside it, the ones without a stir for a day fold once more (folded until opened)
-const fold = new Set(store.get('deck.fold', [])), quietOpen = new Set(store.get('deck.quietOpen', []));
+// the ones without a stir for a day fold away (until opened)
+const quietOpen = new Set(store.get('deck.quietOpen', []));
 function toggle(set, key, k) { set.has(k) ? set.delete(k) : set.add(k); store.set(key, [...set]); for (const x in sig) delete sig[x]; render(); }
 const chev = open => `<span class="chev${open ? ' open' : ''}">${I.chev}</span>`;
 
@@ -523,7 +535,7 @@ function renderHome() {
 }
 function renderWorkspaces() {
   const ws = S.workspaces || [];
-  draw('wscards', [ws.map(w => [w.key, w.live, w.at, w.projects.length, wsNeed(w)]), Object.values(S.boards || {}).map(b => [b.key, b.unread]), tick()], () => {
+  draw('wscards', [ws.map(w => [w.key, w.live, w.at, w.projects.length, wsNeed(w)]), S.sessions.map(s => [s.id, s.state, s.status, s.workspace, s.stale]), Object.values(S.boards || {}).map(b => [b.key, b.unread]), tick()], () => {
     $('#wsCards').innerHTML = ws.length ? `<div class="ws-grid">${ws.map(wsCard).join('')}</div>` : '<div class="calm">还没有工作区：会话在某个 git 仓库里干活后，它上面的文件夹就是一个工作区。</div>';
   });
 }
@@ -547,7 +559,7 @@ function worksTable(rows) {
   if (!rows.length) return `<div class="calm">${I.check}现在没有进行中的工作项。</div>`;
   const now = Date.now() / 1000;
   return `<div class="tbl"><table class="works"><thead><tr><th>项目</th><th>工作项</th><th>会话</th><th>进度</th><th class="r">最近</th></tr></thead><tbody>${rows.map(({ p, x, ss, at }) => {
-    const f = p.facts || {}, stale = !ss.length && x && !x.main && at && now - at > 3 * 86400;
+    const f = p.facts || {}, stale = !ss.length && x && !x.main && x.ahead > 0 && !x.dirty && at && now - at > 3 * 86400;  // (unmerged commits, last one days ago)
     const chips = x ? [x.ahead ? `比 ${esc(f.main)} 多 ${x.ahead} 个提交` : '', x.behind ? `落后 ${x.behind} 个` : '', x.dirty ? `${x.dirty} 个文件没提交` : '',
       !x.main && x.ahead === 0 && !x.dirty ? `已在 ${esc(f.main)} 里` : '', x.main && !x.dirty ? (f.ahead ? `比远端多 ${f.ahead} 个` : f.behind ? `比远端少 ${f.behind} 个` : f.ahead === 0 ? '和远端一致' : '') : ''].filter(Boolean) : [p.git ? '看不出在哪个工作项' : '文件夹'];
     return `<tr data-href="#/p/${encodeURIComponent(p.key)}"><td><a href="#/p/${encodeURIComponent(p.key)}">${esc(p.name)}</a></td>
@@ -1393,10 +1405,7 @@ document.addEventListener('click', async e => {
   if ((el = q('[data-works-all]'))) { sig.worksAll = el.dataset.worksAll; delete sig.wsbody; render(); return; }
   if ((el = q('tr[data-href]')) && !q('a, [data-go]')) { location.hash = el.dataset.href; return; }
   if ((el = q('[data-newp]'))) { e.stopPropagation(); const p = projOf(el.dataset.newp), w = p && wsOf(p.workspace); if (p) openNew((w && w.groups[0]) || '', { cwd: home(p.path) }); return; }
-  if ((el = q('[data-goproj]')) && !q('[data-fold]')) { location.hash = `#/p/${encodeURIComponent(el.dataset.goproj)}`; return; }
   if ((el = q('[data-ptab]'))) { location.hash = `#/p/${encodeURIComponent(route.key)}${el.dataset.ptab === 'overview' ? '' : '/' + el.dataset.ptab}`; return; }
-  if ((el = q('[data-ws]'))) { store.set('deck.ws', el.dataset.ws); for (const k in sig) delete sig[k]; render(); return; }
-  if ((el = q('[data-ws-go]'))) { store.set('deck.ws', el.dataset.wsGo); return; }  // (then the link goes home, to that workspace)
   if ((el = q('[data-trec]'))) { takeTodo(el.dataset.trec); return; }
   if ((el = q('[data-topic-open]'))) { OPEN_TOPIC = el.dataset.topicOpen; return; }
   if ((el = q('[data-btopic]'))) { BD.topic = el.dataset.btopic; BD.drawn = false; drawBoardBody(); return; }
@@ -1458,7 +1467,6 @@ document.addEventListener('click', async e => {
   if ((el = q('[data-mread]'))) { post('mail_read', { mid: el.dataset.mread }); return; }
   if ((el = q('[data-unlock]'))) { if (confirm('释放这把推送锁？在等它的会话会收到通知。')) post('unlock', { key: el.dataset.unlock }); return; }
   if ((el = q('[data-quiet]'))) { toggle(quietOpen, 'deck.quietOpen', el.dataset.quiet); return; }
-  if ((el = q('[data-fold]')) && !q('a, button')) { toggle(fold, 'deck.fold', el.dataset.fold); return; }
   if ((el = q('[data-report]'))) { e.stopPropagation(); el.disabled = true; el.textContent = '正在写…'; post('report', { id: el.dataset.report }); return; }
   if ((el = q('[data-acc]'))) { const key = el.dataset.acc; await api('access', { do: 'drop', key }); if (key === 'me') location.reload(); else drawAccess(); return; }
   if ((el = q('[data-theme-set]'))) { store.set('deck.theme', el.dataset.themeSet); applyTheme(); drawSettings(); return; }
@@ -1482,7 +1490,8 @@ document.addEventListener('submit', async e => {
   if (j && j.ok) f.hidden = true;
 });
 document.addEventListener('input', e => {
-  if (e.target.id === 'wsFilter') { sig.wsFilter = e.target.value; delete sig.side; drawSide(); return; } if (e.target.closest('#newBody') && NS) { readNew(); const c = $('#nsCli'); if (c) c.textContent = cliText(); } });
+  if (e.target.id === 'wsFilter') { if (!e.isComposing) { sig.wsFilter = e.target.value; if ($('#wsList')) $('#wsList').innerHTML = wsListHtml(); } return; } if (e.target.closest('#newBody') && NS) { readNew(); const c = $('#nsCli'); if (c) c.textContent = cliText(); } });
+document.addEventListener('compositionend', e => { if (e.target.id === 'wsFilter') { sig.wsFilter = e.target.value; if ($('#wsList')) $('#wsList').innerHTML = wsListHtml(); } });
 document.addEventListener('change', async e => {
   if (e.target.id === 'paneTitles') post('titles', { on: e.target.checked });
   if (e.target.dataset.attrib) post('attribute', { id: e.target.dataset.attrib, project: e.target.value });
@@ -1509,8 +1518,8 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape') { if (overlay) closeOverlays(); else if (route.name === 'session' && !typing) location.hash = '#/'; return; }
   if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && document.activeElement.id === 'rText') { const b = document.querySelector('[data-act="say"]:not([disabled])'); if (b) b.click(); return; }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openPalette(); return; }
-  if ((e.metaKey || e.ctrlKey) && /^[1-9]$/.test(e.key) && S) { const w = railWs()[+e.key - 1]; if (w) { e.preventDefault(); location.hash = `#/w/${encodeURIComponent(w.key)}`; } return; }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'j') { e.preventDefault(); asstToggle(); return; }
+  if (!typing && (e.metaKey || e.ctrlKey) && /^[1-9]$/.test(e.key) && S) { const w = railWs()[+e.key - 1]; if (w) { e.preventDefault(); location.hash = `#/w/${encodeURIComponent(w.key)}`; } return; }
   if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === '/') { e.preventDefault(); openPalette(); }
   else if (e.key.toLowerCase() === 'n') { e.preventDefault(); openNew(''); }
