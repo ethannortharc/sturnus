@@ -1561,6 +1561,14 @@ CODEX_NOT_TUI = {'app-server', 'exec', 'e', 'review', 'queue', 'archive', 'unarc
                  'exec-server', 'migrate-rollouts', 'remote-control'}
 
 
+def post_at(f):
+    """When a channel's post was written, by its file's name (<at>-<id>.json); 0 for another file."""
+    try:
+        return float(f.split('-', 1)[0])
+    except ValueError:
+        return 0
+
+
 class Deck:
     def __init__(self):
         self.cfg = config()
@@ -1800,15 +1808,15 @@ class Deck:
             if hit and hit[0] == sig_:
                 out[k] = hit[1]
                 continue
-            new = [p for p in A.posts(k, since=seen) if p.get('from') != ME_NAME]
-            last = (A.posts(k, since=seen) or [None])[-1] if seen else None
-            if not last:
-                names = sorted(f for f in os.listdir(os.path.join(d, 'posts')) if f.endswith('.json')) if mt('posts') else []
-                last = names and A.get(os.path.join(d, 'posts', names[-1]))
+            # (what is new for the person, by the files' names; only the newest 500 of them read: a channel holds 3000)
+            names = sorted(f for f in os.listdir(os.path.join(d, 'posts')) if f.endswith('.json')) if mt('posts') else []
+            after = [f for f in names if post_at(f) > seen]
+            new = [p for p in (A.get(os.path.join(d, 'posts', f)) for f in after[-500:]) if A.good_post(p) and p.get('from') != ME_NAME]
+            last = names and A.get(os.path.join(d, 'posts', names[-1]))
             v = {'key': k, 'name': meta.get('name') or k, 'kind': meta.get('kind') or 'project', 'path': meta.get('path'),
-                 'unread': len(new), 'calls': sum(A.calls(p, ME_NAME) for p in new),
+                 'unread': len(new) + max(0, len(after) - 500), 'calls': sum(A.calls(p, ME_NAME) for p in new),
                  'last': last and {'from': last.get('from'), 'kind': last.get('kind'), 'text': (last.get('text') or '')[:240], 'at': last.get('at'), 'topic': last.get('topic')},
-                 'topics': [{k2: t.get(k2) for k2 in ('id', 'title', 'closed', 'members', 'at', 'max', 'by')} for t in A.topics(k)[:30]],
+                 'topics': [{**{k2: t.get(k2) for k2 in ('id', 'title', 'closed', 'members', 'at', 'max', 'by')}, 'n': A.topic_n(k, t)} for t in A.topics(k)[:30]],
                  'members': [m for m in A.members(k) if m != ME_NAME]}
             self.boards_at[k] = (sig_, v)
             out[k] = v
@@ -2018,13 +2026,19 @@ class Deck:
                         if len(w) + 1 == 20:
                             self.note(tx(f'{n} 这一小时被讨论区叫醒了 20 次，先不再叫它了', f'{n} was woken 20 times by channels this hour; not waking it again for now'), False)
         self.chan_seen = {i: at for i, at in self.chan_seen.items() if now - at < 3600}
-        if now - getattr(self, 'pruned', 0) > 600:  # (a channel keeps its last 3000 posts)
+        if now - getattr(self, 'pruned', 0) > 600:  # (a channel keeps its last 3000 posts, and discussions closed in the last three days)
             self.pruned = now
             for k in A.channels():
                 d = os.path.join(A.HOME, 'channels', k, 'posts')
                 old = sorted(f for f in os.listdir(d) if f.endswith('.json'))[:-3000] if os.path.isdir(d) else []
                 for f in old:
                     os.remove(os.path.join(d, f))
+                for t in A.topics(k):
+                    if t.get('closed') and now - (t.get('closed_at') or t['at']) > 3 * 86400:
+                        try:
+                            os.remove(os.path.join(A.HOME, 'channels', k, 'topics', f'{t["id"]}.json'))
+                        except OSError:
+                            pass
 
     def mind_loop(self):
         self.prev, self.stopped, self.woken, self.checked, self.lock_seen = {}, {}, set(), {}, None
@@ -3168,11 +3182,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(DECK.state)
         if self.path.startswith('/api/board'):  # (a channel: its posts, discussions, who is on it)
             from urllib.parse import urlparse, parse_qs
-            key = (parse_qs(urlparse(self.path).query).get('key') or [''])[0]
+            q = parse_qs(urlparse(self.path).query)
+            key, topic = (q.get('key') or [''])[0], (q.get('topic') or [''])[0]
             meta = A.channels().get(key)
             if not meta:
                 return self.send_json({'meta': None, 'posts': [], 'topics': [], 'members': []})
-            return self.send_json({'meta': meta, 'posts': A.posts(key, limit=400), 'topics': A.topics(key), 'members': [m for m in A.members(key) if m != ME_NAME]})
+            ts = A.topics(key)
+            return self.send_json({'meta': meta, 'posts': A.posts(key, topic=topic) if A.topic_get(key, topic) else A.posts(key, limit=400),
+                                   'topics': [{**t, 'n': A.topic_n(key, t)} for t in ts], 'members': [m for m in A.members(key) if m != ME_NAME]})
         if self.path.startswith('/api/transcript'):
             from urllib.parse import urlparse, parse_qs
             q = parse_qs(urlparse(self.path).query)

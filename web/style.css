@@ -891,3 +891,29 @@ table.works .when { color: var(--muted); white-space: nowrap; font-variant-numer
 .side-term svg { width: 14px; height: 14px; }
 .side-s:hover .side-term, .side-term:focus-visible { opacity: 1; }
 .side-term:hover { color: var(--ink); }
+
+/* many sessions: the rest of a list folded, one line each when open */
+.attn-more { display: flex; align-items: center; gap: 6px; width: 100%; padding: 10px 16px; border: 0; background: none; color: var(--muted); font: inherit; font-size: 13px; cursor: pointer; text-align: left; }
+.attn-more:hover { color: var(--ink); }
+.slist { display: grid; border: 1px solid var(--hair); border-radius: 14px; background: var(--panel); overflow: hidden; }
+.srow { display: grid; grid-template-columns: auto minmax(0, 1.3fr) 64px minmax(0, .9fr) minmax(0, 2fr); gap: 10px; align-items: center; padding: 8px 14px; border-top: 1px solid var(--hair); cursor: pointer; font-size: 13px; }
+.srow:first-child { border-top: 0; }
+.srow:hover { background: color-mix(in srgb, var(--ink) 4%, transparent); }
+.srow b { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.srow em { font-style: normal; font-size: 12px; color: var(--muted); } .srow em.working { color: var(--ok); } .srow em.waiting, .srow em.blocked, .srow em.review { color: var(--warn); }
+.srow span { font: 11.5px var(--font-mono); color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.srow p { margin: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 760px) { .srow { grid-template-columns: auto minmax(0, 1fr) auto; } .srow span, .srow p { display: none; } }
+
+/* a busy channel: see only calls and yours, or one session's posts; members and calls folded */
+.b-filter { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 10px; }
+.b-filter .hint { font-size: 12px; }
+.b-pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px 3px 4px; border-radius: 999px; border: 1px solid var(--hair); background: var(--panel); font: inherit; font-size: 12.5px; cursor: pointer; }
+.b-pill span { color: var(--faint); }
+.b-mem { cursor: pointer; } .b-mem.on { outline: 2px solid var(--ink); outline-offset: 1px; border-radius: 999px; }
+.b-more { border: 0; background: none; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; padding: 4px 6px; }
+.b-more:hover { color: var(--ink); }
+.b-call.more { color: var(--muted); }
+.b-warn { font-size: 12px; color: var(--warn-ink); margin-left: 4px; }
+.b-find { margin-bottom: 8px; }
+.b-pick .pk[hidden] { display: none; }

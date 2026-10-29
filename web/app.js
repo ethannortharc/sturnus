@@ -737,6 +737,7 @@ const muxOf = k => (k.startsWith('tmux:') ? 'tmux' : 'zellij');
 const attachCmd = k => (muxOf(k) === 'tmux' ? `tmux attach -t ${groupName(k)}` : `zellij attach ${k}`);
 const muxTag = k => (k !== '~none' && muxOf(k) === 'tmux' ? '<span class="mux">tmux</span>' : '');
 const webOk = s => !!s.loc;  // (the terminal in the page: Zellij or tmux)
+const big = n => (n > 999 ? '999+' : n);  // (a count on a badge: a busy channel holds thousands)
 const ORDER = s => ({ waiting: 0, blocked: 1, review: 2, working: 3, idle: 4, ended: 5, gone: 6 }[standing(s)[0]] ?? 9);
 const isToday = t => new Date(t * 1000).toDateString() === new Date().toDateString();
 
@@ -791,7 +792,7 @@ function drawRail() {
     if (w && !w.live && !seen.includes(w.key)) store.set('deck.wsSeen', [w.key, ...seen].slice(0, 3));
   }
   draw('railnav', [sp, on.map(w => [w.key, w.name, wsNeed(w), wsWorking(w)]), rest, loose, need, bNew, bCalls, today, qReady], () => {
-    const g = (href, on, icon, label, n, hot) => `<a class="tile g${on ? ' on' : ''}" href="${href}" title="${t(label, { n: rest })}${on ? t('（再点一下：收起或展开旁边那栏）') : ''}" aria-label="${t(label, { n: rest })}">${icon}${n ? `<span class="badge${hot ? ' hot' : ''}">${n}</span>` : ''}</a>`;
+    const g = (href, on, icon, label, n, hot) => `<a class="tile g${on ? ' on' : ''}" href="${href}" title="${t(label, { n: rest })}${on ? t('（再点一下：收起或展开旁边那栏）') : ''}" aria-label="${t(label, { n: rest })}">${icon}${n ? `<span class="badge${hot ? ' hot' : ''}">${big(n)}</span>` : ''}</a>`;
     $('#rail').innerHTML = g('#/', sp.t === 'home', I.grid, '总览：所有工作区', need, true) + '<hr>'
       + on.map((w, i) => `<a class="tile ws${sp.t === 'ws' && sp.key === w.key ? ' on' : ''}${w.live ? '' : ' quiet'}" href="#/w/${encodeURIComponent(w.key)}" style="--t:${wsColor(w)}" title="${esc(w.name)} · ${esc(home(w.path))}${i < 9 ? ` (⌘${i + 1})` : ''}" aria-label="${esc(w.name)}">${esc(w.name.slice(0, 1).toUpperCase())}${wsNeed(w) ? `<span class="badge hot">${wsNeed(w)}</span>` : wsWorking(w) ? '<i class="pulse"></i>' : ''}</a>`).join('')
       + (rest > 0 ? g('#/workspaces', sp.t === 'workspaces', `<b>+${rest}</b>`, '所有工作区（还有 {n} 个安静的）') : g('#/workspaces', sp.t === 'workspaces', I.plus, '所有工作区'))
@@ -805,11 +806,11 @@ function drawRail() {
 }
 function drawSide() {
   const sp = space(), cur = route.name === 'session' ? S.sessions.find(x => x.id === route.id) : null, tops = roots(S.sessions);
-  draw('side', [sp, route, S.sessions.map(s => [s.id, s.title, s.state, s.status, s.needs_you && 1, s.stale, s.kind, s.project, s.workspace, s.branch, (s.subs || []).map(a => [a.id, a.state, a.task])]), Math.floor(Date.now() / 60000), (S.workspaces || []).map(w => [w.key, w.live, w.projects.length]),
+  draw('side', [sp, route, [...quietOpen], S.sessions.map(s => [s.id, s.title, s.state, s.status, s.needs_you && 1, s.stale, s.kind, s.project, s.workspace, s.branch, (s.subs || []).map(a => [a.id, a.state, a.task])]), Math.floor(Date.now() / 60000), (S.workspaces || []).map(w => [w.key, w.live, w.projects.length]),
     Object.values(S.boards || {}).map(b => [b.key, b.unread]), Object.entries(S.groups || {}).map(([g, z]) => [g, z.clients.length, z.agents]), (S.queue || []).map(i => i.status), railTab, [...quietOpen],
     Object.values(S.projects || {}).map(p => [p.key, p.facts && p.facts.at]), (S.workspaces || []).map(w => w.groups)], () => {
     const head = (x, sub, extra = '') => `<div class="sp-head"><b>${t(x)}</b>${sub ? `<span>${t(sub)}</span>` : ''}${extra}</div>`;
-    const item = (href, on, icon, label, n, hot) => `<a class="nav-item${on ? ' on' : ''}" href="${href}">${icon}${t(label)}${n ? `<span class="n${hot ? ' hot' : ''}">${n}</span>` : ''}</a>`;
+    const item = (href, on, icon, label, n, hot) => `<a class="nav-item${on ? ' on' : ''}" href="${href}">${icon}${t(label)}${n ? `<span class="n${hot ? ' hot' : ''}">${big(n)}</span>` : ''}</a>`;
     const row = (s, pre) => { const [st, label] = standing(s), p = projOf(s.project); return `<div class="side-s${cur && cur.id === s.id ? ' on' : ''}${s.stale ? ' quiet' : ''}" data-go="${esc(s.id)}" title="${esc(s.name)} · ${tt('双击进终端', 'double-click: terminal')}">${webOk(s) ? `<button class="side-term" data-go="${esc(s.id)}" data-tab="term" title="${tt('进它的终端（T）', 'Its terminal (T)')}">${I.term}</button>` : ''}${mark(FULL[s.kind] ? s.kind : 'codex', st, 'sm')}<b>${esc(titleOf(s))}</b><span><em class="${st}">${label}</em> · ${pre ? esc(pre) + ' · ' : ''}${p ? esc(p.name) + (s.branch && s.work !== p.path ? ' · ' + esc(s.branch) : '') : s.workspace ? t('工作区顶层') : esc(s.name)}</span></div>`; };
     const subLines = s => {  // (a session's own sub-agents under its row: running ones, the finished folded)
       const subs = s.subs || [], on = subs.filter(a => a.state !== 'done'), done = subs.filter(a => a.state === 'done'), k = 'subs:' + s.id, open = quietOpen.has(k);
@@ -820,7 +821,11 @@ function drawSide() {
     const byState = (list, k, pre) => {
       const act = list.filter(s => !s.stale && !['gone', 'ended'].includes(s.state)), quiet = list.filter(s => s.stale), qOpen = quietOpen.has(k);
       const groups = [['等你', act.filter(s => ['waiting', 'blocked', 'review'].includes(standing(s)[0]))], ['工作中', act.filter(s => standing(s)[0] === 'working')], ['空闲', act.filter(s => standing(s)[0] === 'idle')]];
-      return groups.filter(([, l]) => l.length).map(([x, l]) => `<div class="side-gh"><span>${t(x)} · ${l.length}</span></div>${l.map(s => row(s, pre && pre(s)) + subLines(s)).join('')}`).join('')
+      return groups.filter(([, l]) => l.length).map(([x, l]) => {
+        const gk = `${k}:${x}`, open = quietOpen.has(gk), shown = open || l.length <= 12 ? l : l.filter((s, i) => i < 10 || (cur && cur.id === s.id));
+        return `<div class="side-gh"><span>${t(x)} · ${l.length}</span></div>${shown.map(s => row(s, pre && pre(s)) + subLines(s)).join('')}`
+          + (l.length > 12 ? `<div class="side-quiet" data-quiet="${esc(gk)}">${chev(open)}${open ? tt('收起', 'Fold') : tt(`还有 ${l.length - shown.length} 个`, `${l.length - shown.length} more`)}</div>` : '');
+      }).join('')
         + (quiet.length ? `<div class="side-quiet" data-quiet="${esc(k)}">${chev(qOpen)}${t('一天以上没动静 {n} 个', { n: quiet.length })}</div>${qOpen ? quiet.map(s => row(s, pre && pre(s))).join('') : ''}` : '')
         + (!act.length && !quiet.length ? `<div class="side-empty">${t('现在没有会话')}</div>` : '');
     };
@@ -884,7 +889,8 @@ function drawAttn(wkey) {
   const inbox = wkey ? [] : S.inbox || [];
   const locks = (S.lock_issues || []).filter(l => !wkey || ((projOf('p-' + l.key) || {}).workspace === wkey)), n = need.length + inbox.length + locks.length;
   const typing = document.activeElement && document.activeElement.closest && document.activeElement.closest('#attn');
-  if (!typing) draw('attn', [wkey, need.map(([s, a]) => [s.id, a, s.title, s.summary, s.needs_you, s.waiting_for, s.name, s.kind]), inbox.map(m => m.id), locks.map(l => [l.key, l.why, l.waiters]), tick()], () => {
+  const allNeed = quietOpen.has('attn'), cut = !allNeed && need.length > 8 ? need.length - 6 : 0;
+  if (!typing) draw('attn', [wkey, allNeed, need.map(([s, a]) => [s.id, a, s.title, s.summary, s.needs_you, s.waiting_for, s.name, s.kind]), inbox.map(m => m.id), locks.map(l => [l.key, l.why, l.waiters]), tick()], () => {
     $('#attnSub').textContent = n ? t('{n} 件，按要你花的心思排', { n }) : '';
     $('#attn').innerHTML = n ? `<div class="attn">${inbox.map(m => `
       <div class="attn-row mail">
@@ -898,13 +904,13 @@ function drawAttn(wkey) {
         <div class="t"><div class="k">${t('推送锁')}<span>${esc(l.holder)} · ${t('{t}前锁上', { t: ago(l.since) })}</span></div>
           <b>${esc(l.branch)} · ${esc(folder(l.repo))}</b><p>${esc(l.why)}${(l.waiters || []).length ? t('；{w} 在等它', { w: esc(l.waiters.join(t('、'))) }) : ''}</p></div>
         <div class="acts"><button class="btn" data-unlock="${esc(l.key)}">${t('释放')}</button></div>
-      </div>`).join('')}${need.map(([s, a]) => `
+      </div>`).join('')}${(cut ? need.slice(0, 6) : need).map(([s, a]) => `
       <div class="attn-row ${ATT[a][1]}" data-go="${esc(s.id)}">
         <span class="bar4"></span>${mark(s.kind, ATT[a][1], 'sm')}
         <div class="t"><div class="k">${t(ATT[a][0])}<span>${esc(s.name)}${!wkey && wsOf(s.workspace) ? ` · ${esc(wsOf(s.workspace).name)}` : ''}${projOf(s.project) ? ` · ${esc(projOf(s.project).name)}` : ''}${parentOf(s) ? ` · ${t('启动自 {n}', { n: esc(parentOf(s).name) })}` : ''} · ${ago(s.since)}</span></div>
           <b>${esc(titleOf(s))}</b><p>${esc(s.state === 'waiting' && s.waiting_for ? t('在等你批准：{w}', { w: s.waiting_for }) : s.needs_you || s.summary || '')}</p></div>
         <div class="acts"><button class="btn" data-go="${esc(s.id)}" data-tab="overview">${I.reply}${t('回复')}</button><button class="btn dark" data-go="${esc(s.id)}" data-tab="term" ${webOk(s) ? '' : 'disabled'}>${I.term}${t('终端')}</button></div>
-      </div>`).join('')}</div>` : `<div class="calm">${I.check}${t('现在没有要你决定或验收的事，它们都在各自干活。')}</div>`;
+      </div>`).join('')}${cut ? `<button class="attn-more" data-quiet="attn">${chev(false)}${tt(`还有 ${cut} 件`, `${cut} more`)}</button>` : allNeed && need.length > 8 ? `<button class="attn-more" data-quiet="attn">${chev(true)}${tt('收起', 'Fold')}</button>` : ''}</div>` : `<div class="calm">${I.check}${t('现在没有要你决定或验收的事，它们都在各自干活。')}</div>`;
   });
   const q = S.queue || [], qReady = q.filter(i => i.status === 'ready'), qWait = q.filter(i => ['waiting', 'held', 'checking'].includes(i.status));
   if (!wkey) draw('qline', [qReady.length, qWait.length], () => {
@@ -1013,10 +1019,10 @@ function renderWs() {
         <div class="sub"><span class="nm">${esc(home(w.path))}</span><span>${t('{n} 个项目', { n: w.projects.length })}</span><span>${t('{n} 个工作项在进行', { n: workRows(w).length })}</span></div></div>
       <div class="right"><span class="legend">${[['waiting', '等你', c('waiting') + c('blocked') + c('review')], ['working', '工作中', c('working')], ['idle', '空闲', c('idle')]]
         .map(([k, l, v]) => `<span class="chip"><span class="dot ${k}"></span><b>${v}</b>${t(l)}</span>`).join('')}</span>
-        <a class="btn" href="#/b/${encodeURIComponent(w.key)}" title="${t('这个工作区里所有会话都收得到')}">${I.chat}${t('讨论区')}${b && b.unread ? ` · ${b.unread}` : ''}</a><button class="btn" data-newp-ws="${esc(w.key)}">${I.plus}${t('新建会话')}</button></div>`;
+        <a class="btn" href="#/b/${encodeURIComponent(w.key)}" title="${t('这个工作区里所有会话都收得到')}">${I.chat}${t('讨论区')}${b && b.unread ? ` · ${big(b.unread)}` : ''}</a><button class="btn" data-newp-ws="${esc(w.key)}">${I.plus}${t('新建会话')}</button></div>`;
   });
   const sig_ = [w.key, route.tab, w.projects, Object.values(S.projects || {}).filter(p => p.workspace === w.key).map(p => [p.key, p.facts && p.facts.at, p.at]),
-    mine.map(s => [s.id, s.state, s.status, s.title, s.summary, s.work, s.project, s.stale, s.needs_you, s.tool, subsOn(s).map(a => [a.id, a.state])]), Object.values(S.boards || {}).map(b => [b.key, b.unread, b.last && b.last.at]), (S.decisions || []).length, Object.keys(S.reports || {}).length, tick(), sig.worksAll];
+    mine.map(s => [s.id, s.state, s.status, s.title, s.summary, s.work, s.project, s.stale, s.needs_you, s.tool, subsOn(s).map(a => [a.id, a.state])]), Object.values(S.boards || {}).map(b => [b.key, b.unread, b.last && b.last.at]), (S.decisions || []).length, Object.keys(S.reports || {}).length, tick(), sig.worksAll, quietOpen.has('cards:' + w.key)];
   if (route.tab === 'projects') {
     draw('wsbody', sig_, () => { $('#wsBody').innerHTML = `<div class="h-title"><h2>${t('项目')}</h2><span class="sub">${t('{n} 个 · 有会话的在前', { n: w.projects.length })}</span></div>${projGrid(w.projects)}`; });
     return;
@@ -1034,7 +1040,11 @@ function renderWs() {
     $('#wsWorks').innerHTML = worksTable(workRows(w));
     const act = on.filter(s => !s.stale);
     $('#wsCardsSub').textContent = act.length ? t('{n} 个', { n: act.length }) : '';
-    $('#wsSess').innerHTML = act.length ? `<div class="cards">${act.sort((a, b) => ORDER(a) - ORDER(b)).map(card).join('')}</div>` : `<div class="calm">${t('这个工作区现在没有会话。点「新建会话」开一个。')}</div>`;
+    const all = act.sort((a, b) => ORDER(a) - ORDER(b)), rest = all.slice(12), open = quietOpen.has('cards:' + w.key);
+    $('#wsSess').innerHTML = act.length ? `<div class="cards">${all.slice(0, 12).map(card).join('')}</div>`
+      + (rest.length ? `<button class="attn-more" data-quiet="cards:${esc(w.key)}">${chev(open)}${open ? tt(`其余 ${rest.length} 个会话，一行一个`, `The other ${rest.length} sessions, one per line`) : tt(`还有 ${rest.length} 个会话`, `${rest.length} more sessions`)}</button>`
+        + (open ? `<div class="slist">${rest.map(srow).join('')}</div>` : '') : '')
+      : `<div class="calm">${t('这个工作区现在没有会话。点「新建会话」开一个。')}</div>`;
     $('#wsProjSub').textContent = t('{n} 个', { n: w.projects.length });
     $('#wsProj').innerHTML = projGrid(w.projects.slice(0, 12));
     $('#wsFeed').innerHTML = wsFeed(w);
@@ -1083,6 +1093,10 @@ function kidRows(s, all) {
   if (!kids.length) return `<div class="kids">${subs.slice(0, all ? 20 : 3).map(a => subRow(s, a)).join('')}</div>`;
   const shown = all ? kids : kids.slice(0, 3);
   return `<div class="kids">${subs.slice(0, all ? 20 : 3).map(a => subRow(s, a)).join('')}${shown.map(c => { const [st, label] = standing(c); return `<div class="kid" data-go="${esc(c.id)}">${mark(c.kind, st, 'xs')}<b>${esc(titleOf(c))}</b><span>${label} ${ago(c.since)}</span></div>`; }).join('')}${kids.length > shown.length ? `<div class="kid more">${t('还有 {n} 个子 agent', { n: kids.length - shown.length })}</div>` : ''}</div>`;
+}
+function srow(s) {  // (a session in one line: where there are too many for cards)
+  const [st, label] = standing(s), p = projOf(s.project);
+  return `<div class="srow" data-go="${esc(s.id)}">${mark(FULL[s.kind] ? s.kind : 'codex', st, 'xs')}<b>${esc(titleOf(s))}</b><em class="${st}">${label}</em><span>${esc(s.name)}${p ? ' · ' + esc(p.name) : ''}</span><p>${esc(s.summary || '')}</p></div>`;
 }
 function card(s) {
   const [st, label] = standing(s), a = attention(s);
@@ -1318,7 +1332,7 @@ function drawBoard(key, box) {
     box.innerHTML = `<div class="board"><aside class="b-side" id="bSide"></aside><section class="b-main"><div id="bForm"></div><div id="bHead"></div><div class="b-posts" id="bPosts"><div class="hint">${t('读取中……')}</div></div>
       <form class="composer b-comp" id="bComp" autocomplete="off"><div class="composer-box"><textarea id="bText" rows="1"></textarea><span id="bMic"></span><button class="send" type="submit" title="${t('发送')}">${I.arrow}</button></div><div class="b-calls" id="bCalls"></div></form></section></div>`;
     const ta = $('#bText');
-    ta.addEventListener('input', () => { ta.style.height = 'auto'; ta.style.height = Math.min(160, ta.scrollHeight) + 'px'; });
+    ta.addEventListener('input', () => { ta.style.height = 'auto'; ta.style.height = Math.min(160, ta.scrollHeight) + 'px'; allWarn(); });
     ta.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('#bComp').requestSubmit(); } });
     $('#bComp').addEventListener('submit', async e => {
       e.preventDefault();
@@ -1337,8 +1351,10 @@ async function boardFetch() {
   const key = BD.key;
   BD.at = Date.now();
   let j = null;
-  try { j = await (await fetch('/api/board?key=' + encodeURIComponent(key), { cache: 'no-store' })).json(); } catch {}
+  const topic = BD.topic;
+  try { j = await (await fetch('/api/board?key=' + encodeURIComponent(key) + (topic ? '&topic=' + encodeURIComponent(topic) : ''), { cache: 'no-store' })).json(); } catch {}
   if (!j || BD.key !== key) return;
+  if (topic) { j.topic = topic; j.topic_posts = j.posts; j.posts = (BD.data && BD.data.posts) || j.posts; }
   BD.data = j;
   drawBoardBody();
 }
@@ -1350,22 +1366,35 @@ function drawBoardBody() {
   const d = BD.data || { posts: [], topics: [], members: [] }, key = BD.key;
   let tp = BD.topic && d.topics.find(x => x.id === BD.topic);
   if (BD.topic && !tp) { BD.topic = ''; tp = null; }
-  const count = id => d.posts.filter(p => p.topic === id).length, closed = d.topics.filter(x => x.closed);
+  const count = id => { const x = d.topics.find(y => y.id === id); return x && Number.isInteger(x.n) ? x.n : d.posts.filter(p => p.topic === id).length; }, closed = d.topics.filter(x => x.closed);
+  const pick = p => (BD.only !== 'calls' || p.from === 'user' || (p.to || []).length || p.held || p.title) && (!BD.from || p.from === BD.from);  // (many sessions: only what calls someone, or one's)
+  const MEM = 24, mems = BD.memAll ? d.members : d.members.slice(0, MEM);
   $('#bSide').innerHTML = `<button class="btn b-new" data-bform>${I.plus}${t('发起讨论')}</button>
-    <div class="b-t${!tp ? ' on' : ''}" data-btopic="">${I.chat}<b>${t('全部')}</b><span>${d.posts.length}</span></div>
+    <div class="b-t${!tp ? ' on' : ''}" data-btopic="">${I.chat}<b>${t('全部')}</b><span>${d.posts.length >= 400 ? '400+' : d.posts.length}</span></div>
     ${d.topics.filter(x => !x.closed).map(x => `<div class="b-t${tp && tp.id === x.id ? ' on' : ''}" data-btopic="${esc(x.id)}"><i class="live"></i><b>${esc(x.title)}</b><span>${count(x.id)}/${x.max}</span></div>`).join('')}
     ${closed.length ? `<div class="b-sub">${t('结束了的')}</div>${closed.map(x => `<div class="b-t done${tp && tp.id === x.id ? ' on' : ''}" data-btopic="${esc(x.id)}"><i></i><b>${esc(x.title)}</b><span>${count(x.id)}</span></div>`).join('')}` : ''}
-    <div class="b-sub">${t('收得到这里的会话')}</div><div class="b-members">${d.members.length ? d.members.map(n => `<span class="b-mem" title="${esc(n)}">${face(n)}<span>${esc(n)}</span></span>`).join('') : `<span class="hint">${t('还没有。在这个项目上工作的会话下一轮开始时加入。')}</span>`}</div>`;
-  $('#bHead').innerHTML = tp ? `<div class="b-topic"><div><b>${esc(tp.title)}</b><span>${tp.members.map(n => esc(who(n))).join(t('、'))} · ${t('{a}/{b} 条', { a: count(tp.id), b: tp.max })}${tp.closed ? ' · ' + t('已结束') : ''}</span></div>${tp.closed ? '' : `<button class="btn" data-bclose="${esc(tp.id)}">${t('结束讨论')}</button>`}</div>` : '';
-  const list = tp ? d.posts.filter(p => p.topic === tp.id) : d.posts, box = $('#bPosts'), atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
-  box.innerHTML = list.length ? list.map(p => postHtml(p, d, tp)).join('') : `<div class="b-empty">${tp ? t('这场讨论还没有人发言。') : t('还没有人在这里说过话。<br>发在这里的话，收得到这里的会话下一轮开始时都会看到；写 @名字 叫某个会话马上来看，@all 叫所有人。')}</div>`;
+    <div class="b-sub">${t('收得到这里的会话')}</div><div class="b-members">${d.members.length ? mems.map(n => `<span class="b-mem${BD.from === n ? ' on' : ''}" data-bfrom="${esc(n)}" title="${esc(n)} · ${tt('只看它发的', 'only its posts')}">${face(n)}<span>${esc(n)}</span></span>`).join('')
+      + (d.members.length > MEM ? `<button class="b-more" data-bmem>${BD.memAll ? tt('收起', 'Fold') : tt(`还有 ${d.members.length - MEM} 个`, `${d.members.length - MEM} more`)}</button>` : '') : `<span class="hint">${t('还没有。在这个项目上工作的会话下一轮开始时加入。')}</span>`}</div>`;
+  $('#bHead').innerHTML = tp ? `<div class="b-topic"><div><b>${esc(tp.title)}</b><span>${tp.members.map(n => esc(who(n))).join(t('、'))} · ${t('{a}/{b} 条', { a: count(tp.id), b: tp.max })}${tp.closed ? ' · ' + t('已结束') : ''}</span></div>${tp.closed ? '' : `<button class="btn" data-bclose="${esc(tp.id)}">${t('结束讨论')}</button>`}</div>`
+    : d.posts.length > 20 || BD.only || BD.from ? `<div class="b-filter"><div class="seg">${[['', tt('全部', 'All')], ['calls', tt('点名的和你发的', 'Calls and yours')]].map(([k, l]) => `<button data-bonly="${k}" class="${(BD.only || '') === k ? 'on' : ''}">${l}</button>`).join('')}</div>${BD.from ? `<button class="b-pill" data-bfrom="">${face(BD.from)}${esc(BD.from)}<span>×</span></button>` : `<span class="hint">${tt('点右边的会话，只看它发的', 'Click a session on the right to see only its posts')}</span>`}</div>` : '';
+  const list = (tp ? (d.topic === tp.id && d.topic_posts ? d.topic_posts : d.posts.filter(p => p.topic === tp.id)) : d.posts.filter(pick)), box = $('#bPosts'), atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+  box.innerHTML = list.length ? list.map(p => postHtml(p, d, tp)).join('') : `<div class="b-empty">${tp ? t('这场讨论还没有人发言。') : BD.only || BD.from ? tt('最近 400 条里没有这样的。', 'None like that among the last 400.') : t('还没有人在这里说过话。<br>发在这里的话，收得到这里的会话下一轮开始时都会看到；写 @名字 叫某个会话马上来看，@all 叫所有人。')}</div>`;
   if (atEnd || !BD.drawn) box.scrollTop = box.scrollHeight;
   BD.drawn = true;
   const ta = $('#bText'), shut = !!(tp && tp.closed), b = boardOf(key);
   ta.disabled = shut;
   ta.placeholder = shut ? t('这场讨论已经结束了') : tp ? t('在「{n}」里说……  参加的会话马上会看到', { n: tp.title }) : ((b && b.kind === 'workspace') || wsOf(key) ? t('写到工作区的讨论区……  Enter 发送，@名字 叫某个会话') : t('写到项目的讨论区……  Enter 发送，@名字 叫某个会话'));
-  const callable = S.sessions.filter(x => live(x) && !x.unknown && (x.project === key || x.workspace === key || d.members.includes(x.name)));
-  $('#bCalls').innerHTML = callable.length && !shut ? `<span>${t('叫：')}</span>${callable.map(x => `<button type="button" class="b-call" data-bcall="${esc(x.name)}" title="${esc(titleOf(x))}">${mark(x.kind, standing(x)[0], 'xs')}${esc(x.name)}</button>`).join('')}` : '';
+  const callable = S.sessions.filter(x => live(x) && !x.unknown && (x.project === key || x.workspace === key || d.members.includes(x.name))).sort((a, c) => (c.project === key) - (a.project === key) || ORDER(a) - ORDER(c));
+  const CALLS = 8, calls = BD.callsAll ? callable : callable.slice(0, CALLS);
+  $('#bCalls').innerHTML = callable.length && !shut ? `<span>${t('叫：')}</span>${calls.map(x => `<button type="button" class="b-call" data-bcall="${esc(x.name)}" title="${esc(titleOf(x))}">${mark(x.kind, standing(x)[0], 'xs')}${esc(x.name)}</button>`).join('')}${callable.length > CALLS ? `<button type="button" class="b-call more" data-bcalls>${BD.callsAll ? tt('收起', 'Fold') : tt(`还有 ${callable.length - CALLS} 个`, `${callable.length - CALLS} more`)}</button>` : ''}<span class="b-warn" id="bWarn" hidden></span>` : '';
+  allWarn();
+}
+function allWarn() {  // (the person's @all calls every session on the channel: say how many before it goes)
+  const w = $('#bWarn'), ta = $('#bText'), d = BD.data;
+  if (!w || !ta || !d) return;
+  const n = d.members.length, on = /(^|[^A-Za-z0-9_.@-])@all\b/.test(ta.value) && n > 3;
+  w.hidden = !on;
+  if (on) w.textContent = tt(`@all 会马上叫来这里的 ${n} 个会话`, `@all calls all ${n} sessions here at once`);
 }
 function postHtml(p, d, cur) {
   const tp = p.topic && d.topics.find(x => x.id === p.topic), sys = ['amail', 'sturnus'].includes(p.from);
@@ -1384,6 +1413,10 @@ function drawTopicForm() {
     <div class="b-pick">${cands.map(x => `<label class="pk"><input type="checkbox" value="${esc(x.name)}">${mark(x.kind, standing(x)[0], 'xs')}<b>${esc(x.name)}</b><span>${esc(titleOf(x))}${x.project && x.project !== key ? ' · ' + esc((projOf(x.project) || {}).name || '') : ''}</span></label>`).join('') || `<span class="hint">${t('现在没有在跑的会话')}</span>`}</div>
     <textarea class="area" id="tfText" rows="3" placeholder="${t('开场：要讨论什么、各自的角色（比如谁是正方、谁是反方）、要得出什么')}"></textarea>
     <div class="row"><span class="hint">${t('最多')}</span><input class="field num" id="tfMax" type="number" min="2" max="200" value="24"><span class="hint">${t('条后自动结束 · 请来的会话马上会被叫来')}</span><span class="sp"></span><button type="button" class="btn" data-bform>${t('取消')}</button><button type="button" class="btn primary" data-tfgo>${t('发起')}</button></div></div>`;
+  if (cands.length > 12) {
+    $('.b-pick').insertAdjacentHTML('beforebegin', `<input class="field b-find" id="tfFind" placeholder="${tt(`在 ${cands.length} 个会话里找：名字、在做的事、项目`, `Find among ${cands.length} sessions: name, task, project`)}" autocomplete="off">`);
+    $('#tfFind').addEventListener('input', e => { const w = e.target.value.trim().toLowerCase(); document.querySelectorAll('.b-pick .pk').forEach(l => { l.hidden = !!w && !l.textContent.toLowerCase().includes(w) && !l.querySelector('input').checked; }); });
+  }
   setTimeout(() => $('#tfTitle') && $('#tfTitle').focus(), 20);
 }
 async function topicGo() {
@@ -1408,7 +1441,7 @@ function renderBoards() {
     const row = (k, name, kind, href) => {
       const b = boardOf(k), open = b ? b.topics.filter(t => !t.closed).length : 0;
       return `<a class="b-row" href="${href}"><span class="mark sm pj">${kind === 'workspace' ? I.chat : I.folder}</span><div class="t"><b>${esc(name)}</b>${b && b.last ? `<p><em>${esc(who(b.last.from))}</em>${t('：')}${esc(b.last.text.replace(/\s+/g, ' ').slice(0, 120))}</p>` : `<p class="none">${t('还没有人说过话')}</p>`}</div>
-        <div class="r">${open ? `<span class="hint">${t('{n} 场讨论', { n: open })}</span>` : ''}${b && b.unread ? `<span class="n hot">${b.unread}</span>` : ''}${b && b.last ? `<time>${ago(b.last.at)}</time>` : ''}</div></a>`;
+        <div class="r">${open ? `<span class="hint">${t('{n} 场讨论', { n: open })}</span>` : ''}${b && b.unread ? `<span class="n hot">${big(b.unread)}</span>` : ''}${b && b.last ? `<time>${ago(b.last.at)}</time>` : ''}</div></a>`;
     };
     $('#bList').innerHTML = (S.workspaces || []).map(w => `<section class="grp"><div class="grp-head"><h3>${esc(w.name)}</h3><span class="meta"><span>${esc(home(w.path))}</span></span></div><div class="b-rows">
       ${row(w.key, t('{name} 工作区', { name: w.name }), 'workspace', `#/b/${encodeURIComponent(w.key)}`)}
@@ -1875,7 +1908,11 @@ document.addEventListener('click', async e => {
   if ((el = q('[data-ptab]'))) { location.hash = `#/p/${encodeURIComponent(route.key)}${el.dataset.ptab === 'overview' ? '' : '/' + el.dataset.ptab}`; return; }
   if ((el = q('[data-trec]'))) { takeTodo(el.dataset.trec); return; }
   if ((el = q('[data-topic-open]'))) { OPEN_TOPIC = el.dataset.topicOpen; return; }
-  if ((el = q('[data-btopic]'))) { BD.topic = el.dataset.btopic; BD.drawn = false; drawBoardBody(); return; }
+  if ((el = q('[data-btopic]'))) { BD.topic = el.dataset.btopic; BD.drawn = false; drawBoardBody(); boardFetch(); return; }
+  if ((el = q('[data-bonly]'))) { BD.only = el.dataset.bonly; BD.drawn = false; drawBoardBody(); return; }
+  if ((el = q('[data-bfrom]'))) { BD.from = BD.from === el.dataset.bfrom ? '' : el.dataset.bfrom; BD.topic = ''; BD.drawn = false; drawBoardBody(); return; }
+  if ((el = q('[data-bmem]'))) { BD.memAll = !BD.memAll; drawBoardBody(); return; }
+  if ((el = q('[data-bcalls]'))) { BD.callsAll = !BD.callsAll; drawBoardBody(); return; }
   if (q('[data-bform]')) { BD.form = !BD.form; drawTopicForm(); return; }
   if (q('[data-tfgo]')) { topicGo(); return; }
   if ((el = q('[data-bclose]'))) { if (confirm(t('结束这场讨论？之后就不能再往里发言了。'))) { await post('topic_close', { key: BD.key, topic: el.dataset.bclose }); boardFetch(); } return; }
