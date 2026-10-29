@@ -3427,6 +3427,7 @@ def upgrade(argv):
         except Exception as e:
             sys.exit(f'sturnus: could not get release {v}: {e}')
         print(f'got release {v}')
+    sys.stdout.flush()  # (what was said so far, before this process becomes the new version's install)
     os.execv(sys.executable, [sys.executable, os.path.join(src, 'sturnus'), 'install', '--from', src] + (['--no-service'] if '--no-service' in argv else []))
 
 
