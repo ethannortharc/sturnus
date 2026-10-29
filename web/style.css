@@ -236,7 +236,7 @@ code { font: 12px var(--font-mono); background: var(--panel-2); border: 1px soli
 .s-hero.codex h1 { font-family: var(--font-mono); font-size: 21px; }
 .s-hero .sub { margin-top: 4px; font-size: 12.5px; color: var(--h-mut); display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
 .s-hero .sub .nm { font-family: var(--font-mono); }
-.s-hero .acts { margin-left: auto; display: flex; gap: 8px; align-self: flex-start; }
+.tabs .acts { margin-left: auto; display: flex; gap: 8px; align-self: center; padding-bottom: 4px; }
 .hbtn { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 14px; border-radius: 10px; font-size: 13px; font-weight: 600; border: 1px solid color-mix(in srgb, var(--h-ink) 16%, transparent); background: transparent; color: var(--h-ink); }
 .hbtn:hover { background: color-mix(in srgb, var(--h-ink) 7%, transparent); }
 .hbtn.primary { border-color: transparent; background: var(--h-btn, var(--h-ink)); color: var(--h-btn-ink, var(--panel)); }
@@ -244,8 +244,8 @@ code { font: 12px var(--font-mono); background: var(--panel-2); border: 1px soli
 .s-hero.codex .hbtn { font-family: var(--font-mono); font-size: 12.5px; border-radius: 8px; } .s-hero.codex .hbtn.primary { --h-btn: #f4f4f5; --h-btn-ink: #0d0d0f; }
 .hbtn svg { width: 15px; height: 15px; }
 .tabs { display: flex; gap: 2px; margin-top: 22px; }
-.tabs button { border: 0; background: none; color: var(--h-mut); padding: 10px 14px 12px; font-size: 13.5px; font-weight: 550; border-bottom: 2px solid transparent; }
-.tabs button.on { color: var(--h-ink); border-bottom-color: var(--h-ink); }
+.tabs > button { border: 0; background: none; color: var(--h-mut); padding: 10px 14px 12px; font-size: 13.5px; font-weight: 550; border-bottom: 2px solid transparent; }
+.tabs > button.on { color: var(--h-ink); border-bottom-color: var(--h-ink); }
 .s-body { padding: 26px 34px 60px; max-width: 1100px; }
 .s-body.full { max-width: none; padding: 0; height: calc(100vh - 56px - 30px - 160px); }
 .s-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 22px; }
@@ -817,20 +817,43 @@ table.works .when { color: var(--muted); white-space: nowrap; font-variant-numer
 #hero.compact .s-hero h1 { font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #hero.compact .s-hero .row { gap: 10px; }
 #hero.compact .s-hero .mark.lg { width: 28px; height: 28px; border-radius: 8px; } #hero.compact .s-hero .mark.lg svg { width: 16px; height: 16px; }
-#hero.compact .s-hero .acts { align-self: center; } #hero.compact .s-hero .hbtn { height: 28px; padding: 0 10px; font-size: 12px; }
-#hero.compact .tabs { margin-top: 6px; } #hero.compact .tabs button { padding: 6px 12px 8px; }
+#hero.compact .s-hero .hbtn { height: 28px; padding: 0 10px; font-size: 12px; }
+#hero.compact .tabs { margin-top: 6px; } #hero.compact .tabs > button { padding: 6px 12px 8px; }
 
-/* the logo sits over the rail, centred like its tiles, and folds the left: all → the rail only → nothing */
-.lay-btn { width: 62px; align-self: stretch; display: grid; place-items: center; border: 0; background: none; padding: 0; flex: none; border-radius: 0; }
+/* the logo heads the rail (the rail runs from the top of the window) and folds it; the column beside the rail folds on its own */
+.lay-btn { width: 62px; height: calc(100% + 1px); align-self: flex-start; display: grid; place-items: center; border: 0; padding: 0; flex: none; border-radius: 0; position: relative; z-index: 2;
+  background: color-mix(in srgb, var(--sunk) 70%, var(--canvas)); border-right: 1px solid var(--hair); }
 .lay-btn .logo { width: 30px; height: 30px; border-radius: 9px; transition: transform .15s var(--ease), box-shadow .15s; }
 .lay-btn:hover .logo { transform: scale(.94); box-shadow: 0 0 0 3px var(--accent-soft), 0 3px 10px -4px rgba(0, 0, 0, .45); }
 .lay-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -6px; }
-.shell.lay-rail { grid-template-columns: 62px minmax(0, 1fr); }
-.shell.lay-rail .side { display: none; }
-.shell.lay-none { grid-template-columns: minmax(0, 1fr); }
-.shell.lay-none .side, .shell.lay-none .rail { display: none; }
+.app.rail-off .lay-btn { background: none; border-right-color: transparent; height: auto; align-self: stretch; }
+.brand .word { margin-left: 14px; }
+.shell { position: relative; }
+.app.side-off .shell { grid-template-columns: 62px minmax(0, 1fr); }
+.app.rail-off .shell { grid-template-columns: 248px minmax(0, 1fr); }
+.app.rail-off.side-off .shell { grid-template-columns: minmax(0, 1fr); }
+.app.side-off .side, .app.rail-off .rail { display: none; }
+/* (a strip along the column's edge, on the page's side of it: hovering anywhere along it shows the handle) */
+.side-edge { position: absolute; top: 0; bottom: 0; left: calc(62px + 248px); width: 14px; z-index: 7; }
+.app.side-off .side-edge { left: 62px; }
+.app.rail-off .side-edge { left: 248px; }
+.app.rail-off.side-off .side-edge { left: 0; }
+.side-handle { position: absolute; top: 50%; left: -9px; width: 18px; height: 44px; margin-top: -22px; border-radius: 9px; border: 1px solid var(--hair); background: var(--panel);
+  color: var(--muted); display: grid; place-items: center; padding: 0; box-shadow: var(--shadow-1); opacity: 0; transition: opacity .15s; }
+.app.rail-off.side-off .side-handle { left: 2px; }
+.side-handle svg { width: 13px; height: 13px; }
+.side-edge:hover .side-handle, .side-handle:focus-visible { opacity: 1; }
+.side-handle:hover { color: var(--ink); }
+@media (max-width: 1000px) { .side-edge { display: none; } .app .shell { grid-template-columns: 1fr !important; } }
 /* workspace colors: graphite (default), muted colors, graphite with a stripe of the muted color */
 [data-ws-color="muted"] .tile.ws, [data-ws-color="muted"] .wsdot { background: linear-gradient(150deg, color-mix(in srgb, var(--t) 88%, #fff), color-mix(in srgb, var(--t) 78%, #000)); }
 [data-ws-color="stripe"] .tile.ws { box-shadow: inset 0 -4px 0 var(--t), inset 0 1px 0 rgba(255, 255, 255, .14), 0 1px 2px rgba(0, 0, 0, .18); }
 [data-ws-color="stripe"] .wsdot { box-shadow: inset 0 -3px 0 var(--t); }
 [data-ws-color="stripe"] .tile.ws.on { box-shadow: inset 0 -4px 0 var(--t), 0 0 0 2px var(--canvas), 0 0 0 4px var(--ink); }
+
+/* the conversation ends in a box to answer it */
+.chat-say { position: sticky; bottom: 0; z-index: 4; max-width: 860px; margin-top: 18px; padding: 12px 0 18px; background: linear-gradient(transparent, var(--canvas) 18px); }
+.chat-say .reply { background: var(--panel); border: 1px solid var(--hair); border-radius: 14px; padding: 10px 12px 8px; box-shadow: var(--shadow-3); }
+.chat-say .reply textarea { min-height: 54px; border: 0; padding: 4px 2px; background: none; }
+.chat-say .reply textarea:focus { box-shadow: none; }
+.chat-say .reply .row { margin-top: 6px; }

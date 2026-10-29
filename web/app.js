@@ -377,19 +377,22 @@ function railWs() {  // (the workspaces on the rail, in order)
   const sp = space(), seen = store.get('deck.wsSeen', []), ws = S.workspaces || [];
   return ws.filter(w => w.live || wsNeed(w) || (sp.t === 'ws' && sp.key === w.key) || seen.includes(w.key));
 }
-const LAY = ['full', 'rail', 'none'];  // (the rail and the column beside it; the rail only; neither)
-let lay = store.get('deck.lay', store.get('deck.sideOff', false) ? 'rail' : 'full');
-const LAY_NEXT = { full: '收起旁边那栏', rail: '左侧全部收起', none: '展开左侧' };
-function setLay(next) {
-  lay = LAY.includes(next) ? next : 'full';
-  store.set('deck.lay', lay);
-  const sh = document.querySelector('.shell');
-  for (const k of LAY) sh.classList.toggle('lay-' + k, k === lay);
+// (the left folds in two parts: the rail, from the logo at its top; the column beside it, from the rail's selected place
+// clicked again, a handle at its edge, or ⌘B)
+const oldLay = store.get('deck.lay', '');
+let railOff = store.get('deck.railOff', oldLay === 'none'), sideOff = store.get('deck.sideOff', oldLay === 'rail' || oldLay === 'none');
+function applyFold() {
+  const app = document.querySelector('.app');
+  app.classList.toggle('rail-off', railOff);
+  app.classList.toggle('side-off', sideOff);
   const b = $('#layBtn');
-  if (b) { b.title = `${LAY_NEXT[lay]}（⌘B）`; b.setAttribute('aria-label', LAY_NEXT[lay]); }
+  if (b) { b.title = railOff ? '展开最左边那栏' : '收起最左边那栏'; b.setAttribute('aria-label', b.title); }
+  const h = $('#sideHandle');
+  if (h) { h.title = `${sideOff ? '展开' : '收起'}旁边那栏（⌘B）`; h.setAttribute('aria-label', h.title); h.innerHTML = sideOff ? I.chev : I.chev.replace('<svg', '<svg style="transform:scaleX(-1)"'); }
   fitTerm();
 }
-const cycleLay = () => setLay(LAY[(LAY.indexOf(lay) + 1) % LAY.length]);
+function setRail(off) { railOff = off; store.set('deck.railOff', off); applyFold(); }
+function setSide(off) { sideOff = off; store.set('deck.sideOff', off); applyFold(); }
 function drawRail() {
   const sp = space(), ws = S.workspaces || [], on = railWs(), rest = ws.length - on.length;
   const loose = roots(S.sessions).filter(s => !s.workspace && live(s)).length;
@@ -401,7 +404,7 @@ function drawRail() {
     if (w && !w.live && !seen.includes(w.key)) store.set('deck.wsSeen', [w.key, ...seen].slice(0, 3));
   }
   draw('railnav', [sp, on.map(w => [w.key, w.name, wsNeed(w), wsWorking(w)]), rest, loose, need, bNew, bCalls, today, qReady], () => {
-    const g = (href, on, icon, label, n, hot) => `<a class="tile g${on ? ' on' : ''}" href="${href}" title="${label}" aria-label="${label}">${icon}${n ? `<span class="badge${hot ? ' hot' : ''}">${n}</span>` : ''}</a>`;
+    const g = (href, on, icon, label, n, hot) => `<a class="tile g${on ? ' on' : ''}" href="${href}" title="${label}${on ? '（再点一下：收起或展开旁边那栏）' : ''}" aria-label="${label}">${icon}${n ? `<span class="badge${hot ? ' hot' : ''}">${n}</span>` : ''}</a>`;
     $('#rail').innerHTML = g('#/', sp.t === 'home', I.grid, '总览：所有工作区', need, true) + '<hr>'
       + on.map((w, i) => `<a class="tile ws${sp.t === 'ws' && sp.key === w.key ? ' on' : ''}${w.live ? '' : ' quiet'}" href="#/w/${encodeURIComponent(w.key)}" style="--t:${wsColor(w)}" title="${esc(w.name)} · ${esc(home(w.path))}${i < 9 ? ` （⌘${i + 1}）` : ''}" aria-label="${esc(w.name)}">${esc(w.name.slice(0, 1).toUpperCase())}${wsNeed(w) ? `<span class="badge hot">${wsNeed(w)}</span>` : wsWorking(w) ? '<i class="pulse"></i>' : ''}</a>`).join('')
       + (rest > 0 ? g('#/workspaces', sp.t === 'workspaces', `<b>+${rest}</b>`, `所有工作区（还有 ${rest} 个安静的）`) : g('#/workspaces', sp.t === 'workspaces', I.plus, '所有工作区'))
@@ -772,8 +775,9 @@ function renderSession() {
     $('#hero').innerHTML = `<div class="s-hero ${k}">
       <div class="row">${mark(k, st, 'lg')}<div style="min-width:0"><h1>${esc(titleOf(s))}</h1>
         <div class="sub"><span class="nm">${esc(s.name)}</span>${projOf(s.project) ? `<a class="pj-link" href="#/p/${encodeURIComponent(s.project)}">${I.folder}${esc(projOf(s.project).name)}${s.branch && s.work !== projOf(s.project).path ? ` / ${esc(s.branch)}` : ''}</a>` : ''}${parentOf(s) ? `<span>由 <a data-go="${esc(parentOf(s).id)}">${esc(parentOf(s).name)}</a> 启动</span>` : s.origin && !s.loc ? `<span>${esc(s.origin)}</span>` : ''}<span>${FULL[s.kind] || esc(s.kind)}</span><span>${label} · ${ago(s.since)}</span>${s.loc ? `<span>${esc(groupName(s.loc.session))} › 窗格 ${esc(s.loc.pane)}</span>` : ''}<span title="${esc(s.cwd || '')}">${esc(home(s.cwd))}</span></div></div>
-        <div class="acts"><button class="hbtn" data-act="jump" ${s.loc ? '' : 'disabled'} title="让连着这个组的终端切到它">${I.jump}在终端里打开</button><button class="hbtn primary" data-tab-go="term" ${webOk(s) ? '' : 'disabled'}>${I.enter}进入</button></div></div>
-      <nav class="tabs">${[['overview', '概览'], ['report', '报告'], ['chat', '对话'], ['term', '终端'], ['msgs', '消息']].map(([t, l]) => `<button data-tab-go="${t}" class="${sessTab === t ? 'on' : ''}">${l}</button>`).join('')}</nav></div>`;
+      </div>
+      <nav class="tabs">${[['overview', '概览'], ['report', '报告'], ['chat', '对话'], ['term', '终端'], ['msgs', '消息']].map(([t, l]) => `<button data-tab-go="${t}" class="${sessTab === t ? 'on' : ''}">${l}</button>`).join('')}
+        <div class="acts"><button class="hbtn" data-act="jump" ${s.loc ? '' : 'disabled'} title="让连着这个组的终端切到它">${I.jump}在终端里打开</button><button class="hbtn primary" data-tab-go="term" ${webOk(s) ? '' : 'disabled'}>${I.enter}进入</button></div></nav></div>`;
   });
   if (sessTab === 'overview') drawOverview(s, k);
   else if (sessTab === 'report') draw('tab', ['report', s.id, (S.reports || {})[s.id], S.reporting, s.title, s.state, tick()], () => { $('#tabBody').innerHTML = `<div class="s-body"><div class="rep-one">${repCard(s, (S.reports || {})[s.id])}</div></div>`; });
@@ -852,8 +856,9 @@ function renderProject() {
     const up = f.ahead || f.behind ? ` · 比远端${f.ahead ? `多 ${f.ahead} 个提交` : ''}${f.ahead && f.behind ? '、' : ''}${f.behind ? `少 ${f.behind} 个` : ''}` : f.ahead === 0 ? ' · 和远端一致' : '';
     $('#hero').innerHTML = `<div class="s-hero proj"><div class="row"><span class="mark lg pj">${I.folder}</span><div style="min-width:0"><h1>${esc(p.name)}</h1>
         <div class="sub">${w ? `<span>工作区 ${esc(w.name)}</span>` : ''}<span class="nm">${esc(home(p.path))}</span>${p.git ? `<span>${I.branch}${esc(f.main || '')}${f.tag ? ' · ' + esc(f.tag) : ''}${up}</span>` : '<span>文件夹，不是 git 仓库</span>'}${f.url ? `<a href="${esc(f.url)}" target="_blank" rel="noopener noreferrer">${esc(f.url.replace(/^https:\/\//, ''))}</a>` : ''}</div></div>
-        <div class="acts"><button class="hbtn primary" data-newp="${esc(p.key)}">${I.plus}在这里新建会话</button></div></div>
-      <nav class="tabs">${[['overview', '概览'], ['board', '讨论' + (b && b.unread ? ` · ${b.unread} 条新` : '')], ['sessions', `会话 · ${ss.length}`]].map(([t, l]) => `<button data-ptab="${t}" class="${tab === t ? 'on' : ''}">${esc(l)}</button>`).join('')}</nav></div>`;
+      </div>
+      <nav class="tabs">${[['overview', '概览'], ['board', '讨论' + (b && b.unread ? ` · ${b.unread} 条新` : '')], ['sessions', `会话 · ${ss.length}`]].map(([t, l]) => `<button data-ptab="${t}" class="${tab === t ? 'on' : ''}">${esc(l)}</button>`).join('')}
+        <div class="acts"><button class="hbtn primary" data-newp="${esc(p.key)}">${I.plus}在这里新建会话</button></div></nav></div>`;
   });
   if (tab === 'board') {
     if (!$('#boardBox')) { $('#tabBody').innerHTML = `<div class="s-body wide" id="boardBox"></div>`; BD.key = null; }
@@ -1009,8 +1014,9 @@ let chatTimer = null;
 async function drawChat(s, k) {
   if (sig.chatFor !== s.id) {
     sig.chatFor = s.id;
-    $('#tabBody').innerHTML = `<div class="s-body"><div class="convo" id="convo"><div class="hint">读取对话……</div></div></div>`;
+    $('#tabBody').innerHTML = `<div class="s-body"><div class="convo" id="convo"><div class="hint">读取对话……</div></div><div class="chat-say">${replyBox(s)}</div></div>`;
   }
+  drawSay(s);
   if (chatTimer && Date.now() - chatTimer < 5000) return;
   chatTimer = Date.now();
   try {
@@ -1420,7 +1426,12 @@ document.addEventListener('click', async e => {
   let el;
   if (q('[data-close]')) { closeOverlays(); return; }
   if ((el = q('[data-new]'))) { e.stopPropagation(); openNew(el.dataset.new); return; }
-  if (q('#layBtn')) { cycleLay(); return; }
+  if (q('#layBtn')) { setRail(!railOff); return; }
+  if (q('#sideHandle')) { setSide(!sideOff); return; }
+  if ((el = q('.rail .tile')) && !e.metaKey && !e.ctrlKey && !e.shiftKey) {  // (the place already selected: folds or unfolds its column; another one: opens it)
+    if (el.classList.contains('on')) { e.preventDefault(); setSide(!sideOff); } else if (sideOff) setSide(false);
+    return;
+  }
   if ((el = q('[data-newp-ws]'))) { const w = wsOf(el.dataset.newpWs); if (w) openNew(w.groups[0] || '', { cwd: home(w.path) }); return; }
   if ((el = q('[data-works-all]'))) { sig.worksAll = el.dataset.worksAll; delete sig.wsbody; render(); return; }
   if ((el = q('tr[data-href]')) && !q('a, [data-go]')) { location.hash = el.dataset.href; return; }
@@ -1450,7 +1461,7 @@ document.addEventListener('click', async e => {
       const text = $('#rText').value.trim();
       if (!text) { $('#rText').focus(); return; }
       const j = await post('say', { id: s.id, text, now: act === 'say-now' });
-      if (j && j.ok) $('#rText').value = '';
+      if (j && j.ok) { $('#rText').value = ''; if (sessTab === 'chat') { chatTimer = 0; setTimeout(() => { chatTimer = 0; render(); }, 1500); } }
     }
     return;
   }
@@ -1540,7 +1551,7 @@ document.addEventListener('keydown', e => {
   if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && document.activeElement.id === 'rText') { const b = document.querySelector('[data-act="say"]:not([disabled])'); if (b) b.click(); return; }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openPalette(); return; }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'j') { e.preventDefault(); asstToggle(); return; }
-  if (!typing && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') { e.preventDefault(); cycleLay(); return; }
+  if (!typing && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') { e.preventDefault(); setSide(!sideOff); return; }
   if (!typing && (e.metaKey || e.ctrlKey) && /^[1-9]$/.test(e.key) && S) { const w = railWs()[+e.key - 1]; if (w) { e.preventDefault(); location.hash = `#/w/${encodeURIComponent(w.key)}`; } return; }
   if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === '/') { e.preventDefault(); openPalette(); }
@@ -1549,7 +1560,7 @@ document.addEventListener('keydown', e => {
 
 route = parseRoute();
 applyTheme();
-setLay(lay);
+applyFold();
 applyWsColor();
 // (a session's or project's head stays at the top while its page scrolls, folded to one line)
 document.addEventListener('scroll', e => {
