@@ -170,7 +170,7 @@ const boardOf = k => (S.boards || {})[k] || null;
 const live = s => !s.stale && !['gone', 'ended'].includes(s.state);
 
 // ---------- language: the menus and navigation in Chinese or English (the Chinese is the key) ----------
-const EN = { "总览": "Overview", "总览：所有工作区": "Overview: all workspaces", "讨论：所有讨论区": "Channels: all of them", "消息：会话之间的信": "Messages: mail between sessions", "报告：每个会话的简报": "Reports: a brief per session", "排队：等会话空了再发": "Queue: sent once a session is free", "所有工作区（还有 {n} 个安静的）": "All workspaces ({n} more, quiet)", "所有工作区": "All workspaces", "不在工作区里的会话": "Sessions in no workspace", "不在工作区里": "In no workspace", "（再点一下：收起或展开旁边那栏）": " (click again: fold or unfold the column)", "目录不在任何工作区里的会话": "sessions whose folder is in no workspace", "仪表盘": "Dashboard", "项目": "Projects", "工作项": "Work items", "讨论区": "Channel", "终端": "Terminal", "讨论": "Channels", "每个工作区、每个项目一个讨论区": "one per workspace and per project", "{name} 工作区": "{name} workspace", "消息": "Messages", "会话之间的信，和写给你的": "mail between sessions, and to you", "会话之间": "Between sessions", "与你有关": "To and from you", "报告": "Reports", "每个会话的简报": "a brief per session", "排队": "Queue", "等会话空了再发的事": "things to send once a session is free", "可以发了": "Ready to send", "排着": "Waiting", "已发出": "Sent", "不用发了": "Dropped", "{n} 个 · 有会话的在前": "{n} · busy ones first", "筛选工作区": "Filter workspaces", "有会话": "With sessions", "安静": "Quiet", "{n} 个会话": "{n} sessions", "没有这个名字的工作区": "No workspace by that name", "{a} 个工作区 · {b} 个会话": "{a} workspaces · {b} sessions", "等你": "Needs you", "工作中": "Working", "空闲": "Idle", "卡住": "Blocked", "待验收": "To review", "已离开": "Gone", "已结束": "Ended", "一天以上没动静 {n} 个": "{n} quiet for a day", "现在没有会话": "No sessions now", "工作区顶层": "workspace top", "概览": "Overview", "对话": "Conversation", "在终端里打开": "Open in terminal", "进入": "Enter", "让连着这个组的终端切到它": "Switch the attached terminal to it", "会话": "Sessions", "{n} 条新": "{n} new", "在这里新建会话": "New session here", "收起旁边那栏（⌘B）": "Fold the column (⌘B)", "展开旁边那栏（⌘B）": "Unfold the column (⌘B)", "设置": "Settings", "助手与模型": "Assistant & models", "语音输入": "Voice input", "显示": "Display", "访问": "Access", "关于": "About", "这台机器上的显示偏好。": "Display preferences on this machine.", "主题": "Theme", "跟随系统，或固定浅色、深色。": "Follow the system, or always light or dark.", "跟随系统": "System", "浅色": "Light", "深色": "Dark", "工作区图标": "Workspace marks", "最左边那条栏里工作区的颜色。": "The color of workspaces on the rail.", "石墨": "Graphite", "暗彩": "Muted colors", "石墨加色条": "Graphite with a stripe", "窗格标题": "Pane titles", "用「状态 · 会话名 · 在做的事」做每个 agent 窗格的标题，在 Zellij 或 tmux 里一眼认出是哪个（tmux 要开 pane-border-status 才看得到）。": "Title each agent pane \"state · name · what it does\", to tell them apart in Zellij or tmux (tmux shows them with pane-border-status).", "语言": "Language", "菜单和导航用的语言；页面内容暂时还是中文。": "The language of menus and navigation; page content is in Chinese for now.", "agent 的工作语言": "Agents’ working language", "总结、简报、助手的回答、帮你起草的话用哪种语言写。已经写好的，等它们下次更新时换过来。": "The language summaries, reports, the assistant’s answers and drafts are written in. Ones already written change at their next update.", "搜索工作区、项目、会话": "Search…", "新建会话": "New session", "新建会话（N）": "New session (N)", "实时": "Live", "连接中断，重试中": "Disconnected, retrying", "与本机 sturnus 服务的连接": "Connection to Sturnus on this machine", "主题：跟随系统": "Theme: system", "主题：浅色": "Theme: light", "主题：深色": "Theme: dark", "助手：问各个会话的事（⌘/Ctrl+J）": "Assistant: ask about the sessions (⌘/Ctrl+J)", "工作区、项目、会话的名字，任务，目录……": "Names of workspaces, projects, sessions; tasks; folders…", "选择": "select", "打开": "open", "关闭": "close", "没有匹配的工作区、项目或会话": "No matching workspace, project or session", "工作区 · {p}": "Workspace · {p}", "项目 · {w}": "Project · {w}", "总结模型出错，去设置里看看": "The summary model failed: see Settings", "总结：{m}": "Summaries: {m}", " · 正在更新": " · updating", "刷新于 {t}": "Refreshed {t}", "刚刚": "just now", "{t}前": "{t} ago", "{n} 分钟": "{n} min", "{n} 小时": "{n} h", "{n} 天": "{n} d", "工作区与全局入口": "Workspaces and global places", "Sturnus 总览": "Sturnus overview", "搜索会话": "Search" };
+const EN = { "总览": "Overview", "总览：所有工作区": "Overview: all workspaces", "讨论：所有讨论区": "Channels: all of them", "消息：会话之间的信": "Messages: mail between sessions", "报告：每个会话的简报": "Reports: a brief per session", "排队：等会话空了再发": "Queue: sent once a session is free", "所有工作区（还有 {n} 个安静的）": "All workspaces ({n} more, quiet)", "所有工作区": "All workspaces", "不在工作区里的会话": "Sessions in no workspace", "不在工作区里": "In no workspace", "（再点一下：收起或展开旁边那栏）": " (click again: fold or unfold the column)", "目录不在任何工作区里的会话": "sessions whose folder is in no workspace", "仪表盘": "Dashboard", "项目": "Projects", "工作项": "Work items", "讨论区": "Channel", "终端": "Terminal", "讨论": "Channels", "每个工作区、每个项目一个讨论区": "one per workspace and per project", "{name} 工作区": "{name} workspace", "消息": "Messages", "会话之间的信，和写给你的": "mail between sessions, and to you", "会话之间": "Between sessions", "与你有关": "To and from you", "报告": "Reports", "每个会话的简报": "a brief per session", "排队": "Queue", "等会话空了再发的事": "things to send once a session is free", "可以发了": "Ready to send", "排着": "Waiting", "已发出": "Sent", "不用发了": "Dropped", "{n} 个 · 有会话的在前": "{n} · busy ones first", "筛选工作区": "Filter workspaces", "有会话": "With sessions", "安静": "Quiet", "{n} 个会话": "{n} sessions", "没有这个名字的工作区": "No workspace by that name", "{a} 个工作区 · {b} 个会话": "{a} workspaces · {b} sessions", "等你": "Needs you", "工作中": "Working", "空闲": "Idle", "卡住": "Blocked", "待验收": "To review", "已离开": "Gone", "已结束": "Ended", "一天以上没动静 {n} 个": "{n} quiet for a day", "现在没有会话": "No sessions now", "工作区顶层": "workspace top", "概览": "Overview", "对话": "Conversation", "在终端里打开": "Open in terminal", "进入": "Enter", "让连着这个组的终端切到它": "Switch the attached terminal to it", "会话": "Sessions", "{n} 条新": "{n} new", "在这里新建会话": "New session here", "收起旁边那栏（⌘B）": "Fold the column (⌘B)", "展开旁边那栏（⌘B）": "Unfold the column (⌘B)", "设置": "Settings", "助手与模型": "Assistant & models", "语音输入": "Voice input", "显示": "Display", "访问": "Access", "关于": "About", "这台机器上的显示偏好。": "Display preferences on this machine.", "主题": "Theme", "跟随系统，或固定浅色、深色。": "Follow the system, or always light or dark.", "跟随系统": "System", "浅色": "Light", "深色": "Dark", "工作区图标": "Workspace marks", "最左边那条栏里工作区的颜色。": "The color of workspaces on the rail.", "石墨": "Graphite", "暗彩": "Muted colors", "石墨加色条": "Graphite with a stripe", "窗格标题": "Pane titles", "用「状态 · 会话名 · 在做的事」做每个 agent 窗格的标题，在 Zellij 或 tmux 里一眼认出是哪个（tmux 要开 pane-border-status 才看得到）。": "Title each agent pane \"state · name · what it does\", to tell them apart in Zellij or tmux (tmux shows them with pane-border-status).", "语言": "Language", "菜单和导航用的语言；页面内容暂时还是中文。": "The language of menus and navigation; page content is in Chinese for now.", "agent 的工作语言": "Agents’ working language", "总结、简报、助手的回答、帮你起草的话用哪种语言写。已经写好的，等它们下次更新时换过来。": "The language summaries, reports, the assistant’s answers and drafts are written in. Ones already written change at their next update.", "搜索工作区、项目、会话": "Search…", "新建会话": "New session", "新建会话（N）": "New session (N)", "实时": "Live", "连接中断，重试中": "Disconnected, retrying", "与本机 sturnus 服务的连接": "Connection to Sturnus on this machine", "主题：跟随系统": "Theme: system", "主题：浅色": "Theme: light", "主题：深色": "Theme: dark", "助手：问各个会话的事（⌘/Ctrl+J）": "Assistant: ask about the sessions (⌘/Ctrl+J)", "工作区、项目、会话的名字，任务，目录……": "Names of workspaces, projects, sessions; tasks; folders…", "选择": "select", "打开": "open", "进终端": "terminal", "关闭": "close", "没有匹配的工作区、项目或会话": "No matching workspace, project or session", "工作区 · {p}": "Workspace · {p}", "项目 · {w}": "Project · {w}", "总结模型出错，去设置里看看": "The summary model failed: see Settings", "总结：{m}": "Summaries: {m}", " · 正在更新": " · updating", "刷新于 {t}": "Refreshed {t}", "刚刚": "just now", "{t}前": "{t} ago", "{n} 分钟": "{n} min", "{n} 小时": "{n} h", "{n} 天": "{n} d", "工作区与全局入口": "Workspaces and global places", "Sturnus 总览": "Sturnus overview", "搜索会话": "Search" };
 Object.assign(EN, {
 "你": "You",
 "还认不出在做什么": "Can’t tell yet what it is doing",
@@ -624,7 +624,8 @@ function parseRoute() {
   const m = h.match(/^\/s\/(.+?)(?:\/(overview|report|chat|term|msgs))?$/);
   return m ? { name: 'session', id: decodeURIComponent(m[1]), tab: m[2] || 'overview' } : { name: 'home' };
 }
-window.addEventListener('hashchange', () => { route = parseRoute(); if (!(route.name === 'session' && route.tab === 'term') && route.name !== 'gterm') closeTerm(); for (const k in sig) delete sig[k]; build(); render(); });
+let routedAt = location.hash;  // (two quick changes send two events that both read the last address: handle each address once, or the page and its terminal are built twice)
+window.addEventListener('hashchange', () => { if (location.hash === routedAt) return; routedAt = location.hash; route = parseRoute(); if (!(route.name === 'session' && route.tab === 'term') && route.name !== 'gterm') closeTerm(); for (const k in sig) delete sig[k]; build(); render(); });
 const go = (id, tab) => { location.hash = `#/s/${encodeURIComponent(id)}${tab && tab !== 'overview' ? '/' + tab : ''}`; };
 
 function build() {  // (the frame of a view; render() fills it)
@@ -809,7 +810,7 @@ function drawSide() {
     Object.values(S.projects || {}).map(p => [p.key, p.facts && p.facts.at]), (S.workspaces || []).map(w => w.groups)], () => {
     const head = (x, sub, extra = '') => `<div class="sp-head"><b>${t(x)}</b>${sub ? `<span>${t(sub)}</span>` : ''}${extra}</div>`;
     const item = (href, on, icon, label, n, hot) => `<a class="nav-item${on ? ' on' : ''}" href="${href}">${icon}${t(label)}${n ? `<span class="n${hot ? ' hot' : ''}">${n}</span>` : ''}</a>`;
-    const row = (s, pre) => { const [st, label] = standing(s), p = projOf(s.project); return `<div class="side-s${cur && cur.id === s.id ? ' on' : ''}${s.stale ? ' quiet' : ''}" data-go="${esc(s.id)}" title="${esc(s.name)}">${mark(FULL[s.kind] ? s.kind : 'codex', st, 'sm')}<b>${esc(titleOf(s))}</b><span><em class="${st}">${label}</em> · ${pre ? esc(pre) + ' · ' : ''}${p ? esc(p.name) + (s.branch && s.work !== p.path ? ' · ' + esc(s.branch) : '') : s.workspace ? t('工作区顶层') : esc(s.name)}</span></div>`; };
+    const row = (s, pre) => { const [st, label] = standing(s), p = projOf(s.project); return `<div class="side-s${cur && cur.id === s.id ? ' on' : ''}${s.stale ? ' quiet' : ''}" data-go="${esc(s.id)}" title="${esc(s.name)} · ${tt('双击进终端', 'double-click: terminal')}">${webOk(s) ? `<button class="side-term" data-go="${esc(s.id)}" data-tab="term" title="${tt('进它的终端（T）', 'Its terminal (T)')}">${I.term}</button>` : ''}${mark(FULL[s.kind] ? s.kind : 'codex', st, 'sm')}<b>${esc(titleOf(s))}</b><span><em class="${st}">${label}</em> · ${pre ? esc(pre) + ' · ' : ''}${p ? esc(p.name) + (s.branch && s.work !== p.path ? ' · ' + esc(s.branch) : '') : s.workspace ? t('工作区顶层') : esc(s.name)}</span></div>`; };
     const subLines = s => {  // (a session's own sub-agents under its row: running ones, the finished folded)
       const subs = s.subs || [], on = subs.filter(a => a.state !== 'done'), done = subs.filter(a => a.state === 'done'), k = 'subs:' + s.id, open = quietOpen.has(k);
       if (!subs.length) return '';
@@ -1601,7 +1602,7 @@ function palItems() {
     .sort((a, b) => order(a) - order(b) || (b.at || 0) - (a.at || 0));
 }
 const palAll = () => [...palPlaces(), ...palItems()];
-const palOpen = x => { closeOverlays(); if (!x) return; if (x.href) location.hash = x.href; else go(x.id); };
+const palOpen = (x, term) => { closeOverlays(); if (!x) return; if (x.href) location.hash = x.href; else go(x.id, term ? 'term' : ''); };
 function drawPalette() {
   const items = palAll();
   palIndex = Math.min(palIndex, Math.max(0, items.length - 1));
@@ -1899,7 +1900,11 @@ document.addEventListener('click', async e => {
     }
     return;
   }
-  if ((el = q('[data-go]'))) { go(el.dataset.go, el.dataset.tab); return; }
+  if ((el = q('[data-go]'))) {
+    const keep = !el.dataset.tab && el.closest('.side') && route.name === 'session' && ['term', 'chat', 'report', 'msgs'].includes(route.tab) ? route.tab : '';
+    go(el.dataset.go, el.dataset.tab || keep);
+    return;
+  }
   if ((el = q('[data-kind]'))) { readNew(); NS.kind = el.dataset.kind; drawNew(); return; }
   if (q('[data-browse]')) { readNew(); NS.tree = !NS.tree; NS.treeAt = ''; drawNew(); return; }
   if ((el = q('[data-dir]'))) { drawTree(el.dataset.dir); return; }
@@ -1948,6 +1953,10 @@ document.addEventListener('click', async e => {
     return;
   }
 });
+document.addEventListener('dblclick', e => {  // (a session's row: straight into its terminal)
+  const r = e.target.closest('.side-s[data-go]');
+  if (r) { e.preventDefault(); go(r.dataset.go, 'term'); }
+});
 document.addEventListener('submit', async e => {
   const f = e.target.closest('.m-reply');
   if (!f) return;
@@ -1978,7 +1987,7 @@ $('#paletteQ').addEventListener('keydown', e => {
   const items = palAll();
   if (e.key === 'ArrowDown') { palIndex = Math.min(items.length - 1, palIndex + 1); drawPalette(); e.preventDefault(); }
   else if (e.key === 'ArrowUp') { palIndex = Math.max(0, palIndex - 1); drawPalette(); e.preventDefault(); }
-  else if (e.key === 'Enter' && items[palIndex]) palOpen(items[palIndex]);
+  else if (e.key === 'Enter' && items[palIndex]) palOpen(items[palIndex], e.metaKey || e.ctrlKey);
 });
 document.addEventListener('keydown', e => {
   const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
@@ -1992,6 +2001,7 @@ document.addEventListener('keydown', e => {
   if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === '/') { e.preventDefault(); openPalette(); }
   else if (e.key.toLowerCase() === 'n') { e.preventDefault(); openNew(''); }
+  else if (route.name === 'session' && { t: 'term', c: 'chat', o: 'overview' }[e.key.toLowerCase()]) { e.preventDefault(); go(route.id, { t: 'term', c: 'chat', o: 'overview' }[e.key.toLowerCase()]); }
 });
 
 route = parseRoute();
