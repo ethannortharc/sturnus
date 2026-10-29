@@ -1676,6 +1676,7 @@ def post_at(f):
 
 class Deck:
     def __init__(self):
+        os.makedirs(CACHE, exist_ok=True)  # (before anything keeps a file there: the first install's check builds a deck too)
         self.cfg = config()
         self.sums = Summaries()
         self.reports = Reports()
@@ -3375,7 +3376,6 @@ class Handler(BaseHTTPRequestHandler):
 
 def serve():
     global DECK
-    os.makedirs(CACHE, exist_ok=True)
     DECK = Deck()
     try:
         DECK.collect()
