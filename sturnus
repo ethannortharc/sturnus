@@ -1220,16 +1220,20 @@ class Projects:
         return [os.path.realpath(os.path.expanduser(p)) for p in self.cfg.get('workspaces') or []]
 
     def ws_of(self, root):
-        """The workspace a project's folder is in: a configured one around it, else the folder above it."""
+        """The workspace a project's folder is in: a configured one around it, else the folder above it (not the home
+        folder or the root: a repository right in there is in no workspace)."""
         inside = [w for w in self.configured() if root == w or root.startswith(w + '/')]
-        return max(inside, key=len) if inside else os.path.dirname(root)
+        up = os.path.dirname(root)
+        return max(inside, key=len) if inside else None if up in (USER_HOME, '/') else up
 
     def is_ws(self, p):
         """A folder of projects: configured, above a project seen, or holding two git repositories or more."""
-        if p in self.configured() or any(x['workspace'] == p for x in self.known.values()):
+        if p in self.configured():
             return True
         if p in (USER_HOME, '/'):
             return False
+        if any(x['workspace'] == p for x in list(self.known.values())):
+            return True
         try:
             subs = [e.path for e in os.scandir(p) if e.is_dir() and not e.name.startswith('.')][:80]
         except OSError:
@@ -1242,8 +1246,10 @@ class Projects:
             return {'project': None, 'workspace': None}
         p = os.path.realpath(os.path.expanduser(p))
         hit = self.places.get(p)
-        if hit and time.time() - hit[0] < 120:
+        if hit and time.time() - hit[0] < 600:
             return hit[1]
+        if len(self.places) > 3000:
+            self.places = {k: v for k, v in self.places.items() if time.time() - v[0] < 600}
         out = {'project': None, 'workspace': None, 'work': None, 'branch': None}
         rows = (git(p, 'rev-parse', '--path-format=absolute', '--git-common-dir', '--show-toplevel') or '').splitlines() if os.path.isdir(p) else []
         if len(rows) == 2:
@@ -1369,7 +1375,7 @@ class Projects:
         A.put(self.mfile, self.manual)
 
     def workspace_paths(self):
-        return list(dict.fromkeys(self.configured() + [p['workspace'] for p in self.known.values()] + list(self.wpaths.values())))
+        return [w for w in dict.fromkeys(self.configured() + [p['workspace'] for p in list(self.known.values())] + list(self.wpaths.values())) if w]
 
     def channel(self, p):
         """A project as amail's channel (its key is the project's)."""
@@ -1470,7 +1476,8 @@ class Deck:
         self.queue = A.get(self.qfile, []) or []
         self._dirs, self._dirs_at = [], 0
         self.projects = Projects(self.cfg)
-        self.chan_at, self.boards_at = {}, {}  # (channel -> the last post looked at for calling sessions in; the page's view of it)
+        self.chan_at, self.chan_seen, self.woke, self.boards_at = {}, {}, {}, {}  # (calling sessions in: how far each channel was read, the posts looked at, when each was woken; the page's view of the channels)
+        self.names = {}  # (a session's id -> its name: a Claude session renamed takes its channel places along)
         self.lock = threading.Lock()
 
     def note(self, text, ok=True):
@@ -1488,7 +1495,7 @@ class Deck:
             kind = e.get('kind') or '?'
             s = {'id': f'{kind}:{e.get("session") or name}', 'name': name, 'kind': kind, 'session': e.get('session'),
                  'state': e.get('state') or 'idle', 'since': e.get('since') or e.get('at') or 0, 'at': e.get('at') or 0,
-                 'cwd': e.get('cwd'), 'tool': e.get('tool'), 'tool_at': e.get('tool_at'), 'said': e.get('said'),
+                 'cwd': e.get('cwd'), 'tool': e.get('tool'), 'tool_at': e.get('tool_at'), 'tool_end': e.get('tool_end'), 'said': e.get('said'),
                  'unread': e.get('unread', 0), 'pid': e.get('pid'), 'transcript': e.get('transcript'), 'loc': place_from(e),
                  'parent': (e.get('parent') or {}).get('name'), 'parent_pid': (e.get('parent') or {}).get('pid')}
             r = raw.get(name) or {}
@@ -1563,6 +1570,10 @@ class Deck:
                              'needs_you': '去它的窗格看一眼：多半在等你确认（比如是否信任这个目录）' if slow else ''})
         for s in sessions:
             self.projects.attribute(s)
+            was = self.names.get(s['id'])
+            if was and was != s['name'] and not s.get('unknown'):
+                A.move_member(was, s['name'])  # (renamed in its own CLI: its places on channels go with it)
+            self.names[s['id']] = s['name']
         by_name = {s['name']: s for s in sessions}
         by_pid = {s['pid']: s for s in sessions if s.get('pid')}
         for s in sessions:
@@ -1639,7 +1650,7 @@ class Deck:
         P, projects, wss = self.projects, {}, {}
         def entry(p):
             if p['key'] not in projects:
-                projects[p['key']] = {'key': p['key'], 'name': p['name'], 'path': p['path'], 'git': p['git'], 'workspace': A.key_of('w', p['workspace']),
+                projects[p['key']] = {'key': p['key'], 'name': p['name'], 'path': p['path'], 'git': p['git'], 'workspace': p['workspace'] and A.key_of('w', p['workspace']),
                                       'facts': P.facts.get(p['key']), 'live': 0, 'at': 0}
             return projects[p['key']]
         for w in P.workspace_paths():
@@ -1849,7 +1860,7 @@ class Deck:
 
     def ws_group(self, proj):
         """Where a project's new session goes: the group most of its workspace's sessions are in."""
-        w = proj and next((w for w in self.state.get('workspaces') or [] if w['key'] == A.key_of('w', proj['workspace'])), None)
+        w = proj and proj['workspace'] and next((w for w in self.state.get('workspaces') or [] if w['key'] == A.key_of('w', proj['workspace'])), None)
         return w and (w['groups'] or [None])[0]
 
     def notify(self, to, text, kind='question'):
@@ -1863,6 +1874,9 @@ class Deck:
         s = next((x for x in getattr(self, 'all', []) if x['name'] == name and not x.get('unknown')), None)
         if not s or s['state'] != 'idle' or s.get('prompting'):
             return False
+        if DRY:
+            self.note(f'（试用，没有真的叫醒）{name}')
+            return True
         if s['kind'] == 'codex' and s.get('session'):
             mails, items = A.take(name), A.news(name)
             text = '\n'.join(x for x in [mails and A.mail_text(name, mails), items and A.news_text(name, items)] if x)
@@ -1873,12 +1887,17 @@ class Deck:
 
     def call_in(self):
         """Who a channel's new posts call in: a discussion's members, those named (@NAME, @all: everyone on it) — woken
-        when idle; the rest of a channel waits for their next turn."""
-        for k in A.channels():
-            if k not in self.chan_at:
-                self.chan_at[k] = time.time()  # (from now on: what was posted before is not news to wake for)
-                continue
-            for p in A.posts(k, since=self.chan_at[k]):
+        when idle and something is still waiting for them (a stop may have handed it over already); at most once a
+        minute and twenty times an hour each, so two sessions calling each other cannot run on and on. The rest of a
+        channel waits for their next turn."""
+        now = time.time()
+        for k, meta in A.channels().items():
+            if k not in self.chan_at:  # (a channel made since the deck started: from its start; an older one: from now)
+                self.chan_at[k] = (meta.get('at', 0) - .001) if (meta.get('at') or 0) > STARTED else now
+            for p in A.posts(k, since=self.chan_at[k] - A.LOOK):
+                if p['id'] in self.chan_seen:
+                    continue
+                self.chan_seen[p['id']] = p['at']
                 self.chan_at[k] = max(self.chan_at[k], p['at'])
                 on, who = set(A.members(k)), set()
                 t = p.get('topic') and A.topic_get(k, p['topic'])
@@ -1886,7 +1905,21 @@ class Deck:
                     who |= set(t['members'])
                 who |= on if 'all' in (p.get('to') or ()) else set(p.get('to') or ()) & on
                 for n in sorted(who - {p.get('from'), ME_NAME, 'sturnus', 'amail'}):
-                    self.wake(n)
+                    w = [x for x in self.woke.get(n, []) if now - x < 3600]
+                    if (w and now - w[-1] < 60) or len(w) >= 20 or not A.news(n, take=False):
+                        continue
+                    if self.wake(n):
+                        self.woke[n] = w + [now]
+                        if len(w) + 1 == 20:
+                            self.note(f'{n} 这一小时被讨论区叫醒了 20 次，先不再叫它了', False)
+        self.chan_seen = {i: at for i, at in self.chan_seen.items() if now - at < 3600}
+        if now - getattr(self, 'pruned', 0) > 600:  # (a channel keeps its last 3000 posts)
+            self.pruned = now
+            for k in A.channels():
+                d = os.path.join(A.HOME, 'channels', k, 'posts')
+                old = sorted(f for f in os.listdir(d) if f.endswith('.json'))[:-3000] if os.path.isdir(d) else []
+                for f in old:
+                    os.remove(os.path.join(d, f))
 
     def mind_loop(self):
         self.prev, self.stopped, self.woken, self.checked, self.lock_seen = {}, {}, set(), {}, None
@@ -2030,8 +2063,7 @@ class Deck:
                 return False, '找不到这个会话'
             if v and v not in self.projects.known and not (v.startswith('w:') and self.projects.ws_channel(v[2:])):
                 return False, '没有这个项目'
-            self.projects.set_manual(s['id'], v)
-            self.projects.attribute(s)
+            self.projects.set_manual(s['id'], v)  # (the next collect places it so: only that thread changes what is known)
             p = self.projects.known.get(v)
             return True, f'{s["name"]} 算作' + (f'项目 {p["name"]} 的' if p else '工作区本身的' if v else '按它的目录和改的文件找到的项目的') + '会话'
         if what in ('board_post', 'board_seen', 'topic_new', 'topic_close'):
@@ -2523,13 +2555,16 @@ class Deck:
         return True, f'{s["name"]} 改名为 {new}（amail、Zellij 窗格{"、Codex 会话" if s["kind"] == "codex" else ""}都已同步）'
 
 
+ASKS = ('AskUserQuestion', 'ExitPlanMode')  # (tools that put a choice to the person in the terminal)
+
+
 def say_how(s, now=False):
     """How the person's words for a session get there: typed into its pane when it is idle (or now, if asked); held until
     its turn ends while it works; not at all while it sits at a permission or choice prompt (they would answer it); by
     mail when it is in no pane."""
     if s['state'] in ('gone', 'ended'):
         return 'gone'
-    if s.get('prompting'):
+    if s.get('prompting') or (s.get('tool') in ASKS and s['state'] == 'working' and (s.get('tool_at') or 0) > (s.get('tool_end') or 0)):
         return 'menu'
     if not s.get('loc'):
         return 'mail'

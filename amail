@@ -408,6 +408,8 @@ def mail_text(me, mails):
 # {at, ids}: what that session has been handed (all up to at, and ids beyond it) — having one makes it a member.
 
 TOPIC_MAX = 24
+TID = re.compile(r'[0-9a-f]{6}')  # (a discussion's id: also its file's name, so nothing else is taken)
+LOOK = 10.0  # (seconds a channel is read back past what was handed over: a post written a moment late is not lost)
 MENTION = re.compile(r'(?<![A-Za-z0-9_.@-])@([A-Za-z0-9][A-Za-z0-9_.-]{0,40}[A-Za-z0-9_]|[A-Za-z0-9])')  # (ASCII around it: 请@ws-61看 calls ws-61)
 
 
@@ -467,23 +469,39 @@ def posts(key, since=0, topic=None, limit=None):
         if at <= since:
             continue
         m = get(os.path.join(d, f))
-        if m and (topic is None or m.get('topic') == topic):
+        if good_post(m) and (topic is None or m.get('topic') == topic):
             out.append(m)
     return out[-limit:] if limit else out
 
 
+def good_post(m):
+    """A post as amail writes it (anything else in the folder is passed over, never stops a hook)."""
+    return isinstance(m, dict) and isinstance(m.get('id'), str) and isinstance(m.get('at'), (int, float)) and isinstance(m.get('from'), str) \
+        and isinstance(m.get('text'), str) and isinstance(m.get('to') or [], list)
+
+
+def good_topic(t):
+    return isinstance(t, dict) and isinstance(t.get('id'), str) and TID.fullmatch(t['id']) and isinstance(t.get('title'), str) \
+        and isinstance(t.get('at'), (int, float)) and isinstance(t.get('members'), list)
+
+
 def topic_get(key, tid):
-    return get(os.path.join(HOME, 'channels', key, 'topics', f'{tid}.json'))
+    if not TID.fullmatch(str(tid or '')) or not re.fullmatch(r'[pdw]-[0-9a-f]{12}', str(key or '')):
+        return None
+    t = get(os.path.join(HOME, 'channels', key, 'topics', f'{tid}.json'))
+    return t if good_topic(t) else None
 
 
 def topics(key):
     d = os.path.dirname(path('channels', key, 'topics', 'x'))
     ts = [get(os.path.join(d, f)) for f in os.listdir(d) if f.endswith('.json')]
-    return sorted((t for t in ts if t), key=lambda t: -t['at'])
+    return sorted((t for t in ts if good_topic(t)), key=lambda t: -t['at'])
 
 
 def topic_find(tid):
     """(channel key, topic) of a discussion by its id, on any channel."""
+    if not TID.fullmatch(str(tid or '')):
+        return None, None
     for k in channels():
         t = topic_get(k, tid)
         if t:
@@ -497,37 +515,62 @@ def seen_file(key, name):
 
 def join(name, key, at=None, auto=False):
     """NAME is on the channel from now on (or from AT): it is handed what is posted after. auto: put there for working
-    on its project (it leaves when it moves on); otherwise it posted, was called or invited, and stays."""
+    on its project (it steps off when it moves on); otherwise it posted, was called or invited, and stays. One back
+    within ten minutes (sturnus restarting, a flapping guess) goes on from where it was; later, from now."""
     f = seen_file(key, name)
     s = get(f)
-    if not s:
-        put(f, {'at': time.time() if at is None else at, 'ids': [], 'auto': auto})
-    elif s.get('auto') and not auto:
-        put(f, {**s, 'auto': False})
+    now = time.time()
+    if not isinstance(s, dict):
+        put(f, {'at': now if at is None else at, 'ids': [], 'auto': auto})
+    elif s.get('off') or (s.get('auto') and not auto):
+        back = {k: v for k, v in s.items() if k != 'off'}
+        if s.get('off') and now - s['off'] > 600:
+            back.update(at=now, ids=[])
+        put(f, {**back, 'auto': s.get('auto') and auto})
 
 
 def join_mine(me, cwd):
-    """At a turn's start: on the channels of my project and my workspace (sturnus's view, else my folder's repository)."""
-    mine = ((deck() or {}).get('sessions') or {}).get(me) or {}
+    """At a turn's start: on the channels of my project and my workspace (sturnus's view, else my folder's repository);
+    off the ones it was put on for a project it has left. Without sturnus running, nothing is taken away."""
+    d = deck()
+    mine = ((d or {}).get('sessions') or {}).get(me) or {}
     chs = [c for c in (mine.get('project'), mine.get('workspace')) if c]
     if not chs:
         p = project_of(cwd)
         chs = [p] if p else []
     keys = {chan_ensure(c) for c in chs}
-    for k in member_of(me):
-        if k not in keys and (get(seen_file(k, me)) or {}).get('auto'):
-            os.remove(seen_file(k, me))  # (moved on to another project)
+    if d and mine:
+        for k in member_of(me):
+            s = get(seen_file(k, me)) or {}
+            if k not in keys and s.get('auto'):
+                put(seen_file(k, me), {**s, 'off': time.time()})  # (moved on: its place kept a while, in case it comes back)
     for k in keys:
         join(me, k, auto=True)
 
 
+def on_channel(key, name):
+    s = get(os.path.join(HOME, 'channels', key, 'seen', f'{name}.json'))
+    return isinstance(s, dict) and not s.get('off')
+
+
 def members(key):
     d = os.path.dirname(seen_file(key, 'x'))
-    return sorted(f[:-5] for f in os.listdir(d) if f.endswith('.json'))
+    return sorted(f[:-5] for f in os.listdir(d) if f.endswith('.json') and on_channel(key, f[:-5]))
 
 
 def member_of(name):
-    return [k for k in channels() if os.path.exists(os.path.join(HOME, 'channels', k, 'seen', f'{name}.json'))]
+    return [k for k in channels() if on_channel(k, name)]
+
+
+def move_member(old, new):
+    """A session renamed: its places on channels and in discussions go with it."""
+    for k in channels():
+        f = os.path.join(HOME, 'channels', k, 'seen', f'{old}.json')
+        if os.path.exists(f) and not os.path.exists(seen_file(k, new)):
+            os.replace(f, seen_file(k, new))
+        for t in topics(k):
+            if old in t['members']:
+                put(path('channels', k, 'topics', f'{t["id"]}.json'), {**t, 'members': sorted(set(t['members']) - {old} | {new})})
 
 
 def kind_of_name(name):
@@ -548,14 +591,15 @@ def post(frm, key, text, topic=None, title=None):
             raise ValueError(f'no discussion {topic} on this channel (amail topics)')
         if t.get('closed'):
             raise ValueError(f'discussion {topic} is closed: post without --topic, or start a new one')
-    at = round(time.time(), 6)  # (as its file name has it: what is handed over is compared by that)
-    m = {'id': uuid.uuid4().hex[:10], 'at': at, 'from': frm, 'kind': kind_of_name(frm), 'text': text.strip()[:8000],
-         'topic': topic, 'to': sorted(set(MENTION.findall(text)))}
+    on = set(members(key))
+    known = set(board()) | {s['name'] for s in claude_sessions()} | on
+    m = {'id': uuid.uuid4().hex[:10], 'from': frm, 'kind': kind_of_name(frm), 'text': text.strip()[:8000], 'topic': topic,
+         'to': sorted(n for n in set(MENTION.findall(text)) if n == 'all' or n in known)}  # (a session's name, not @dataclass)
     if title:
         m['title'] = title
+    m['at'] = at = round(time.time(), 6)  # (taken last, as its file name has it: what is handed over is compared by that)
     put(path('channels', key, 'posts', f'{at:.6f}-{m["id"]}.json'), m)
     join(frm, key)
-    on = set(members(key))
     for n in m['to']:  # (one called that is not on the channel gets it as a question by mail)
         if n not in on and n not in ('all', frm):
             ch = get(os.path.join(HOME, 'channels', key, 'meta.json')) or {'name': key}
@@ -609,18 +653,24 @@ def news(me, urgent=False, take=True, only=None):
         if only and key != only:
             continue
         f = seen_file(key, me)
-        s = get(f) or {'at': time.time(), 'ids': []}
-        after = posts(key, since=s['at'])
-        new = [p for p in after if p.get('from') != me and p['id'] not in s['ids']]
+        s = get(f)
+        s = s if isinstance(s, dict) and isinstance(s.get('at'), (int, float)) else {'at': time.time(), 'ids': []}
+        done = set(s.get('ids') or [])
+        after = posts(key, since=s['at'] - LOOK)  # (and a little before: one written late is caught; ids keep it once)
+        new = [p for p in after if p['from'] != me and p['id'] not in done]
         if not new:
             continue
-        mine = {t['id'] for t in topics(key) if me in t.get('members', ())}
+        mine = {t['id'] for t in topics(key) if me in t['members']}
         hit = [p for p in new if calls(p, me) or p.get('topic') in mine or (not urgent and (not p.get('topic') or p.get('title')))]
         if urgent:
             hit = [p for p in hit if calls(p, me) or p.get('topic') in mine]
         if take and (hit or not urgent):
-            s = {'at': s['at'], 'ids': s['ids'] + [p['id'] for p in hit]} if urgent else {'at': max(p['at'] for p in after), 'ids': []}
-            put(f, {**(get(f) or {}), 'at': s['at'], 'ids': s['ids'][-500:]})
+            if urgent:
+                at, ids = s['at'], list(done | {p['id'] for p in hit})
+            else:
+                at = max(s['at'], max(p['at'] for p in after))
+                ids = [p['id'] for p in after if p['at'] > at - LOOK] + [i for i in done if i not in {p['id'] for p in after}][-100:]
+            put(f, {**(get(f) or {}), 'at': at, 'ids': ids[-600:]})
         meta = get(os.path.join(HOME, 'channels', key, 'meta.json')) or {'key': key, 'name': key}
         out += [(meta, p) for p in hit]
     return out
@@ -882,6 +932,8 @@ def on_event(kind, ev, p):
         e['state'], e['since'] = state, now
     if ev == 'pre':
         e['tool'], e['tool_at'] = p.get('tool_name') or '?', now
+    if ev == 'post':
+        e['tool_end'] = now  # (a question or plan it put to the person is answered by now)
     if ev in ('pre', 'post', 'prompt', 'stop'):
         e.pop('waiting_for', None)
     if ev in ('stop', 'said'):
@@ -895,9 +947,15 @@ def on_event(kind, ev, p):
         join_mine(me, e.get('cwd'))
     if ev == 'prompt' and kind == 'cursor':
         return None  # (Cursor cannot add context here: its mail comes after a tool, or when it stops)
+    # (a channel's posts at a turn's start — Cursor's, after a tool; calls and discussions also mid-work, and at a stop;
+    # read before the mail is taken: whatever goes wrong with them, the mail is still handed over)
+    try:
+        items = news(me, urgent=not (ev in ('start', 'prompt') or (kind == 'cursor' and ev == 'post')))
+    except Exception as x:
+        items = []
+        with open(path('hook-errors.log'), 'a') as w:
+            w.write(f'{time.ctime()} {kind} channels: {x!r}\n')
     mails = take(me, urgent=ev == 'post')
-    # (a channel's posts at a turn's start — Cursor's, after a tool; calls and discussions also mid-work, and at a stop)
-    items = news(me, urgent=not (ev in ('start', 'prompt') or (kind == 'cursor' and ev == 'post')))
     intro = ''
     if ev == 'start':
         intro = (f'[amail] You are "{me}" on amail, the mailbox shared by the Claude Code, Codex and Cursor sessions on this '
@@ -1333,10 +1391,30 @@ def selftest():
         assert news('codex-456789', urgent=True) == []  # (a plain post waits for a turn's start)
         got = [p['text'] for _, p in news('codex-456789')]
         assert got == ['heads up: main moves'] and news('codex-456789') == [], got
-        post('lead', key, '请@codex-456789看一下 the release, @nobody.')
+        put(path('board', 'helper.json'), {'name': 'helper', 'kind': 'claude'})
+        m = post('lead', key, '请@codex-456789看一下 the release, @helper too; not @dataclass.')
+        assert m['to'] == ['codex-456789', 'helper']  # (only sessions' names call)
         out = ev('codex', 'PostToolUse')['hookSpecificOutput']['additionalContext']
         assert '看一下' in out and '[calls you]' in out and 'heads up' not in out
-        assert not os.path.exists(seen_file(key, 'nobody')) and '看一下' in take('nobody')[0]['text']  # (not on it: by mail)
+        assert not os.path.exists(seen_file(key, 'helper')) and '看一下' in take('helper')[0]['text']  # (not on it: by mail)
+        assert not os.path.exists(path('mail', 'dataclass'))
+        # a post written a moment late (its time before one already handed over) still arrives, once
+        late = {'id': 'late000001', 'at': round(time.time() - 3, 6), 'from': 'lead', 'kind': '?', 'text': 'late one', 'topic': None, 'to': []}
+        post('lead', key, 'on time')
+        assert [p['text'] for _, p in news('codex-456789')] == ['on time']
+        put(path('channels', key, 'posts', f'{late["at"]:.6f}-{late["id"]}.json'), late)
+        assert [p['text'] for _, p in news('codex-456789')] == ['late one'] and news('codex-456789') == []
+        # a broken file in the folder: passed over, and the mail still comes
+        with open(path('channels', key, 'posts', f'{time.time():.6f}-broken.json'), 'w') as w:
+            w.write('[1]')
+        send('lead', 'codex-456789', 'still here?')
+        assert 'still here?' in ev('codex', 'PostToolUse')['hookSpecificOutput']['additionalContext']
+        assert topic_get(key, '../../x') is None and topic_find('../x') == (None, None)
+        try:
+            post('lead', key, 'x', topic='../../../etc/x')
+            assert False, 'a topic id that is a path'
+        except ValueError:
+            pass
         t = topic_new('lead', key, 'Debate: tabs or spaces', 'Argue it.', ['cursor-abcdef'], 4)
         stop = ev('cursor', 'stop', conversation_id='abcdef12-0000')['followup_message']
         assert 'Argue it.' in stop and f'post --topic {t["id"]}' in stop  # (invited: called in at once)
@@ -1357,10 +1435,18 @@ def selftest():
         assert 'closed' in news_text('lead', news('lead'))
         other = tempfile.mkdtemp(prefix='amail-o')
         ev('codex', 'UserPromptSubmit', cwd=other)
-        assert member_of('codex-456789') == []  # (moved on: off its old project's channel)
+        assert member_of('codex-456789') == [key]  # (sturnus not running: nothing is taken away)
+        put(path('deck.json'), {'at': time.time(), 'sessions': {'codex-456789': {'name': 'codex-456789'}}})
+        ev('codex', 'UserPromptSubmit', cwd=other)
+        assert member_of('codex-456789') == []  # (moved on, by sturnus's view: off its old project's channel)
+        ev('codex', 'UserPromptSubmit', cwd=repo)
+        assert member_of('codex-456789') == [key] and not get(seen_file(key, 'codex-456789')).get('off')  # (back soon: where it was)
+        ev('codex', 'UserPromptSubmit', cwd=other)
         post('codex-456789', key, 'back again')
         ev('codex', 'UserPromptSubmit', cwd=other)
         assert member_of('codex-456789') == [key]  # (it posted there: it stays)
+        move_member('codex-456789', 'codex-renamed')
+        assert member_of('codex-renamed') == [key] and member_of('codex-456789') == []
         shutil.rmtree(repo)
         shutil.rmtree(other)
         return 'selftest ok'
@@ -1541,11 +1627,7 @@ def main(argv):
             src = os.path.dirname(path('mail', me, box, 'x'))
             for f in os.listdir(src):
                 os.replace(os.path.join(src, f), path('mail', new, box, f))
-        for k in member_of(me):  # (and its place on channels and in discussions)
-            os.replace(seen_file(k, me), seen_file(k, new))
-            for t in topics(k):
-                if me in t['members']:
-                    put(path('channels', k, 'topics', f'{t["id"]}.json'), {**t, 'members': sorted(set(t['members']) - {me} | {new})})
+        move_member(me, new)  # (and its places on channels and in discussions)
         print(f'{me} is now {new}')
         return 0
     if c in ('post', 'read', 'topic', 'topics'):
