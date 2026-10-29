@@ -797,7 +797,15 @@ def model_label(cfg, role='summary'):
     return f'{m.get("model") or "默认模型"} · {SOURCES.get(m["source"], m["source"])}'
 
 
+WORK_LANG = {  # (the agents' working language: what the models write for the person — summaries, reports, answers, drafts)
+    'zh': '',
+    'en': ('\n\n（工作语言：English。上面要求里说「中文」「汉字」的地方一律改成英文：给人看的文字都用英文写，长度按英文算，14 个汉字约 6 个英文单词，'
+           '40 个汉字约 18 个单词；JSON 的键名，以及 status、by、verdict 这类约定的取值照旧。）'),
+}
+
+
 def ask_model(prompt, cfg, role='summary', m=None, key=None):
+    prompt += WORK_LANG.get(cfg.get('work_lang') or 'zh', '')
     m = m or model_for(cfg, role)
     env = {**os.environ, 'AMAIL_SKIP': '1'}
     os.makedirs(CACHE, exist_ok=True)
@@ -853,7 +861,7 @@ PROMPT = '''你在为一位开发者的「会话总览」写状态。下面是�
 片段：
 {text}
 '''
-NONE = re.compile(r'^(无需|不需要|暂无|没有需要|无$|无。|none|n/?a)', re.I)
+NONE = re.compile(r'^(无需|不需要|暂无|没有需要|无$|无。|none|n/?a|nothing|no action)', re.I)
 
 
 class Summaries:
@@ -1644,7 +1652,7 @@ class Deck:
                           'reports': dict(sorted(((k, v) for k, v in self.reports.data.items() if v.get('r')), key=lambda kv: -kv[1]['at'])[:80]),
                           'reporting': sorted(self.reports.asked | ({self.reports.busy} if self.reports.busy else set())),
                           'events': list(self.events), 'pane_titles': self.cfg.get('pane_titles', True), 'me': ME_NAME, 'dirs': self._dirs,
-                          'launch': self.cfg.get('launch', DEFAULTS['launch']),
+                          'launch': self.cfg.get('launch', DEFAULTS['launch']), 'work_lang': self.cfg.get('work_lang') or 'zh',
                           'about': {'started': STARTED, 'app': APP, 'config': CONF, 'source': self.cfg.get('source'),
                                     'listen': f'{self.cfg["host"]}:{self.cfg["port"]}', 'model': model_label(self.cfg, 'summary'),
                                     'assist': model_label(self.cfg, 'assist'),
@@ -2223,6 +2231,11 @@ class Deck:
             except Exception as e:
                 return False, f'起草失败：{e}'[:300]
             return True, {'draft': text.strip()[:600]}
+        if what == 'work_lang':  # (the language the models write in for the person)
+            v = 'en' if body.get('lang') == 'en' else 'zh'
+            self.cfg['work_lang'] = v
+            save_config({'work_lang': v})
+            return True, {'zh': 'agent 的工作语言：中文。之后写的总结、简报、回答都用中文', 'en': 'Agents now write in English: summaries, reports and answers from here on'}[v]
         if what == 'titles':
             self.cfg['pane_titles'] = bool(body.get('on'))
             save_config({'pane_titles': self.cfg['pane_titles']})

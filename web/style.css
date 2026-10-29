@@ -820,13 +820,12 @@ table.works .when { color: var(--muted); white-space: nowrap; font-variant-numer
 #hero.compact .s-hero .hbtn { height: 28px; padding: 0 10px; font-size: 12px; }
 #hero.compact .tabs { margin-top: 6px; } #hero.compact .tabs > button { padding: 6px 12px 8px; }
 
-/* the logo heads the rail (the rail runs from the top of the window); the column beside the rail folds */
-.lay-btn { width: 62px; height: calc(100% + 1px); align-self: flex-start; display: grid; place-items: center; border: 0; padding: 0; flex: none; border-radius: 0; position: relative; z-index: 2;
-  background: color-mix(in srgb, var(--sunk) 70%, var(--canvas)); border-right: 1px solid var(--hair); }
+/* the logo and the name in one row, the logo over the rail's tiles; the column beside the rail folds */
+.lay-btn { width: 62px; align-self: stretch; display: grid; place-items: center; border: 0; padding: 0; flex: none; border-radius: 0; background: none; }
 .lay-btn .logo { width: 40px; height: 40px; border-radius: 12px; transition: transform .15s var(--ease), box-shadow .15s; }
 .lay-btn:hover .logo { transform: scale(.94); box-shadow: 0 0 0 3px var(--accent-soft), 0 3px 10px -4px rgba(0, 0, 0, .45); }
 .lay-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -6px; }
-.brand .word { margin-left: 14px; }
+.brand .word { margin-left: -2px; }  /* (the logo and its name in one row; the logo centred over the rail) */
 .shell { position: relative; }
 .app.side-off .shell { grid-template-columns: 62px minmax(0, 1fr); }
 .app.side-off .side { display: none; }
