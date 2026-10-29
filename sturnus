@@ -1213,6 +1213,8 @@ class Projects:
         self.touches = {}  # transcript -> (size, when, {project key: weight, work path: weight})
         self.kids = {}  # workspace -> (when, its projects)
         self.wpaths = {}  # workspace key -> its folder
+        self.efile = os.path.join(CACHE, 'workspaces.json')
+        self.ever = set(A.get(self.efile, []) or [])  # (every workspace a session has worked in: listed even when quiet)
         self.mfile = os.path.join(CACHE, 'attrib.json')
         self.manual = A.get(self.mfile, {}) or {}  # session id -> project key, or 'w:' + workspace key (the person's word)
 
@@ -1245,6 +1247,8 @@ class Projects:
         if not p:
             return {'project': None, 'workspace': None}
         p = os.path.realpath(os.path.expanduser(p))
+        while not os.path.isdir(p) and p not in ('/', USER_HOME):  # (a folder since removed, a worktree merged: where it was)
+            p = os.path.dirname(p)
         hit = self.places.get(p)
         if hit and time.time() - hit[0] < 600:
             return hit[1]
@@ -1365,6 +1369,9 @@ class Projects:
         s['workspace'] = at.get('workspace') and A.key_of('w', at['workspace'])
         if s['workspace']:
             self.wpaths[s['workspace']] = at['workspace']
+            if at['workspace'] not in self.ever and not s.get('unknown'):
+                self.ever.add(at['workspace'])
+                A.put(self.efile, sorted(self.ever))
         s['work'], s['branch'], s['attrib'] = at.get('work'), at.get('branch') or '', how
 
     def set_manual(self, sid, value):
@@ -1668,7 +1675,7 @@ class Deck:
                 w['live'] += 1
                 if s.get('loc'):
                     w['groups'][s['loc']['session']] = w['groups'].get(s['loc']['session'], 0) + 1
-        shown = [w for w in wss.values() if w['live'] or w['path'] in P.configured()]
+        shown = [w for w in wss.values() if w['live'] or w['path'] in P.configured() or w['path'] in P.ever]
         for w in shown:
             for p in P.projects_in(w['path']):
                 entry(p)
@@ -1681,7 +1688,8 @@ class Deck:
         for w in shown:
             w['projects'].sort(key=lambda k: (-projects[k]['live'], -projects[k]['at']))
             w['groups'] = sorted(w['groups'], key=lambda g: -w['groups'][g])
-        return sorted(shown, key=lambda w: (-w['live'], w['name'])), projects
+            w['at'] = max([projects[k]['at'] for k in w['projects']] or [0])  # (when anything in it last moved)
+        return sorted(shown, key=lambda w: (-w['live'], -w['at'], w['name'])), projects
 
     def boards_view(self):
         """Every channel as the page lists it: what is new for the person, the last post, its discussions, who is on it."""

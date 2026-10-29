@@ -16,7 +16,9 @@ From the page you can jump to a session's pane, write to it, or give it one name
 - A **work item** is one of a project's worktrees and its branch. Sessions come and go; a work item stays until it is merged and its worktree removed.
 - A session belongs to the project of the folder it is in now. One at the top of a workspace belongs to the project whose files it works on (edits count most), else to the workspace itself. On its page you can say otherwise.
 
-The home page shows a workspace's projects with the sessions on them; a project's page shows its work items (ahead of or behind main, files not committed, the last commit) with their sessions, its channel, the decisions taken and what came out.
+On the page, a narrow rail on the left holds the places that span every workspace (an overview of all workspaces, the channels, the messages, the reports, the queue) and the workspaces themselves: those with sessions working in them, the one open, the ones opened lately; the quiet rest are under "+N" (and in the search, ⌘K; ⌘1–9 switch). The column beside the rail shows whatever the rail has selected: a workspace's dashboard, projects, work items and channel, then its live sessions by how they stand; or a global place's own list (every session with its workspace, every channel, …).
+
+A workspace's dashboard: what needs you there, something to get done, the work in progress (one row per work item with a session on it, or not merged into main, or with files not committed; one left for days is marked), what the sessions are doing, its projects, and what happened lately (channel posts, decisions, outputs). A project's page shows its work items (ahead of or behind main, files not committed, the last commit) with their sessions, its channel, the decisions taken and what came out.
 
 ## Channels
 
