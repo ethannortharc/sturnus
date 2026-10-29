@@ -3436,7 +3436,7 @@ def fetch_release(v, tar, sha):
                 raise ValueError(f'sturnus-{v}.tar.gz holds {m.name!r}: not installed')
         shutil.rmtree(os.path.join(dest, top), ignore_errors=True)
         os.makedirs(dest, exist_ok=True)
-        t.extractall(dest)
+        t.extractall(dest, **({'filter': 'data'} if hasattr(tarfile, 'data_filter') else {}))  # (newer Pythons check again, and say nothing)
     return os.path.join(dest, top)
 
 
