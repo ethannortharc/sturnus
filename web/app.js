@@ -151,14 +151,14 @@ function attention(s) {
 }
 const ATT = { decide: ['等你决定', 'waiting'], blocked: ['卡住了', 'blocked'], review: ['可以验收', 'review'] };
 function standing(s) {
-  if (s.state === 'gone') return ['gone', '已离开'];
-  if (s.state === 'ended') return ['ended', '已结束'];
+  if (s.state === 'gone') return ['gone', t('已离开')];
+  if (s.state === 'ended') return ['ended', t('已结束')];
   const a = attention(s);
-  if (a === 'decide') return ['waiting', '等你'];
-  if (a === 'blocked') return ['blocked', '卡住'];
-  if (a === 'review') return ['review', '待验收'];
-  if (s.state === 'working') return ['working', '工作中'];
-  return ['idle', '空闲'];
+  if (a === 'decide') return ['waiting', t('等你')];
+  if (a === 'blocked') return ['blocked', t('卡住')];
+  if (a === 'review') return ['review', t('待验收')];
+  if (s.state === 'working') return ['working', t('工作中')];
+  return ['idle', t('空闲')];
 }
 const titleOf = s => s.title || (s.summary ? s.summary.split(/[，。；,;：:]/)[0].slice(0, 18) : '') || (s.unknown ? '还认不出在做什么' : s.name);
 // how words for a session get there (as the deck's say_how): typed when idle, held while it works, never into a prompt
@@ -169,12 +169,30 @@ const wsOf = k => (S.workspaces || []).find(w => w.key === k) || null;
 const boardOf = k => (S.boards || {})[k] || null;
 const live = s => !s.stale && !['gone', 'ended'].includes(s.state);
 
+// ---------- language: the menus and navigation in Chinese or English (the Chinese is the key) ----------
+const EN = { "总览": "Overview", "总览：所有工作区": "Overview: all workspaces", "讨论：所有讨论区": "Channels: all of them", "消息：会话之间的信": "Messages: mail between sessions", "报告：每个会话的简报": "Reports: a brief per session", "排队：等会话空了再发": "Queue: sent once a session is free", "所有工作区（还有 {n} 个安静的）": "All workspaces ({n} more, quiet)", "所有工作区": "All workspaces", "不在工作区里的会话": "Sessions in no workspace", "不在工作区里": "In no workspace", "（再点一下：收起或展开旁边那栏）": " (click again: fold or unfold the column)", "目录不在任何工作区里的会话": "sessions whose folder is in no workspace", "仪表盘": "Dashboard", "项目": "Projects", "工作项": "Work items", "讨论区": "Channel", "终端": "Terminal", "讨论": "Channels", "每个工作区、每个项目一个讨论区": "one per workspace and per project", "{name} 工作区": "{name} workspace", "消息": "Messages", "会话之间的信，和写给你的": "mail between sessions, and to you", "会话之间": "Between sessions", "与你有关": "To and from you", "报告": "Reports", "每个会话的简报": "a brief per session", "排队": "Queue", "等会话空了再发的事": "things to send once a session is free", "可以发了": "Ready to send", "排着": "Waiting", "已发出": "Sent", "不用发了": "Dropped", "{n} 个 · 有会话的在前": "{n} · busy ones first", "筛选工作区": "Filter workspaces", "有会话": "With sessions", "安静": "Quiet", "{n} 个会话": "{n} sessions", "没有这个名字的工作区": "No workspace by that name", "{a} 个工作区 · {b} 个会话": "{a} workspaces · {b} sessions", "等你": "Needs you", "工作中": "Working", "空闲": "Idle", "卡住": "Blocked", "待验收": "To review", "已离开": "Gone", "已结束": "Ended", "一天以上没动静 {n} 个": "{n} quiet for a day", "现在没有会话": "No sessions now", "工作区顶层": "workspace top", "概览": "Overview", "对话": "Conversation", "在终端里打开": "Open in terminal", "进入": "Enter", "让连着这个组的终端切到它": "Switch the attached terminal to it", "会话": "Sessions", "{n} 条新": "{n} new", "在这里新建会话": "New session here", "收起旁边那栏（⌘B）": "Fold the column (⌘B)", "展开旁边那栏（⌘B）": "Unfold the column (⌘B)", "设置": "Settings", "助手与模型": "Assistant & models", "语音输入": "Voice input", "显示": "Display", "访问": "Access", "关于": "About", "这台机器上的显示偏好。": "Display preferences on this machine.", "主题": "Theme", "跟随系统，或固定浅色、深色。": "Follow the system, or always light or dark.", "跟随系统": "System", "浅色": "Light", "深色": "Dark", "工作区图标": "Workspace marks", "最左边那条栏里工作区的颜色。": "The color of workspaces on the rail.", "石墨": "Graphite", "暗彩": "Muted colors", "石墨加色条": "Graphite with a stripe", "窗格标题": "Pane titles", "用「状态 · 会话名 · 在做的事」做每个 agent 窗格的标题，在 Zellij 或 tmux 里一眼认出是哪个（tmux 要开 pane-border-status 才看得到）。": "Title each agent pane \"state · name · what it does\", to tell them apart in Zellij or tmux (tmux shows them with pane-border-status).", "语言": "Language", "菜单和导航用的语言；页面内容暂时还是中文。": "The language of menus and navigation; page content is in Chinese for now.", "搜索工作区、项目、会话": "Search…", "新建会话": "New session", "新建会话（N）": "New session (N)", "实时": "Live", "连接中断，重试中": "Disconnected, retrying", "与本机 sturnus 服务的连接": "Connection to Sturnus on this machine", "主题：跟随系统": "Theme: system", "主题：浅色": "Theme: light", "主题：深色": "Theme: dark", "助手：问各个会话的事（⌘/Ctrl+J）": "Assistant: ask about the sessions (⌘/Ctrl+J)", "工作区、项目、会话的名字，任务，目录……": "Names of workspaces, projects, sessions; tasks; folders…", "选择": "select", "打开": "open", "关闭": "close", "没有匹配的工作区、项目或会话": "No matching workspace, project or session", "工作区 · {p}": "Workspace · {p}", "项目 · {w}": "Project · {w}", "总结模型出错，去设置里看看": "The summary model failed: see Settings", "总结：{m}": "Summaries: {m}", " · 正在更新": " · updating", "刷新于 {t}": "Refreshed {t}", "刚刚": "just now", "{t}前": "{t} ago", "{n} 分钟": "{n} min", "{n} 小时": "{n} h", "{n} 天": "{n} d", "工作区与全局入口": "Workspaces and global places", "Sturnus 总览": "Sturnus overview", "搜索会话": "Search" };
+let LANG = 'zh';
+const t = (s, v) => { let x = LANG === 'en' && EN[s] !== undefined ? EN[s] : s; for (const k in v || {}) x = x.split('{' + k + '}').join(v[k]); return x; };
+const agoT = t0 => (ago(t0) === '刚刚' ? t('刚刚') : t('{t}前', { t: LANG === 'en' ? agoEn(t0) : ago(t0) }));
+function agoEn(t0) { const x = Math.max(0, Date.now() / 1000 - t0); return x < 3600 ? t('{n} 分钟', { n: Math.round(x / 60) }) : x < 86400 ? t('{n} 小时', { n: Math.floor(x / 3600) }) : t('{n} 天', { n: Math.floor(x / 86400) }); }
+function applyLang() {
+  const v = store.get('deck.lang', 'auto');
+  LANG = v === 'auto' ? (/^zh/i.test(navigator.language || 'zh') ? 'zh' : 'en') : v === 'en' ? 'en' : 'zh';
+  document.documentElement.lang = LANG === 'en' ? 'en' : 'zh-CN';
+  for (const [sel, attr, k] of [['[data-i18n]', null, 'zhText'], ['[data-i18n-title]', 'title', 'zhTitle'], ['[data-i18n-ph]', 'placeholder', 'zhPh'], ['[data-i18n-label]', 'aria-label', 'zhLabel']]) {
+    document.querySelectorAll(sel).forEach(e => {
+      if (e.dataset[k] === undefined) e.dataset[k] = attr ? e.getAttribute(attr) || '' : e.textContent;
+      if (attr) e.setAttribute(attr, t(e.dataset[k])); else e.textContent = t(e.dataset[k]);
+    });
+  }
+}
+
 // ---------- theme ----------
 function applyTheme() {
-  const t = store.get('deck.theme', 'auto');
-  document.documentElement.dataset.theme = t === 'auto' ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : t;
-  $('#themeBtn').innerHTML = I[t === 'auto' ? 'auto' : t === 'dark' ? 'moon' : 'sun'];
-  $('#themeBtn').title = { auto: '主题：跟随系统', light: '主题：浅色', dark: '主题：深色' }[t];
+  const th = store.get('deck.theme', 'auto');
+  document.documentElement.dataset.theme = th === 'auto' ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : th;
+  $('#themeBtn').innerHTML = I[th === 'auto' ? 'auto' : th === 'dark' ? 'moon' : 'sun'];
+  $('#themeBtn').title = { auto: t('主题：跟随系统'), light: t('主题：浅色'), dark: t('主题：深色') }[th];
 }
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
 
@@ -192,7 +210,7 @@ async function load() {
 function conn() {
   const off = Date.now() - lastOk > 6000;
   $('#conn').classList.toggle('off', off);
-  $('#conn span').textContent = off ? '连接中断，重试中' : '实时';
+  $('#conn span').textContent = off ? t('连接中断，重试中') : t('实时');
 }
 async function api(what, body) {
   const r = await fetch('/api/' + what, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Deck': '1' }, body: JSON.stringify(body || {}) });
@@ -237,7 +255,7 @@ const go = (id, tab) => { location.hash = `#/s/${encodeURIComponent(id)}${tab &&
 
 function build() {  // (the frame of a view; render() fills it)
   closeOverlays();
-  const crumb = t => { $('#crumbs').innerHTML = t ? `${I.chev}<b>${esc(t)}</b>` : ''; };
+  const crumb = x => { $('#crumbs').innerHTML = x ? `${I.chev}<b>${esc(t(x))}</b>` : ''; };
   const todo = `<section class="todo-sec"><form class="q-new todo" id="todo" autocomplete="off"><textarea id="tText" rows="2" placeholder="有件事要做？写下来，选个项目，助手按各会话在做的事帮你挑交给谁，或者新开一个"></textarea>
         <div class="row"><label class="hint">项目</label><select id="tProj"></select><span id="tMic"></span><span class="sp"></span><a class="btn" id="qlink" href="#/queue">排队</a><button class="btn primary" type="submit">${I.spark}交给谁</button></div></form><div id="tRec"></div></section>`;
   const wireTodo = () => {
@@ -274,7 +292,7 @@ function build() {  // (the frame of a view; render() fills it)
     crumb('讨论');
     $('#view').innerHTML = `<div class="page narrow"><div class="h-title"><h2>讨论</h2><span class="sub">每个项目一个讨论区，在这个项目上工作的会话都会收到；每个工作区也有一个</span></div><div id="bList"></div></div>`;
   } else if (route.name === 'gterm') {
-    crumb(`${groupName(route.group)} · 终端`);
+    crumb(`${groupName(route.group)} · ${t('终端')}`);
     $('#view').innerHTML = `<div class="sess"><div id="tabBody"></div></div>`;
   } else if (route.name === 'talk') {
     crumb('消息');
@@ -383,7 +401,7 @@ function applyFold() {
   const app = document.querySelector('.app');
   app.classList.toggle('side-off', sideOff);
   const h = $('#sideHandle');
-  if (h) { h.title = `${sideOff ? '展开' : '收起'}旁边那栏（⌘B）`; h.setAttribute('aria-label', h.title); h.innerHTML = sideOff ? I.chev : I.chev.replace('<svg', '<svg style="transform:scaleX(-1)"'); }
+  if (h) { h.title = t(sideOff ? '展开旁边那栏（⌘B）' : '收起旁边那栏（⌘B）'); h.setAttribute('aria-label', h.title); h.innerHTML = sideOff ? I.chev : I.chev.replace('<svg', '<svg style="transform:scaleX(-1)"'); }
   fitTerm();
 }
 function setSide(off) { sideOff = off; store.set('deck.sideOff', off); applyFold(); }
@@ -398,11 +416,11 @@ function drawRail() {
     if (w && !w.live && !seen.includes(w.key)) store.set('deck.wsSeen', [w.key, ...seen].slice(0, 3));
   }
   draw('railnav', [sp, on.map(w => [w.key, w.name, wsNeed(w), wsWorking(w)]), rest, loose, need, bNew, bCalls, today, qReady], () => {
-    const g = (href, on, icon, label, n, hot) => `<a class="tile g${on ? ' on' : ''}" href="${href}" title="${label}${on ? '（再点一下：收起或展开旁边那栏）' : ''}" aria-label="${label}">${icon}${n ? `<span class="badge${hot ? ' hot' : ''}">${n}</span>` : ''}</a>`;
+    const g = (href, on, icon, label, n, hot) => `<a class="tile g${on ? ' on' : ''}" href="${href}" title="${t(label, { n: rest })}${on ? t('（再点一下：收起或展开旁边那栏）') : ''}" aria-label="${t(label, { n: rest })}">${icon}${n ? `<span class="badge${hot ? ' hot' : ''}">${n}</span>` : ''}</a>`;
     $('#rail').innerHTML = g('#/', sp.t === 'home', I.grid, '总览：所有工作区', need, true) + '<hr>'
       + on.map((w, i) => `<a class="tile ws${sp.t === 'ws' && sp.key === w.key ? ' on' : ''}${w.live ? '' : ' quiet'}" href="#/w/${encodeURIComponent(w.key)}" style="--t:${wsColor(w)}" title="${esc(w.name)} · ${esc(home(w.path))}${i < 9 ? ` （⌘${i + 1}）` : ''}" aria-label="${esc(w.name)}">${esc(w.name.slice(0, 1).toUpperCase())}${wsNeed(w) ? `<span class="badge hot">${wsNeed(w)}</span>` : wsWorking(w) ? '<i class="pulse"></i>' : ''}</a>`).join('')
-      + (rest > 0 ? g('#/workspaces', sp.t === 'workspaces', `<b>+${rest}</b>`, `所有工作区（还有 ${rest} 个安静的）`) : g('#/workspaces', sp.t === 'workspaces', I.plus, '所有工作区'))
-      + (loose ? `<a class="tile g${sp.t === 'ws' && sp.key === '~' ? ' on' : ''}" href="#/w/~" title="不在工作区里的会话" aria-label="不在工作区里"><b>…</b><span class="badge">${loose}</span></a>` : '')
+      + (rest > 0 ? g('#/workspaces', sp.t === 'workspaces', `<b>+${rest}</b>`, '所有工作区（还有 {n} 个安静的）') : g('#/workspaces', sp.t === 'workspaces', I.plus, '所有工作区'))
+      + (loose ? `<a class="tile g${sp.t === 'ws' && sp.key === '~' ? ' on' : ''}" href="#/w/~" title="${t('不在工作区里的会话')}" aria-label="${t('不在工作区里')}"><b>…</b><span class="badge">${loose}</span></a>` : '')
       + '<span class="push"></span>'
       + g('#/boards', sp.t === 'boards', I.chat, '讨论：所有讨论区', bCalls || bNew, bCalls > 0)
       + g('#/talk', sp.t === 'talk', I.mail, '消息：会话之间的信', today)
@@ -415,15 +433,15 @@ function drawSide() {
   draw('side', [sp, route, S.sessions.map(s => [s.id, s.title, s.state, s.status, s.needs_you && 1, s.stale, s.kind, s.project, s.workspace, s.branch]), (S.workspaces || []).map(w => [w.key, w.live, w.projects.length]),
     Object.values(S.boards || {}).map(b => [b.key, b.unread]), Object.entries(S.groups || {}).map(([g, z]) => [g, z.clients.length, z.agents]), (S.queue || []).map(i => i.status), railTab, [...quietOpen],
     Object.values(S.projects || {}).map(p => [p.key, p.facts && p.facts.at]), (S.workspaces || []).map(w => w.groups)], () => {
-    const head = (t, sub, extra = '') => `<div class="sp-head"><b>${t}</b>${sub ? `<span>${sub}</span>` : ''}${extra}</div>`;
-    const item = (href, on, icon, label, n, hot) => `<a class="nav-item${on ? ' on' : ''}" href="${href}">${icon}${label}${n ? `<span class="n${hot ? ' hot' : ''}">${n}</span>` : ''}</a>`;
-    const row = (s, pre) => { const [st, label] = standing(s), p = projOf(s.project); return `<div class="side-s${cur && cur.id === s.id ? ' on' : ''}${s.stale ? ' quiet' : ''}" data-go="${esc(s.id)}" title="${esc(s.name)}">${mark(FULL[s.kind] ? s.kind : 'codex', st, 'sm')}<b>${esc(titleOf(s))}</b><span><em class="${st}">${label}</em> · ${pre ? esc(pre) + ' · ' : ''}${p ? esc(p.name) + (s.branch && s.work !== p.path ? ' · ' + esc(s.branch) : '') : s.workspace ? '工作区顶层' : esc(s.name)}</span></div>`; };
+    const head = (x, sub, extra = '') => `<div class="sp-head"><b>${t(x)}</b>${sub ? `<span>${t(sub)}</span>` : ''}${extra}</div>`;
+    const item = (href, on, icon, label, n, hot) => `<a class="nav-item${on ? ' on' : ''}" href="${href}">${icon}${t(label)}${n ? `<span class="n${hot ? ' hot' : ''}">${n}</span>` : ''}</a>`;
+    const row = (s, pre) => { const [st, label] = standing(s), p = projOf(s.project); return `<div class="side-s${cur && cur.id === s.id ? ' on' : ''}${s.stale ? ' quiet' : ''}" data-go="${esc(s.id)}" title="${esc(s.name)}">${mark(FULL[s.kind] ? s.kind : 'codex', st, 'sm')}<b>${esc(titleOf(s))}</b><span><em class="${st}">${label}</em> · ${pre ? esc(pre) + ' · ' : ''}${p ? esc(p.name) + (s.branch && s.work !== p.path ? ' · ' + esc(s.branch) : '') : s.workspace ? t('工作区顶层') : esc(s.name)}</span></div>`; };
     const byState = (list, k, pre) => {
       const act = list.filter(s => !s.stale && !['gone', 'ended'].includes(s.state)), quiet = list.filter(s => s.stale), qOpen = quietOpen.has(k);
       const groups = [['等你', act.filter(s => ['waiting', 'blocked', 'review'].includes(standing(s)[0]))], ['工作中', act.filter(s => standing(s)[0] === 'working')], ['空闲', act.filter(s => standing(s)[0] === 'idle')]];
-      return groups.filter(([, l]) => l.length).map(([t, l]) => `<div class="side-gh"><span>${t} · ${l.length}</span></div>${l.map(s => row(s, pre && pre(s))).join('')}`).join('')
-        + (quiet.length ? `<div class="side-quiet" data-quiet="${esc(k)}">${chev(qOpen)}一天以上没动静 ${quiet.length} 个</div>${qOpen ? quiet.map(s => row(s, pre && pre(s))).join('') : ''}` : '')
-        + (!act.length && !quiet.length ? '<div class="side-empty">现在没有会话</div>' : '');
+      return groups.filter(([, l]) => l.length).map(([x, l]) => `<div class="side-gh"><span>${t(x)} · ${l.length}</span></div>${l.map(s => row(s, pre && pre(s))).join('')}`).join('')
+        + (quiet.length ? `<div class="side-quiet" data-quiet="${esc(k)}">${chev(qOpen)}${t('一天以上没动静 {n} 个', { n: quiet.length })}</div>${qOpen ? quiet.map(s => row(s, pre && pre(s))).join('') : ''}` : '')
+        + (!act.length && !quiet.length ? `<div class="side-empty">${t('现在没有会话')}</div>` : '');
     };
     let html = '';
     if (sp.t === 'ws' && sp.key === '~') {
@@ -438,39 +456,39 @@ function drawSide() {
         + item(`#/w/${encodeURIComponent(w.key)}/works`, page === 'works', I.branch, '工作项', works)
         + item(`#/b/${encodeURIComponent(w.key)}`, page === 'board', I.chat, '讨论区', b && b.unread, b && b.calls)
         + byState(mine, 'ws:' + w.key)
-        + (groups.length ? `<div class="side-gh"><span>终端</span></div>${groups.map(g => `<a class="side-g sm${route.name === 'gterm' && route.group === g ? ' on' : ''}" href="#/term/${encodeURIComponent(g)}" title="${esc(attachCmd(g))}"><i class="${((S.groups || {})[g] || {}).clients && S.groups[g].clients.length ? 'live' : ''}"></i><span class="nm">${esc(groupName(g))}</span>${muxTag(g)}</a>`).join('')}` : '');
+        + (groups.length ? `<div class="side-gh"><span>${t('终端')}</span></div>${groups.map(g => `<a class="side-g sm${route.name === 'gterm' && route.group === g ? ' on' : ''}" href="#/term/${encodeURIComponent(g)}" title="${esc(attachCmd(g))}"><i class="${((S.groups || {})[g] || {}).clients && S.groups[g].clients.length ? 'live' : ''}"></i><span class="nm">${esc(groupName(g))}</span>${muxTag(g)}</a>`).join('')}` : '');
     } else if (sp.t === 'boards') {
       html = head('讨论', '每个工作区、每个项目一个讨论区') + (S.workspaces || []).map(w => {
         const keys = [w.key, ...w.projects.filter(k => boardOf(k) || S.sessions.some(s => s.project === k))];
         return `<div class="side-gh"><span>${esc(w.name)}</span></div>` + keys.map(k => { const b = boardOf(k), isW = k === w.key;
-          return item(`#/boards/${encodeURIComponent(k)}`, route.key === k, isW ? I.chat : I.folder, isW ? `${esc(w.name)} 工作区` : esc(projOf(k).name), b && (b.calls || b.unread), b && b.calls); }).join('');
+          return item(`#/boards/${encodeURIComponent(k)}`, route.key === k, isW ? I.chat : I.folder, isW ? t('{name} 工作区', { name: esc(w.name) }) : esc(projOf(k).name), b && (b.calls || b.unread), b && b.calls); }).join('');
       }).join('');
     } else if (sp.t === 'talk') {
-      html = head('消息', '会话之间的信，和写给你的') + [['talk', '会话之间'], ['mine', '与你有关']].map(([k, l]) => `<a class="nav-item${railTab === k ? ' on' : ''}" data-rail="${k}" href="#/talk">${I.mail}${l}</a>`).join('');
+      html = head('消息', '会话之间的信，和写给你的') + [['talk', '会话之间'], ['mine', '与你有关']].map(([k, l]) => `<a class="nav-item${railTab === k ? ' on' : ''}" data-rail="${k}" href="#/talk">${I.mail}${t(l)}</a>`).join('');
     } else if (sp.t === 'reports') {
       html = head('报告', '每个会话的简报') + (S.workspaces || []).map(w => { const l = tops.filter(s => s.workspace === w.key && !['gone', 'ended'].includes(s.state));
         return l.length ? `<div class="side-gh"><span>${esc(w.name)}</span></div>${l.map(s => row(s)).join('')}` : ''; }).join('');
     } else if (sp.t === 'queue') {
       const q = S.queue || [], c = st => q.filter(i => st.includes(i.status)).length;
       html = head('排队', '等会话空了再发的事') + [['可以发了', ['ready']], ['排着', ['waiting', 'checking', 'held']], ['已发出', ['sent']], ['不用发了', ['dropped']]]
-        .map(([l, st]) => `<div class="nav-item static">${I.list}${l}<span class="n${st[0] === 'ready' && c(st) ? ' hot' : ''}">${c(st) || ''}</span></div>`).join('');
+        .map(([l, st]) => `<div class="nav-item static">${I.list}${t(l)}<span class="n${st[0] === 'ready' && c(st) ? ' hot' : ''}">${c(st) || ''}</span></div>`).join('');
     } else if (sp.t === 'workspaces') {
       if ($('#wsFilter') && $('#wsList')) { $('#wsList').innerHTML = wsListHtml(); return; }  // (the filter stays as it is: typing in it is never cut)
-      html = head('所有工作区', `${(S.workspaces || []).length} 个 · 有会话的在前`, `<input class="field side-filter" id="wsFilter" placeholder="筛选工作区" value="${esc(sig.wsFilter || '')}" autocomplete="off">`)
+      html = head('所有工作区', t('{n} 个 · 有会话的在前', { n: (S.workspaces || []).length }), `<input class="field side-filter" id="wsFilter" placeholder="${t('筛选工作区')}" value="${esc(sig.wsFilter || '')}" autocomplete="off">`)
         + `<div id="wsList">${wsListHtml()}</div>`;
     } else {  // (all workspaces: every session, with the workspace it is in)
       const gs = Object.keys(S.groups || {});
-      html = head('所有工作区', `${(S.workspaces || []).length} 个工作区 · ${tops.filter(live).length} 个会话`) + byState(tops, 'home', s => (wsOf(s.workspace) || { name: '不在工作区里' }).name)
-        + (gs.length ? `<div class="side-gh"><span>终端</span></div>${gs.map(g => `<a class="side-g sm" href="#/term/${encodeURIComponent(g)}" title="${esc(attachCmd(g))}"><i class="${S.groups[g].clients.length ? 'live' : ''}"></i><span class="nm">${esc(groupName(g))}</span>${muxTag(g)}<span class="n">${S.groups[g].agents || ''}</span></a>`).join('')}` : '');
+      html = head('所有工作区', t('{a} 个工作区 · {b} 个会话', { a: (S.workspaces || []).length, b: tops.filter(live).length })) + byState(tops, 'home', s => (wsOf(s.workspace) || { name: t('不在工作区里') }).name)
+        + (gs.length ? `<div class="side-gh"><span>${t('终端')}</span></div>${gs.map(g => `<a class="side-g sm" href="#/term/${encodeURIComponent(g)}" title="${esc(attachCmd(g))}"><i class="${S.groups[g].clients.length ? 'live' : ''}"></i><span class="nm">${esc(groupName(g))}</span>${muxTag(g)}<span class="n">${S.groups[g].agents || ''}</span></a>`).join('')}` : '');
     }
     $('#side').innerHTML = html;
   });
 }
 function wsListHtml() {
   const f = (sig.wsFilter || '').toLowerCase(), ws = (S.workspaces || []).filter(w => !f || (w.name + ' ' + w.path).toLowerCase().includes(f));
-  return [['有会话', ws.filter(w => w.live)], ['安静', ws.filter(w => !w.live)]].filter(([, l]) => l.length).map(([t, l]) => `<div class="side-gh"><span>${t} · ${l.length}</span></div>`
-    + l.map(w => `<a class="nav-item" href="#/w/${encodeURIComponent(w.key)}"><span class="wsdot" style="--t:${wsColor(w)}">${esc(w.name.slice(0, 1).toUpperCase())}</span>${esc(w.name)}<span class="n">${w.live ? w.live + ' 个会话' : w.at ? ago(w.at) + '前' : ''}</span></a>`).join('')).join('')
-    || '<div class="side-empty">没有这个名字的工作区</div>';
+  return [['有会话', ws.filter(w => w.live)], ['安静', ws.filter(w => !w.live)]].filter(([, l]) => l.length).map(([x, l]) => `<div class="side-gh"><span>${t(x)} · ${l.length}</span></div>`
+    + l.map(w => `<a class="nav-item" href="#/w/${encodeURIComponent(w.key)}"><span class="wsdot" style="--t:${wsColor(w)}">${esc(w.name.slice(0, 1).toUpperCase())}</span>${esc(w.name)}<span class="n">${w.live ? t('{n} 个会话', { n: w.live }) : w.at ? agoT(w.at) : ''}</span></a>`).join('')).join('')
+    || `<div class="side-empty">${t('没有这个名字的工作区')}</div>`;
 }
 
 // the ones without a stir for a day fold away (until opened)
@@ -600,7 +618,7 @@ function renderWs() {
   const key = route.key;
   if (key === '~') {
     const loose = roots(S.sessions).filter(s => !s.workspace);
-    $('#crumbs').innerHTML = `${I.chev}<b>不在工作区里</b>`;
+    $('#crumbs').innerHTML = `${I.chev}<b>${t('不在工作区里')}</b>`;
     draw('wshead', ['~'], () => { $('#wsHead').innerHTML = `<div class="t"><h2>不在工作区里</h2><div class="sub"><span>目录不在任何工作区里的会话</span></div></div>`; });
     draw('wsbody', [loose.map(s => [s.id, s.state, s.title, s.summary, s.status])], () => { $('#wsBody').innerHTML = loose.length ? `<div class="cards">${loose.map(card).join('')}</div>` : '<div class="calm">现在没有这样的会话。</div>'; });
     return;
@@ -608,7 +626,7 @@ function renderWs() {
   const w = wsOf(key);
   if (!w) { draw('wshead', ['none', key], () => { $('#wsHead').innerHTML = `<div class="t"><h2>没有这个工作区</h2></div>`; $('#wsBody').innerHTML = `<a class="btn" href="#/">${I.back}回到总览</a>`; }); return; }
   const mine = roots(S.sessions).filter(s => s.workspace === w.key), on = mine.filter(live), c = k => on.filter(s => standing(s)[0] === k).length, b = boardOf(w.key);
-  $('#crumbs').innerHTML = `${I.chev}<a href="#/w/${encodeURIComponent(w.key)}">${esc(w.name)}</a>${route.tab !== 'dash' ? `${I.chev}<b>${route.tab === 'projects' ? '项目' : '工作项'}</b>` : `${I.chev}<b>仪表盘</b>`}`;
+  $('#crumbs').innerHTML = `${I.chev}<a href="#/w/${encodeURIComponent(w.key)}">${esc(w.name)}</a>${I.chev}<b>${t(route.tab === 'projects' ? '项目' : route.tab === 'works' ? '工作项' : '仪表盘')}</b>`;
   draw('wshead', [w.key, w.name, w.path, w.projects.length, c('working'), c('waiting') + c('blocked'), c('review'), c('idle'), b && b.unread], () => {
     $('#wsHead').innerHTML = `<span class="wsdot xl" style="--t:${wsColor(w)}">${esc(w.name.slice(0, 1).toUpperCase())}</span><div class="t"><h2>${esc(w.name)}<em>工作区</em></h2>
         <div class="sub"><span class="nm">${esc(home(w.path))}</span><span>${w.projects.length} 个项目</span><span>${workRows(w).length} 个工作项在进行</span></div></div>
@@ -770,8 +788,8 @@ function renderSession() {
       <div class="row">${mark(k, st, 'lg')}<div style="min-width:0"><h1>${esc(titleOf(s))}</h1>
         <div class="sub"><span class="nm">${esc(s.name)}</span>${projOf(s.project) ? `<a class="pj-link" href="#/p/${encodeURIComponent(s.project)}">${I.folder}${esc(projOf(s.project).name)}${s.branch && s.work !== projOf(s.project).path ? ` / ${esc(s.branch)}` : ''}</a>` : ''}${parentOf(s) ? `<span>由 <a data-go="${esc(parentOf(s).id)}">${esc(parentOf(s).name)}</a> 启动</span>` : s.origin && !s.loc ? `<span>${esc(s.origin)}</span>` : ''}<span>${FULL[s.kind] || esc(s.kind)}</span><span>${label} · ${ago(s.since)}</span>${s.loc ? `<span>${esc(groupName(s.loc.session))} › 窗格 ${esc(s.loc.pane)}</span>` : ''}<span title="${esc(s.cwd || '')}">${esc(home(s.cwd))}</span></div></div>
       </div>
-      <nav class="tabs">${[['overview', '概览'], ['report', '报告'], ['chat', '对话'], ['term', '终端'], ['msgs', '消息']].map(([t, l]) => `<button data-tab-go="${t}" class="${sessTab === t ? 'on' : ''}">${l}</button>`).join('')}
-        <div class="acts"><button class="hbtn" data-act="jump" ${s.loc ? '' : 'disabled'} title="让连着这个组的终端切到它">${I.jump}在终端里打开</button><button class="hbtn primary" data-tab-go="term" ${webOk(s) ? '' : 'disabled'}>${I.enter}进入</button></div></nav></div>`;
+      <nav class="tabs">${[['overview', '概览'], ['report', '报告'], ['chat', '对话'], ['term', '终端'], ['msgs', '消息']].map(([x, l]) => `<button data-tab-go="${x}" class="${sessTab === x ? 'on' : ''}">${t(l)}</button>`).join('')}
+        <div class="acts"><button class="hbtn" data-act="jump" ${s.loc ? '' : 'disabled'} title="${t('让连着这个组的终端切到它')}">${I.jump}${t('在终端里打开')}</button><button class="hbtn primary" data-tab-go="term" ${webOk(s) ? '' : 'disabled'}>${I.enter}${t('进入')}</button></div></nav></div>`;
   });
   if (sessTab === 'overview') drawOverview(s, k);
   else if (sessTab === 'report') draw('tab', ['report', s.id, (S.reports || {})[s.id], S.reporting, s.title, s.state, tick()], () => { $('#tabBody').innerHTML = `<div class="s-body"><div class="rep-one">${repCard(s, (S.reports || {})[s.id])}</div></div>`; });
@@ -851,8 +869,8 @@ function renderProject() {
     $('#hero').innerHTML = `<div class="s-hero proj"><div class="row"><span class="mark lg pj">${I.folder}</span><div style="min-width:0"><h1>${esc(p.name)}</h1>
         <div class="sub">${w ? `<span>工作区 ${esc(w.name)}</span>` : ''}<span class="nm">${esc(home(p.path))}</span>${p.git ? `<span>${I.branch}${esc(f.main || '')}${f.tag ? ' · ' + esc(f.tag) : ''}${up}</span>` : '<span>文件夹，不是 git 仓库</span>'}${f.url ? `<a href="${esc(f.url)}" target="_blank" rel="noopener noreferrer">${esc(f.url.replace(/^https:\/\//, ''))}</a>` : ''}</div></div>
       </div>
-      <nav class="tabs">${[['overview', '概览'], ['board', '讨论' + (b && b.unread ? ` · ${b.unread} 条新` : '')], ['sessions', `会话 · ${ss.length}`]].map(([t, l]) => `<button data-ptab="${t}" class="${tab === t ? 'on' : ''}">${esc(l)}</button>`).join('')}
-        <div class="acts"><button class="hbtn primary" data-newp="${esc(p.key)}">${I.plus}在这里新建会话</button></div></nav></div>`;
+      <nav class="tabs">${[['overview', t('概览')], ['board', t('讨论') + (b && b.unread ? ' · ' + t('{n} 条新', { n: b.unread }) : '')], ['sessions', `${t('会话')} · ${ss.length}`]].map(([x, l]) => `<button data-ptab="${x}" class="${tab === x ? 'on' : ''}">${esc(l)}</button>`).join('')}
+        <div class="acts"><button class="hbtn primary" data-newp="${esc(p.key)}">${I.plus}${t('在这里新建会话')}</button></div></nav></div>`;
   });
   if (tab === 'board') {
     if (!$('#boardBox')) { $('#tabBody').innerHTML = `<div class="s-body wide" id="boardBox"></div>`; BD.key = null; }
@@ -984,7 +1002,7 @@ async function topicGo() {
 function renderBoardPage() {  // (a workspace's channel; under 讨论, any channel, staying in that list)
   if (route.name === 'board' && projOf(route.key)) { location.replace(`#/p/${encodeURIComponent(route.key)}/board`); return; }
   const b = boardOf(route.key), w = wsOf(route.key), p = projOf(route.key), name = w ? w.name : p ? p.name : b ? b.name : route.key;
-  $('#crumbs').innerHTML = route.name === 'boards' ? `${I.chev}<a href="#/boards">讨论</a>${I.chev}<b>${esc(name)}</b>` : `${I.chev}<a href="#/w/${encodeURIComponent(route.key)}">${esc(name)}</a>${I.chev}<b>讨论区</b>`;
+  $('#crumbs').innerHTML = route.name === 'boards' ? `${I.chev}<a href="#/boards">${t('讨论')}</a>${I.chev}<b>${esc(name)}</b>` : `${I.chev}<a href="#/w/${encodeURIComponent(route.key)}">${esc(name)}</a>${I.chev}<b>${t('讨论区')}</b>`;
   draw('hero', ['b', route.key, name], () => {
     $('#hero').innerHTML = `<div class="s-hero proj"><div class="row"><span class="mark lg pj">${I.chat}</span><div style="min-width:0"><h1>${esc(name)}${w ? ' 工作区' : ''}</h1>
       <div class="sub"><span>${w ? '这个工作区里所有的会话都收得到这里的消息' : p ? `项目 ${esc(p.name)} 的讨论区：在这个项目上工作的会话都收得到` : '讨论区'}</span>${w ? `<span class="nm">${esc(home(w.path))}</span>` : ''}</div></div></div><div class="tabs"></div></div>`;
@@ -1143,8 +1161,8 @@ function qItem(i) {
 // ---------- status bar ----------
 function drawStatus() {
   const sm = S.summarizer || {}, a = S.about || {};
-  $('#status').innerHTML = `<span>${sm.error ? `<span class="warn">总结模型出错，去设置里看看</span>` : `总结：${esc(a.model || '')}${sm.busy ? ' · 正在更新' : ''}`}</span>
-    <span class="r">刷新于 ${ago(lastOk / 1000) === '刚刚' ? '刚刚' : ago(lastOk / 1000) + '前'}</span><span>Sturnus ${esc(S.version)}</span>`;
+  $('#status').innerHTML = `<span>${sm.error ? `<span class="warn">${t('总结模型出错，去设置里看看')}</span>` : `${t('总结：{m}', { m: esc(a.model || '') })}${sm.busy ? t(' · 正在更新') : ''}`}</span>
+    <span class="r">${t('刷新于 {t}', { t: agoT(lastOk / 1000) })}</span><span>Sturnus ${esc(S.version)}</span>`;
 }
 
 // ---------- palette ----------
@@ -1153,8 +1171,8 @@ function openPalette() { closeOverlays(); $('#palette').hidden = false; $('#pale
 function palPlaces() {  // (workspaces and projects whose name matches: before the sessions)
   const q = $('#paletteQ').value.trim().toLowerCase();
   if (!q) return [];
-  return [...(S.workspaces || []).filter(w => w.name.toLowerCase().includes(q)).map(w => ({ href: `#/w/${encodeURIComponent(w.key)}`, label: w.name, sub: `工作区 · ${home(w.path)}`, ws: w })),
-    ...Object.values(S.projects || {}).filter(p => p.name.toLowerCase().includes(q)).slice(0, 6).map(p => ({ href: `#/p/${encodeURIComponent(p.key)}`, label: p.name, sub: `项目 · ${(wsOf(p.workspace) || {}).name || ''}` }))].slice(0, 8);
+  return [...(S.workspaces || []).filter(w => w.name.toLowerCase().includes(q)).map(w => ({ href: `#/w/${encodeURIComponent(w.key)}`, label: w.name, sub: t('工作区 · {p}', { p: home(w.path) }), ws: w })),
+    ...Object.values(S.projects || {}).filter(p => p.name.toLowerCase().includes(q)).slice(0, 6).map(p => ({ href: `#/p/${encodeURIComponent(p.key)}`, label: p.name, sub: t('项目 · {w}', { w: (wsOf(p.workspace) || {}).name || '' }) }))].slice(0, 8);
 }
 function palItems() {
   const q = $('#paletteQ').value.trim().toLowerCase();
@@ -1172,7 +1190,7 @@ function drawPalette() {
       <div class="t"><b>${esc(s.label)}</b><div>${esc(s.sub)}</div></div><span class="loc"></span></div>` : `
     <div class="p-row${i === palIndex ? ' on' : ''}" data-pal="${i}">${mark(s.kind, standing(s)[0], 'sm')}
       <div class="t"><b>${esc(titleOf(s))}</b><div>${esc(s.name)} · ${esc(s.summary || standing(s)[1])}</div></div>
-      <span class="loc">${s.loc ? `${esc(groupName(s.loc.session))}:${esc(s.loc.pane)}` : esc(folder(s.cwd))}</span></div>`).join('') : '<div class="p-sec">没有匹配的工作区、项目或会话</div>';
+      <span class="loc">${s.loc ? `${esc(groupName(s.loc.session))}:${esc(s.loc.pane)}` : esc(folder(s.cwd))}</span></div>`).join('') : `<div class="p-sec">${t('没有匹配的工作区、项目或会话')}</div>`;
 }
 function closeOverlays() { for (const id of ['#palette', '#settings', '#newSess']) $(id).hidden = true; }
 
@@ -1273,20 +1291,21 @@ function modelBlock(role, title, what) {
 const MB = {};
 function drawSettings() {
   document.querySelectorAll('#settingsNav button').forEach(b => b.classList.toggle('on', b.dataset.pane === pane));
-  const a = S.about || {}, t = store.get('deck.theme', 'auto');
+  const a = S.about || {}, th = store.get('deck.theme', 'auto');
   $('#settingsBody').innerHTML = {
-    models: `<h3>助手与模型</h3><p class="lead">可以用本机装的任何 agent 运行时（Claude Code、Codex、pi，用它们自己的登录），也可以接一个 API。保存后马上生效。</p>
+    models: `<h3>${t('助手与模型')}</h3><p class="lead">可以用本机装的任何 agent 运行时（Claude Code、Codex、pi，用它们自己的登录），也可以接一个 API。保存后马上生效。</p>
       ${modelBlock('assist', '助手 agent', '替你看排队的事还要不要做、发给谁；帮你起草回复')}
       ${modelBlock('summary', '总结模型', '给每个会话起任务名、写进展、判断要不要你处理、记下决定（用小而快的模型就好）')}
       ${S.summarizer && S.summarizer.error ? `<div class="code">最近一次总结出错：${esc(S.summarizer.error)}</div>` : ''}`,
-    look: `<h3>显示</h3><p class="lead">这台机器上的显示偏好。</p>
-      <div class="opt"><div><h4>主题</h4><p>跟随系统，或固定浅色、深色。</p></div><div class="seg">${[['auto', '跟随系统'], ['light', '浅色'], ['dark', '深色']].map(([k, l]) => `<button data-theme-set="${k}" class="${t === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
-      <div class="opt col"><div><h4>工作区图标</h4><p>最左边那条栏里工作区的颜色。</p></div>
+    look: `<h3>${t('显示')}</h3><p class="lead">${t('这台机器上的显示偏好。')}</p>
+      <div class="opt"><div><h4>${t('语言')}</h4><p>${t('菜单和导航用的语言；页面内容暂时还是中文。')}</p></div><div class="seg">${[['auto', t('跟随系统')], ['zh', '中文'], ['en', 'English']].map(([k, l]) => `<button data-lang-set="${k}" class="${store.get('deck.lang', 'auto') === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+      <div class="opt"><div><h4>${t('主题')}</h4><p>${t('跟随系统，或固定浅色、深色。')}</p></div><div class="seg">${[['auto', '跟随系统'], ['light', '浅色'], ['dark', '深色']].map(([k, l]) => `<button data-theme-set="${k}" class="${th === k ? 'on' : ''}">${t(l)}</button>`).join('')}</div></div>
+      <div class="opt col"><div><h4>${t('工作区图标')}</h4><p>${t('最左边那条栏里工作区的颜色。')}</p></div>
         <div class="wsc-pick">${Object.entries(WSC).map(([k, l]) => `<button class="wsc-card${store.get('deck.wsColor', 'graphite') === k ? ' on' : ''}" data-wscolor="${k}" aria-pressed="${store.get('deck.wsColor', 'graphite') === k}">
-          <span class="wsc-prev" data-look="${k}">${[['S', 0], ['N', 1], ['D', 3]].map(([c, i]) => `<i style="--t:${MUTED[i]}">${c}</i>`).join('')}</span><b>${l}</b></button>`).join('')}</div></div>
-      <div class="opt"><div><h4>窗格标题</h4><p>用「状态 · 会话名 · 在做的事」做每个 agent 窗格的标题，在 Zellij 或 tmux 里一眼认出是哪个（tmux 要开 pane-border-status 才看得到）。</p></div><label class="switch"><input type="checkbox" id="paneTitles" ${S.pane_titles ? 'checked' : ''}></label></div>`,
+          <span class="wsc-prev" data-look="${k}">${[['S', 0], ['N', 1], ['D', 3]].map(([c, i]) => `<i style="--t:${MUTED[i]}">${c}</i>`).join('')}</span><b>${t(l)}</b></button>`).join('')}</div></div>
+      <div class="opt"><div><h4>${t('窗格标题')}</h4><p>${t('用「状态 · 会话名 · 在做的事」做每个 agent 窗格的标题，在 Zellij 或 tmux 里一眼认出是哪个（tmux 要开 pane-border-status 才看得到）。')}</p></div><label class="switch"><input type="checkbox" id="paneTitles" ${S.pane_titles ? 'checked' : ''}></label></div>`,
     voice: voicePane(),
-    access: `<h3>访问</h3><div id="accessBody"></div>`,
+    access: `<h3>${t('访问')}</h3><div id="accessBody"></div>`,
     about: `<h3>Sturnus</h3><p class="lead">这台机器上所有 Claude Code、Codex、Cursor 会话的入口和状态。</p>
       <dl class="kv"><dt>版本</dt><dd>${esc(S.version)}</dd><dt>地址</dt><dd>http://${esc(a.listen || '')}</dd><dt>运行自</dt><dd>${a.started ? new Date(a.started * 1000).toLocaleString('zh-CN') : ''}</dd>
         <dt>程序</dt><dd>${esc(home(a.app))}</dd><dt>源码</dt><dd>${esc(home(a.source || ''))}</dd><dt>设置</dt><dd>${esc(home(a.config))}</dd></dl>
@@ -1353,7 +1372,7 @@ let VE = null;  // (the voice form being edited)
 function voicePane() {
   const sv = S.voice || {}, keys = sv.keys || {};
   const v = VE || (VE = { provider: sv.provider || 'openai', model: sv.model || (sv.defaults || VMODEL)[sv.provider || 'openai'], url: sv.url || '', lang: sv.lang || '', key: keys[sv.provider] || '' });
-  return `<h3>语音输入</h3><p class="lead">开启后，写字的地方会多一个麦克风：点一下开始说，再点一下停，转出来的文字放到光标处。录音只转给你选的服务。</p>
+  return `<h3>${t('语音输入')}</h3><p class="lead">开启后，写字的地方会多一个麦克风：点一下开始说，再点一下停，转出来的文字放到光标处。录音只转给你选的服务。</p>
     <div class="v-now"><span class="dot ${sv.on && keys[sv.provider] ? 'working' : ''}"></span>现在用的：<b>${esc(sv.label || '')}</b>${keys[sv.provider] ? '' : ' · <em>还没填 key</em>'}${sv.on ? '' : ' · 关着'}</div>
     <div class="opt"><div><h4>开启语音输入</h4><p>${window.isSecureContext ? '这个页面可以用麦克风。' : '这个地址不是 https，浏览器不让网页用麦克风：本机用 http://127.0.0.1:7788，或给 tailnet 开 https。'}</p></div><label class="switch"><input type="checkbox" id="vOn" ${sv.on ? 'checked' : ''}></label></div>
     <div class="mblock"><h4>接入方式</h4>
@@ -1495,6 +1514,7 @@ document.addEventListener('click', async e => {
   if ((el = q('[data-quiet]'))) { toggle(quietOpen, 'deck.quietOpen', el.dataset.quiet); return; }
   if ((el = q('[data-report]'))) { e.stopPropagation(); el.disabled = true; el.textContent = '正在写…'; post('report', { id: el.dataset.report }); return; }
   if ((el = q('[data-acc]'))) { const key = el.dataset.acc; await api('access', { do: 'drop', key }); if (key === 'me') location.reload(); else drawAccess(); return; }
+  if ((el = q('[data-lang-set]'))) { store.set('deck.lang', el.dataset.langSet); applyLang(); applyTheme(); applyFold(); conn(); for (const k in sig) delete sig[k]; build(); render(); drawSettings(); return; }
   if ((el = q('[data-wscolor]'))) { store.set('deck.wsColor', el.dataset.wscolor); applyWsColor(); drawSettings(); return; }
   if ((el = q('[data-theme-set]'))) { store.set('deck.theme', el.dataset.themeSet); applyTheme(); drawSettings(); return; }
   if ((el = q('[data-src]'))) { const role = el.closest('.mblock').dataset.role; MB[role] = { source: el.dataset.src }; drawSettings(); return; }
@@ -1555,6 +1575,7 @@ document.addEventListener('keydown', e => {
 
 route = parseRoute();
 applyTheme();
+applyLang();
 applyFold();
 applyWsColor();
 // (a session's or project's head stays at the top while its page scrolls, folded to one line)

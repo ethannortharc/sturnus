@@ -863,3 +863,6 @@ table.works .when { color: var(--muted); white-space: nowrap; font-variant-numer
 .wsc-prev i { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; font-style: normal; font-weight: 700; font-size: 12.5px; color: #fff; background: var(--graphite); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .14); }
 .wsc-prev[data-look="muted"] i { background: linear-gradient(150deg, color-mix(in srgb, var(--t) 88%, #fff), color-mix(in srgb, var(--t) 78%, #000)); }
 .wsc-prev[data-look="stripe"] i { box-shadow: inset 0 -3px 0 var(--t), inset 0 1px 0 rgba(255, 255, 255, .14); }
+.palette-foot i { font-style: normal; }
+.seg button { white-space: nowrap; }
+.search-trigger span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
