@@ -158,9 +158,11 @@ code { font: 12px var(--font-mono); background: var(--panel-2); border: 1px soli
 .card.claude .desc { font-family: var(--font-serif); font-size: 13.5px; }
 [data-theme="dark"] .card.claude { --bg: #262522; --c-ink: #f3efe6; --c-ink2: #d6d0c3; --c-mut: #9c9588; --c-hair: #3b3833; --c-ok: #6bc47c; --c-warn: #f0a94a; --c-review: #9aabbd;
   background: radial-gradient(130% 90% at 0% 0%, rgba(217, 119, 87, .13), transparent 55%), linear-gradient(180deg, #2a2926, #23221f); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05), 0 14px 32px -18px rgba(0, 0, 0, .7); }
-/* Codex — a terminal: monochrome, monospaced, a blinking cursor */
-.card.codex { --bg: #0d0d0f; --c-ink: #f4f4f5; --c-ink2: #d2d2d7; --c-mut: #7b7b83; --c-hair: #2a2a2f; --c-ok: #19c37d; --c-warn: #f5b544; --c-review: #a2b3c4;
-  font-family: var(--font-mono); background: linear-gradient(180deg, #141416, #0b0b0d); border: 1px solid #232327; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06), 0 12px 28px -16px rgba(0, 0, 0, .55); }
+/* Codex — a terminal: monochrome, monospaced, a blinking cursor (paper-white in light, black in dark) */
+.card.codex { --bg: #fbfbfa; --c-ink: #121214; --c-ink2: #3c3c42; --c-mut: #84848b; --c-hair: #e2e2e5; --c-ok: #0f8a56; --c-warn: #a8650f; --c-review: #4f6276;
+  font-family: var(--font-mono); background: linear-gradient(180deg, #fdfdfc, #f4f4f2); border: 1px solid #dcdce0; box-shadow: inset 0 1px 0 #fff, 0 1px 2px rgba(16, 16, 20, .05), 0 12px 28px -18px rgba(16, 16, 20, .28); }
+[data-theme="dark"] .card.codex { --bg: #0d0d0f; --c-ink: #f4f4f5; --c-ink2: #d2d2d7; --c-mut: #7b7b83; --c-hair: #2a2a2f; --c-ok: #19c37d; --c-warn: #f5b544; --c-review: #a2b3c4;
+  background: linear-gradient(180deg, #141416, #0b0b0d); border-color: #232327; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06), 0 12px 28px -16px rgba(0, 0, 0, .55); }
 .card.codex .ttl b { font-size: 13.5px; font-weight: 600; letter-spacing: 0; }
 .card.codex .desc { font-size: 12.3px; line-height: 1.6; }
 .card.codex .desc::before { content: "› "; color: var(--c-ok); font-weight: 700; }
@@ -182,9 +184,11 @@ code { font: 12px var(--font-mono); background: var(--panel-2); border: 1px soli
 .mark { position: relative; flex: none; width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; color: #fff; background: #8b8f99; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .22), 0 1px 2px rgba(0, 0, 0, .12); }
 .mark svg { width: 18px; height: 18px; }
 .mark.claude { background: linear-gradient(150deg, #e3906f, #c15f3c); }
-.mark.codex { background: linear-gradient(150deg, #2e3036, #0b0c0e); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12), 0 1px 2px rgba(0, 0, 0, .3); }
+.mark.codex { background: linear-gradient(150deg, #ffffff, #e6e6ea); color: #0d0d0f; box-shadow: inset 0 0 0 1px rgba(16, 16, 20, .11), 0 1px 2px rgba(16, 16, 20, .08); }
 .mark.cursor { background: linear-gradient(150deg, #f4f5f7, #c5c8d0); color: #111216; }
-.mark.user { background: linear-gradient(150deg, #4a4a4f, #1c1c1f); }
+[data-theme="dark"] .mark.codex { background: linear-gradient(150deg, #2e3036, #0b0c0e); color: #fff; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12), 0 1px 2px rgba(0, 0, 0, .3); }
+[data-theme="dark"] .mark.cursor { background: linear-gradient(150deg, #3a3c44, #17181c); color: #f3f3f5; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .13), 0 1px 2px rgba(0, 0, 0, .3); }
+.mark.user { background: var(--graphite); }
 .mark.lg { width: 46px; height: 46px; border-radius: 13px; } .mark.lg svg { width: 27px; height: 27px; }
 .mark.sm { width: 24px; height: 24px; border-radius: 7px; } .mark.sm svg { width: 14px; height: 14px; }
 .mark .sd { position: absolute; right: -3px; bottom: -3px; width: 11px; height: 11px; border-radius: 50%; background: var(--idle); border: 2.5px solid var(--bg, var(--panel)); }
@@ -226,9 +230,10 @@ code { font: 12px var(--font-mono); background: var(--panel-2); border: 1px soli
 .sess { height: 100%; overflow-y: auto; }
 .s-hero { position: relative; padding: 26px 34px 0; color: var(--h-ink); --h-ink: var(--ink); --h-mut: var(--muted); }
 .s-hero.claude { --h-ink: #1e1c17; --h-mut: #8f897b; background: radial-gradient(90% 140% at 0 0, rgba(217, 119, 87, .16), transparent 60%), linear-gradient(180deg, #fbf8f1, #f4efe3); border-bottom: 1px solid #e6dfd0; }
-.s-hero.codex { --h-ink: #f4f4f5; --h-mut: #85858d; background: linear-gradient(180deg, #151517, #0b0b0d); border-bottom: 1px solid #222226; }
+.s-hero.codex { --h-ink: #121214; --h-mut: #7c7c84; background: linear-gradient(180deg, #fcfcfb, #f1f1ef); border-bottom: 1px solid #e2e2e5; }
 .s-hero.cursor { --h-ink: #0b0b0d; --h-mut: #8a8f9c; background: linear-gradient(180deg, #ffffff, #f2f3f6); border-bottom: 1px solid #e4e6eb; }
 [data-theme="dark"] .s-hero.claude { --h-ink: #f3efe6; --h-mut: #9c9588; background: radial-gradient(90% 140% at 0 0, rgba(217, 119, 87, .2), transparent 60%), linear-gradient(180deg, #2b2a26, #23221f); border-color: #3b3833; }
+[data-theme="dark"] .s-hero.codex { --h-ink: #f4f4f5; --h-mut: #85858d; background: linear-gradient(180deg, #151517, #0b0b0d); border-color: #222226; }
 [data-theme="dark"] .s-hero.cursor { --h-ink: #f3f3f5; --h-mut: #7f8291; background: linear-gradient(180deg, #1a1b1f, #121316); border-color: #2a2b31; }
 .s-hero .row { display: flex; align-items: center; gap: 16px; }
 .s-hero h1 { margin: 0; font-size: 24px; font-weight: 650; letter-spacing: -.02em; }
@@ -241,7 +246,7 @@ code { font: 12px var(--font-mono); background: var(--panel-2); border: 1px soli
 .hbtn:hover { background: color-mix(in srgb, var(--h-ink) 7%, transparent); }
 .hbtn.primary { border-color: transparent; background: var(--h-btn, var(--h-ink)); color: var(--h-btn-ink, var(--panel)); }
 .s-hero.claude .hbtn { border-radius: 999px; } .s-hero.claude .hbtn.primary { --h-btn: #c96442; --h-btn-ink: #fff8f1; }
-.s-hero.codex .hbtn { font-family: var(--font-mono); font-size: 12.5px; border-radius: 8px; } .s-hero.codex .hbtn.primary { --h-btn: #f4f4f5; --h-btn-ink: #0d0d0f; }
+.s-hero.codex .hbtn { font-family: var(--font-mono); font-size: 12.5px; border-radius: 8px; }
 .hbtn svg { width: 15px; height: 15px; }
 .tabs { display: flex; gap: 2px; margin-top: 22px; }
 .tabs > button { border: 0; background: none; color: var(--h-mut); padding: 10px 14px 12px; font-size: 13.5px; font-weight: 550; border-bottom: 2px solid transparent; }
@@ -456,7 +461,7 @@ code { font: 12px var(--font-mono); background: var(--panel-2); border: 1px soli
 .rep-one { max-width: 860px; }
 .rep-one .rep { padding: 18px 22px 22px; font-size: 13.5px; }
 .mux { margin-left: 6px; font: 600 9.5px/1 var(--font-mono); letter-spacing: .04em; color: var(--muted); border: 1px solid var(--hair); border-radius: 5px; padding: 2px 4px; vertical-align: 1px; }
-.mark.sh { background: linear-gradient(150deg, #3a3d45, #17181c); }
+.mark.sh { background: var(--graphite); }
 
 /* folding: a group, and the quiet ones in it */
 .chev { display: inline-grid; place-items: center; width: 14px; height: 14px; color: var(--faint); transition: transform .18s var(--ease); flex: none; }
@@ -584,7 +589,7 @@ code { font: 12px var(--font-mono); background: var(--panel-2); border: 1px soli
 .md ul, .md ol { margin: 4px 0 8px; padding-left: 20px; } .md li { margin: 2px 0; }
 .md h6 { margin: 10px 0 4px; font-size: 13px; font-weight: 650; color: var(--ink); }
 .md code { font: 12px var(--font-mono); background: color-mix(in srgb, var(--ink) 6%, transparent); border-radius: 5px; padding: 1px 5px; }
-.md pre { margin: 6px 0 8px; padding: 10px 12px; border-radius: 10px; background: #0f0f12; color: #e6e6ea; overflow-x: auto; }
+.md pre { margin: 6px 0 8px; padding: 10px 12px; border-radius: 10px; background: color-mix(in srgb, var(--ink) 5%, var(--panel)); border: 1px solid var(--hair-2); color: var(--ink); overflow-x: auto; }
 .md pre code { background: none; padding: 0; color: inherit; font-size: 12px; line-height: 1.55; white-space: pre; }
 .md blockquote { margin: 6px 0; padding: 2px 0 2px 12px; border-left: 3px solid var(--hair); color: var(--ink-2); }
 .md table { border-collapse: collapse; margin: 6px 0 10px; font-size: 12.5px; display: block; overflow-x: auto; }
