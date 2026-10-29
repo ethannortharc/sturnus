@@ -51,6 +51,7 @@ if o.fill:  # (older posts, as a channel that has been busy for days holds them:
             at = round(t0 + i, 6)
             m = {'id': f'{i:010x}', 'from': rnd.choice(names), 'kind': 'claude', 'text': say(50), 'topic': old['id'] if i % 4 == 0 else None, 'to': [], 'at': at}
             A.put(A.path('channels', c['key'], 'posts', f'{at:.6f}-{m["id"]}.json'), m)
+        A.put(A.path('channels', c['key'], 'topics', f'{old["id"]}.json'), {**A.topic_get(c['key'], old['id']), 'n': 1 + len(range(0, o.fill, 4))})
         for f in os.listdir(os.path.dirname(A.path('channels', c['key'], 'seen', 'x'))):
             os.remove(A.path('channels', c['key'], 'seen', f))
 for n in names:  # (on the board, as their hooks would have put them, so a call by name is known)

@@ -1351,10 +1351,11 @@ async function boardFetch() {
   const key = BD.key;
   BD.at = Date.now();
   let j = null;
-  const topic = BD.topic;
-  try { j = await (await fetch('/api/board?key=' + encodeURIComponent(key) + (topic ? '&topic=' + encodeURIComponent(topic) : ''), { cache: 'no-store' })).json(); } catch {}
+  const topic = BD.topic, get = q => fetch('/api/board?key=' + encodeURIComponent(key) + q, { cache: 'no-store' }).then(r => r.json());
+  let tj = null;  // (a discussion's own posts, beside the channel's last ones)
+  try { [j, tj] = await Promise.all([get(''), topic ? get('&topic=' + encodeURIComponent(topic)) : null]); } catch {}
   if (!j || BD.key !== key) return;
-  if (topic) { j.topic = topic; j.topic_posts = j.posts; j.posts = (BD.data && BD.data.posts) || j.posts; }
+  if (tj) { j.topic = topic; j.topic_posts = tj.posts; }
   BD.data = j;
   drawBoardBody();
 }
@@ -1392,7 +1393,7 @@ function drawBoardBody() {
 function allWarn() {  // (the person's @all calls every session on the channel: say how many before it goes)
   const w = $('#bWarn'), ta = $('#bText'), d = BD.data;
   if (!w || !ta || !d) return;
-  const n = d.members.length, on = /(^|[^A-Za-z0-9_.@-])@all\b/.test(ta.value) && n > 3;
+  const n = d.members.filter(m => !['amail', 'sturnus'].includes(m)).length, on = /(^|[^A-Za-z0-9_.@-])@all\b/.test(ta.value) && n > 3;
   w.hidden = !on;
   if (on) w.textContent = tt(`@all 会马上叫来这里的 ${n} 个会话`, `@all calls all ${n} sessions here at once`);
 }

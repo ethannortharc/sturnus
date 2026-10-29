@@ -2035,10 +2035,11 @@ class Deck:
                     os.remove(os.path.join(d, f))
                 for t in A.topics(k):
                     if t.get('closed') and now - (t.get('closed_at') or t['at']) > 3 * 86400:
-                        try:
-                            os.remove(os.path.join(A.HOME, 'channels', k, 'topics', f'{t["id"]}.json'))
-                        except OSError:
-                            pass
+                        for ext in ('json', 'lock'):
+                            try:
+                                os.remove(os.path.join(A.HOME, 'channels', k, 'topics', f'{t["id"]}.{ext}'))
+                            except OSError:
+                                pass
 
     def mind_loop(self):
         self.prev, self.stopped, self.woken, self.checked, self.lock_seen = {}, {}, set(), {}, None
@@ -3187,8 +3188,8 @@ class Handler(BaseHTTPRequestHandler):
             meta = A.channels().get(key)
             if not meta:
                 return self.send_json({'meta': None, 'posts': [], 'topics': [], 'members': []})
-            ts = A.topics(key)
-            return self.send_json({'meta': meta, 'posts': A.posts(key, topic=topic) if A.topic_get(key, topic) else A.posts(key, limit=400),
+            ts, tp = A.topics(key), A.topic_get(key, topic)
+            return self.send_json({'meta': meta, 'posts': A.topic_posts(key, tp) if tp else A.posts(key, limit=400),
                                    'topics': [{**t, 'n': A.topic_n(key, t)} for t in ts], 'members': [m for m in A.members(key) if m != ME_NAME]})
         if self.path.startswith('/api/transcript'):
             from urllib.parse import urlparse, parse_qs

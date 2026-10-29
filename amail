@@ -36,7 +36,7 @@ Mail lives in $AMAIL_HOME (default /tmp/amail-<uid>: writable from Codex's and C
 Mail is between two; a channel is a project's (or a workspace's) room: what is posted there reaches every session on it at
 its next turn, calls (@NAME) and discussions it takes part in also mid-work.
 """
-import hashlib, json, os, re, shutil, sqlite3, struct, subprocess, sys, time, uuid
+import contextlib, fcntl, hashlib, json, os, re, shutil, sqlite3, struct, subprocess, sys, time, uuid
 
 HOME = os.environ.get('AMAIL_HOME') or f'/tmp/amail-{os.getuid()}'
 CLAUDE_SESSIONS = os.path.expanduser('~/.claude/sessions')
@@ -495,9 +495,29 @@ def topic_get(key, tid):
     return t if good_topic(t) else None
 
 
+@contextlib.contextmanager
+def topic_lock(key, tid):
+    """One writer at a time on a discussion — its count, its members, its closing: several sessions' hooks post at once."""
+    with open(path('channels', key, 'topics', f'{tid}.lock'), 'a') as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        yield
+
+
+def topic_posts(key, t):
+    """A discussion's posts: none is older than the discussion, so the channel is read from when it began."""
+    return posts(key, since=t['at'] - LOOK, topic=t['id'])
+
+
 def topic_n(key, t):
-    """How many posts a discussion has: kept in it (one made before that is counted once, from its channel)."""
-    return t['n'] if isinstance(t.get('n'), int) else len(posts(key, topic=t['id']))
+    """How many posts a discussion has: kept in it (one made before that is counted once, and the count kept)."""
+    if isinstance(t.get('n'), int):
+        return t['n']
+    with topic_lock(key, t['id']):
+        t = topic_get(key, t['id']) or t
+        if not isinstance(t.get('n'), int):
+            t = {**t, 'n': len(topic_posts(key, t))}
+            put(path('channels', key, 'topics', f'{t["id"]}.json'), t)
+    return t['n']
 
 
 def topics(key):
@@ -578,7 +598,9 @@ def move_member(old, new):
             os.replace(f, seen_file(k, new))
         for t in topics(k):
             if old in t['members']:
-                put(path('channels', k, 'topics', f'{t["id"]}.json'), {**t, 'members': sorted(set(t['members']) - {old} | {new})})
+                with topic_lock(k, t['id']):
+                    t = topic_get(k, t['id']) or t
+                    put(path('channels', k, 'topics', f'{t["id"]}.json'), {**t, 'members': sorted(set(t['members']) - {old} | {new})})
 
 
 def kind_of_name(name):
@@ -593,6 +615,13 @@ def kind_of_name(name):
 def post(frm, key, text, topic=None, title=None):
     """Post TEXT on channel KEY (into discussion TOPIC); @NAME calls a session (it joins the channel), @all everyone
     (a session's @all on a channel of more than ALL_MAX: nobody woken, it reaches them at their next turn)."""
+    if topic and topic_get(key, topic):
+        with topic_lock(key, topic):  # (from its closed check to its count: one at a time)
+            return post_(frm, key, text, topic, title)
+    return post_(frm, key, text, topic, title)
+
+
+def post_(frm, key, text, topic=None, title=None):
     t = None
     if topic:
         t = topic_get(key, topic)
@@ -604,9 +633,10 @@ def post(frm, key, text, topic=None, title=None):
     known = set(board()) | {s['name'] for s in claude_sessions()} | on
     m = {'id': uuid.uuid4().hex[:10], 'from': frm, 'kind': kind_of_name(frm), 'text': text.strip()[:8000], 'topic': topic,
          'to': sorted(n for n in set(MENTION.findall(text)) if n == 'all' or n in known)}  # (a session's name, not @dataclass)
-    if 'all' in m['to'] and frm != 'user' and len(on - {frm}) > ALL_MAX:  # (a hundred sessions are not woken by one of them)
+    crowd = on - {frm, 'user', 'amail', 'sturnus'}
+    if 'all' in m['to'] and frm != 'user' and len(crowd) > ALL_MAX:  # (a hundred sessions are not woken by one of them)
         m['to'].remove('all')
-        m['held'] = len(on - {frm})
+        m['held'] = len(crowd)
     if title:
         m['title'] = title
     m['at'] = at = round(time.time(), 6)  # (taken last, as its file name has it: what is handed over is compared by that)
@@ -620,7 +650,7 @@ def post(frm, key, text, topic=None, title=None):
         t = topic_get(key, topic)
         if frm not in t['members'] and frm not in ('sturnus', 'amail'):
             t['members'] = sorted(set(t['members']) | {frm})
-        t['n'] = n = len(posts(key, topic=topic)) if not isinstance(t.get('n'), int) else t['n'] + 1
+        t['n'] = n = len(topic_posts(key, t)) if not isinstance(t.get('n'), int) else t['n'] + 1
         if n >= t.get('max', TOPIC_MAX) and not t.get('closed'):
             t.update(closed=True, closed_at=time.time(), closed_by='amail')
             put(path('channels', key, 'topics', f'{topic}.json'), t)
@@ -643,12 +673,13 @@ def topic_new(frm, key, title, text='', invite=(), maxn=TOPIC_MAX):
 
 
 def topic_close(by, key, tid):
-    t = topic_get(key, tid)
-    if not t:
+    if not topic_get(key, tid):
         raise ValueError(f'no discussion {tid}')
-    if not t.get('closed'):
-        t.update(closed=True, closed_at=time.time(), closed_by=by)
-        put(path('channels', key, 'topics', f'{tid}.json'), t)
+    with topic_lock(key, tid):
+        t = topic_get(key, tid)
+        if not t.get('closed'):
+            t.update(closed=True, closed_at=time.time(), closed_by=by)
+            put(path('channels', key, 'topics', f'{tid}.json'), t)
     return t
 
 
@@ -695,14 +726,15 @@ def news_text(me, items, intro=True, budget=True):
     lines, joined, left, clip = [], {}, {}, {}
     if budget:
         mine = {(ch['key'], t['id']) for ch in {c['key']: c for c, _ in items}.values() for t in topics(ch['key']) if me in t['members']}
-        whole = lambda ch, p: calls(p, me) or p['from'] == 'user' or (ch['key'], p.get('topic')) in mine
+        whole = lambda ch, p: calls(p, me) or p['from'] == 'user' or p.get('held') or p.get('title') or (ch['key'], p.get('topic')) in mine
         plain = [(ch, p) for ch, p in items if not whole(ch, p)]
         cut = 1500 if len(plain) <= 4 else 400
         keep, room = set(), PLAIN
         for ch, p in sorted(plain, key=lambda x: (x[0].get('kind') == 'workspace', -x[1]['at'])):  # (its project's first, the newest first)
             size = min(len(p['text']), cut) + 60
-            if size > room and keep:
+            if room is None or (size > room and keep):  # (full: this one and all older ones are counted)
                 left.setdefault(ch['key'], (ch, []))[1].append(p)
+                room = None
                 continue
             keep.add(p['id'])
             room -= size
@@ -1484,6 +1516,13 @@ def selftest():
         text = news_text('crowd-01', got)
         assert '@all stop' in text and 'status 39' in text and 'status 0:' not in text and 'earlier posts here' in text, text
         assert len(text) < PLAIN + 1500  # (forty posts, handed over as a few and a count)
+        post('crowd-02', key, '@all main is broken, do not merge: ' + 'y' * 500)
+        for i in range(15):
+            post(crowd[i % len(crowd)], key, f'later {i}: ' + 'x' * 450)
+        assert 'main is broken' in news_text('crowd-01', news('crowd-01'))  # (held, but never crowded out)
+        old_t = topic_new('lead', key, 'old one', 'begin')
+        put(path('channels', key, 'topics', f'{old_t["id"]}.json'), {k: v for k, v in topic_get(key, old_t['id']).items() if k != 'n'})
+        assert topic_n(key, topic_get(key, old_t['id'])) == 1 and topic_get(key, old_t['id'])['n'] == 1  # (counted once, kept)
         other = tempfile.mkdtemp(prefix='amail-o')
         ev('codex', 'UserPromptSubmit', cwd=other)
         assert member_of('codex-456789') == [key]  # (sturnus not running: nothing is taken away)
@@ -1595,7 +1634,7 @@ def channel_cmd(me, c, a):
             raise ValueError(f'no discussion {topic} (amail topics)')
         n = topic_n(key, t)
         print(f'Discussion {topic} «{t["title"]}» on {chs()[key]["name"]} ({", ".join(t["members"])}; {n}/{t.get("max", TOPIC_MAX)} posts{", closed" if t.get("closed") else ""}):')
-        print(news_text(me, [(chs()[key], p) for p in posts(key, topic=topic)], intro=False, budget=False))
+        print(news_text(me, [(chs()[key], p) for p in topic_posts(key, t)], intro=False, budget=False))
         return 0
     only = resolve(me, opt(a, '--to')) if '--to' in a else None
     if not member_of(me):
