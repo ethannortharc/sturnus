@@ -82,7 +82,7 @@ For example, to use a compatible API for summaries while keeping Claude for the 
 
 Replace the example endpoint and model. If using `key_env`, make that variable available to the user service; a variable exported only in an interactive shell may not reach launchd or systemd. Alternatively, save the key through Settings. Keys are stored separately in `secrets.json` beside the config; Sturnus creates this file with mode `600`. Legacy `summarizer.api` is used only when `models.summary` is absent. Use the model-role settings for new configurations.
 
-**Settings → Display** controls the browser's English/Chinese interface, theme, workspace marks, and pane titles. Interface language is saved in the browser; `work_lang` controls future model-generated content separately.
+**Settings → Display** controls the browser's English/Chinese interface, theme, page colors (warm grey by default, cool grey, or a frame that stays dark), workspace marks, and pane titles. Interface language is saved in the browser; `work_lang` controls future model-generated content separately.
 
 ### Data sent to providers
 

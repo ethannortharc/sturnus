@@ -11,6 +11,7 @@
 <link rel="stylesheet" href="style.css">
 <script>
   try { const t = JSON.parse(localStorage.getItem('deck.theme') || '"auto"'); document.documentElement.dataset.theme = t === 'auto' ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : t } catch {}
+  try { document.documentElement.dataset.skin = JSON.parse(localStorage.getItem('deck.skin') || '"graphite"') } catch {}
 </script>
 </head>
 <body>
