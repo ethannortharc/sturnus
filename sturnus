@@ -182,13 +182,17 @@ class Tmux:
         return ok
 
     def new(self, name, tab, cwd, env, argv):
-        """A window running argv in session name (made when new); returns (ok, what was made or why not)."""
+        """A window running argv in session name (made when new); returns (ok, what was made or why not, its place)."""
         sock = next(iter(self.sockets()), None) or os.path.join(os.environ.get('TMUX_TMPDIR') or '/tmp', f'tmux-{os.getuid()}', 'default')
         envs = [x for kv in env for x in ('-e', kv)]
         have = any(k == f'tmux:{name}' for k, _ in self.sessions())
-        r = self.tm(sock, *(['new-window', '-t', f'={name}:'] if have else ['new-session', '-d', '-s', name]), '-n', tab, '-c', cwd, *envs, '--', *argv, timeout=10)
+        r = self.tm(sock, *(['new-window', '-t', f'={name}:'] if have else ['new-session', '-d', '-s', name]), '-n', tab, '-c', cwd,
+                    '-P', '-F', '#{pane_id}', *envs, '--', *argv, timeout=10)
         self.cache.pop(sock, None)
-        return r.returncode == 0, ('' if have else f'新建了 tmux 组 {name}，') if r.returncode == 0 else (r.stderr or r.stdout).strip()[:200]
+        if r.returncode != 0:
+            return False, (r.stderr or r.stdout).strip()[:200], None
+        pane = r.stdout.strip()
+        return True, '' if have else f'新建了 tmux 组 {name}，', self.place(sock, pane) if pane.startswith('%') else None
 
 
 TMUX = Tmux()
@@ -211,7 +215,7 @@ def zellij_clients(ps):
         if p['comm'] == 'zellij' and len(a) >= 3 and a[1] in ('a', 'attach') and not a[2].startswith('-') and not environ(p['pid']).get('STURNUS_TERM'):
             via = 'local'
             for pid, name in A.ancestors(p['pid']):
-                if name == 'sshd':
+                if name in ('sshd', 'sshd-session'):
                     via = 'ssh'
                     break
             out.append({'pid': p['pid'], 'session': a[2], 'via': via, 'start': p['start']})
@@ -237,18 +241,46 @@ def zellij_server(session):
     return None
 
 
-def zellij_room(session):
-    """Whether a session's Zellij can take one more client, as {'ok', 'held', 'limit', 'need'} (None when its server
-    cannot be read). Each client gets its own copy of every tab's bar plugins, each holding a few files open; a server
-    out of files dies, and every pane in it with it (macOS gives one started from a terminal 256)."""
+ROOM = threading.Lock()
+ROOM_TAKEN = {}  # (session -> [(when, files)]: what was let in a moment ago, its plugins maybe not loaded yet)
+
+
+def zellij_room(session, what='client'):
+    """Whether a session's Zellij has room for one more client (or tab), as {'ok', 'held', 'limit', 'need'}; None when
+    its server cannot be read. Every client gets its own copy of each tab's bar plugins, each copy holding a few files
+    open; a server out of files dies, and every pane in it with it. Called holding ROOM: what it lets in counts as
+    taken for a few seconds, so two pages opening at once are not both let in."""
     pid = zellij_server(session)
     held = pid and A.proc_nfiles(pid)
     if not held:
         return None
-    limit = A.proc_nofile(pid) or max(256, held)  # (macOS cannot tell another process's limit: its default, then)
-    tabs = len([l for l in zj(session, 'action', 'query-tab-names').stdout.splitlines() if l.strip()]) or 1
-    need = 8 * tabs + 8  # (measured: 58 more files per client of a 7-tab session with a tab bar and a status bar)
-    return {'ok': held + need + 16 <= limit, 'held': held, 'limit': limit, 'need': need}
+    # (Linux tells a process's limit and macOS does not: there it is the setting, else 256, what a server started from
+    # a terminal gets, unless the server already holds more, which shows it was raised)
+    limit = A.proc_nofile(pid) or int(config().get('zellij_max_files') or 0) or (256 if held <= 256 else None)
+    now = time.time()
+    taken = ROOM_TAKEN[session] = [t for t in ROOM_TAKEN.get(session, []) if now - t[0] < 8]
+    held += sum(n for _, n in taken)
+    if what == 'tab':  # (a tab: its bars once for every client)
+        need = 8 * max(1, len(clients_of(session))) + 8
+    else:  # (measured: 58 more files per client of a 7-tab session with a tab bar and a status bar)
+        need = 8 * (len([l for l in zj(session, 'action', 'query-tab-names').stdout.splitlines() if l.strip()]) or 1) + 8
+    ok = limit is None or held + need + 16 <= limit
+    if ok:
+        taken.append((now, need))
+    return {'ok': ok, 'held': held, 'limit': limit, 'need': need}
+
+
+def zellij_marked(session, marker):
+    """The pane of a session started with STURNUS_NEW=marker, as Zellij tells it (macOS hides the environment of the
+    system's own programs, a login shell's among them, so marked() cannot find a shell there)."""
+    try:
+        panes = json.loads(zj(session, 'action', 'list-panes', '--json', '--command').stdout or '[]')
+    except ValueError:
+        return None
+    for p in panes if isinstance(panes, list) else []:
+        if not p.get('is_plugin') and f'STURNUS_NEW={marker}' in (p.get('terminal_command') or ''):
+            return {'mux': 'zellij', 'session': session, 'pane': str(p['id'])}
+    return None
 
 
 def focused(session):
@@ -363,9 +395,9 @@ def origin_of(pid):
             return 'cron 定时任务'
         if comm == 'systemd':
             return '后台服务（systemd）'
-        if comm == 'launchd':
-            return '后台服务（launchd）'
     first = next((c for _, c in chain if c not in ('bash', 'zsh', 'sh', 'fish', 'dash', 'env', 'sudo', 'timeout', 'nohup', 'setsid', 'login')), None)
+    if not first and A.MAC and chain and (A.proc(chain[-1][0]) or (None, 0))[1] == 1:
+        return '后台服务（launchd）'  # (macOS: only shells between it and launchd, as a LaunchAgent starts one)
     return f'由 {first} 启动' if first else '来源不明'
 
 
@@ -1895,10 +1927,10 @@ class Deck:
         env = [f'STURNUS_NEW={marker}'] + ([f'AMAIL_NAME={name}'] if name else [])
         tab = name or f'{"终端" if kind == "shell" else kind}·{os.path.basename(cwd) or "~"}'
         if mux == 'tmux':
-            ok, made = TMUX.new(group, tab, cwd, env, argv)
+            ok, made, loc = TMUX.new(group, tab, cwd, env, argv)
             if not ok:
                 return False, f'tmux 开不了：{made}'
-            return self.started(b, kind, name, tab, f'tmux:{group}', cwd, marker, made)
+            return self.started(b, kind, name, tab, f'tmux:{group}', cwd, marker, made, loc)
         layout = f'''layout {{
     tab name={kdl(tab)} cwd={kdl(cwd)} {{
         pane size=1 borderless=true {{
@@ -1927,15 +1959,21 @@ class Deck:
             else:
                 return False, f'建不了组 {group}：{(r.stderr or r.stdout).strip()[:160]}'
             made = f'新建了组 {group}，'
+        else:
+            with ROOM:
+                room = zellij_room(group, 'tab')
+            if room and not room['ok']:
+                return False, (f'没有开：{group} 的 Zellij 已经开着 {room["held"]} 个文件，上限 {room["limit"]}，再开一个标签页要约 '
+                               f'{room["need"]} 个，超过上限它会崩掉，里面的会话全部结束。先关掉一个连着它的终端，或者调高上限（见 README）。')
         r = zj(group, 'action', 'new-tab', '--layout', f, timeout=10)
         if r.returncode != 0:
             return False, f'开不了新标签页：{(r.stderr or r.stdout).strip()[:200]}'
-        return self.started(b, kind, name, tab, group, cwd, marker, made)
+        return self.started(b, kind, name, tab, group, cwd, marker, made, zellij_marked(group, marker))
 
-    def started(self, b, kind, name, tab, group, cwd, marker, made):
+    def started(self, b, kind, name, tab, group, cwd, marker, made, loc=None):
         if kind == 'shell':  # (not an agent: no card; the page opens it in its terminal once it runs)
             for _ in range(24):
-                loc = marked(marker)
+                loc = loc or marked(marker)
                 if loc:
                     return True, {'msg': f'{made}在 {group.removeprefix("tmux:")} 里开了终端「{tab}」', 'term': {'group': loc['session'], 'pane': loc['pane']}}
                 time.sleep(.25)
@@ -2426,7 +2464,10 @@ class Handler(BaseHTTPRequestHandler):
         name, owner = tailnet_self()
         self.https = False
         if peer in ('127.0.0.1', '::1'):
-            if host in ('127.0.0.1', 'localhost', '::1') and not login:
+            # (tailscale serve also comes from here, with X-Forwarded-*: a peer it gives no login, a tagged machine or a
+            # Funnel visitor, could name localhost as its host, and is not this machine)
+            proxied = any(self.headers.get(h) for h in ('X-Forwarded-For', 'X-Forwarded-Host', 'X-Forwarded-Proto'))
+            if host in ('127.0.0.1', 'localhost', '::1') and not login and not proxied:
                 return '本机'
             if name and host == name and owner and login == owner:  # (tailscale serve: it sets the login itself)
                 self.https = True
@@ -2483,13 +2524,25 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({'ok': False, 'msg': 'forbidden'}, 403)
         if not loc:
             return self.send_json({'ok': False, 'msg': '不在 Zellij 或 tmux 里'}, 404)
+        room = None
+        if loc['mux'] == 'zellij':
+            with ROOM:
+                room = zellij_room(loc['session'])
         accept = base64.b64encode(hashlib.sha1((self.headers['Sec-WebSocket-Key'] + WS_GUID).encode()).digest()).decode()
         self.wfile.write(f'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n'.encode())
         self.wfile.flush()
         self.close_connection = True
-        room = zellij_room(loc['session']) if loc['mux'] == 'zellij' else None
         if room and not room['ok']:  # (one more client would take the server down: the page says why, from close code 4001)
-            return ws_send(self.connection, 8, struct.pack('>H', 4001) + json.dumps({k: room[k] for k in ('held', 'limit', 'need')}).encode())
+            ws_send(self.connection, 8, struct.pack('>H', 4001) + json.dumps({k: room[k] for k in ('held', 'limit', 'need')}).encode())
+            # (then wait for the browser's own close: closing on frames it already sent would reset the connection, and
+            # the close frame could be lost with it)
+            self.connection.settimeout(1)
+            try:
+                while (m := ws_read(self.rfile)) is not None and m[0] != 8:
+                    pass
+            except (OSError, ValueError):
+                pass
+            return
         size = lambda k, d: max(10, min(1000, int((q.get(k) or [d])[0]) if str((q.get(k) or [d])[0]).isdigit() else d))
         term_bridge(self.rfile, self.connection, loc, size('cols', 120), size('rows', 36))
 
@@ -2631,6 +2684,7 @@ After=default.target
 ExecStart={' '.join(argv)}
 Restart=on-failure
 RestartSec=3
+KillMode=process
 Environment=PATH={os.environ.get("PATH", "/usr/bin:/bin")}
 
 [Install]
@@ -2670,16 +2724,27 @@ FILES = ['sturnus', 'amail', 'VERSION', 'README.md', 'web', 'zellij-jump.wasm']
 
 
 def move_into(old, new):
-    """What OLD holds goes into NEW (what NEW has already stays), then OLD goes."""
+    """What OLD holds goes into NEW, then OLD goes. A file NEW has already stays, and OLD's is kept beside it as
+    <name>.agentdeck. When one is a link to the other, the folder stays as it is, under NEW's name."""
     if not os.path.isdir(old):
+        return
+    if os.path.realpath(old) == os.path.realpath(new):
+        if os.path.islink(new):
+            os.remove(new)
+            shutil.move(old, new)
+        elif os.path.islink(old):
+            os.remove(old)
         return
     if not os.path.isdir(new):
         os.makedirs(new)
         shutil.copymode(old, new)
     for f in os.listdir(old):
-        if not os.path.lexists(os.path.join(new, f)):
-            shutil.move(os.path.join(old, f), os.path.join(new, f))
-    shutil.rmtree(old, ignore_errors=True)
+        to = os.path.join(new, f)
+        shutil.move(os.path.join(old, f), to + '.agentdeck' if os.path.lexists(to) else to)
+    if os.path.islink(old):
+        os.remove(old)
+    else:
+        shutil.rmtree(old, ignore_errors=True)
 
 
 def adopt(with_service=True):
@@ -2689,6 +2754,8 @@ def adopt(with_service=True):
                                                  ('cache', '~/.cache/agentdeck'), ('unit', '~/.config/systemd/user/agentdeck.service'))}
     if not any(os.path.lexists(p) for p in old.values()):
         return ''
+    if not with_service and os.path.exists(old['unit']):  # (its service may be running on these files: leave it all)
+        return 'agentdeck is still installed with its service: `./sturnus install` with the service takes it over'
     if with_service and os.path.exists(old['unit']):
         systemctl('disable', '--now', 'agentdeck.service')  # (before this one's service takes the port)
     if os.path.exists(old['unit']):
@@ -2755,6 +2822,13 @@ def install(src, with_service=True):
         return '\n'.join(x for x in (f'sturnus {ver} installed (no service)', took, hooks.stdout.strip()) if x)
     write_unit(cur)
     service('start')
+    down = ''
+    for _ in range(20):  # (launchd and systemd start it a moment later)
+        if service('state') == 'active':
+            break
+        time.sleep(.25)
+    else:
+        down = f'the service did not start ({service("state")}): see {LOG if MAC else "journalctl --user -u sturnus"}'
     access_data()
     https = serve_https(config())
     if https.startswith('https://'):
@@ -2766,7 +2840,7 @@ def install(src, with_service=True):
             shutil.rmtree(old, ignore_errors=True)
     cfg = config()
     return '\n'.join(x for x in (f'sturnus {ver} installed: http://{cfg["host"]}:{cfg["port"]}{reach}',
-                                 'sign in with the token from: sturnus token', took, hooks.stdout.strip()) if x)
+                                 'sign in with the token from: sturnus token', down, took, hooks.stdout.strip()) if x)
 
 
 def uninstall(purge, with_service=True):
@@ -2779,6 +2853,8 @@ def uninstall(purge, with_service=True):
         if with_service:
             service('gone')
     out.append('service removed')
+    if MAC and with_service and os.path.exists(LOG):  # (the service's log goes with it)
+        os.remove(LOG)
     amail = os.path.join(SHARE, 'current', 'amail')
     if os.path.exists(amail):
         out.append(run([sys.executable, amail, 'uninstall'], timeout=90).stdout.strip())

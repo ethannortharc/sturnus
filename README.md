@@ -41,9 +41,9 @@ Set `"tailnet": false` in the config to stay on 127.0.0.1. Its terminal in the p
 
 Every client of a Zellij session (each terminal attached to it, the page's terminal too) loads its own copy of each tab's tab bar and status bar, and each copy holds a few files open: about 58 more files per client for a session of 7 tabs. A Zellij server that runs out of files dies, and every pane in it ends. macOS lets a server started from a terminal or an ssh login hold 256 (Linux usually 1024), which 7 tabs reach at the fourth client.
 
-So the page does not open its terminal when that client would take the server past its limit, and says why. macOS does not tell one process another's limit, so there the deck takes it as 256 unless the server already holds more.
+So the page does not open its terminal, or a new tab in a Zellij session, when that would take the server past its limit, and says why. macOS does not tell one process another's limit, so there the deck takes it as 256 unless the server already holds more.
 
-To give Zellij more room, raise the limit in the shell it is started from, e.g. `ulimit -n 10240` in `~/.zshenv`, then start the Zellij session again: a running server keeps the limit it started with.
+To give Zellij more room, raise the limit in the shell it is started from, e.g. `ulimit -n 10240` in `~/.zshenv`, then start the Zellij session again: a running server keeps the limit it started with. On macOS, also set `zellij_max_files` to that number in the config, so the deck knows.
 
 ## Settings
 
@@ -53,6 +53,7 @@ To give Zellij more room, raise the limit in the shell it is started from, e.g. 
 - `tailnet` (false: not on the Tailscale address);
 - `https_port` (7443);
 - `pane_titles`;
+- `zellij_max_files` (macOS: the open-file limit your Zellij sessions start with, once you have raised it);
 - `summarizer.cmd`, which defaults to `claude -p --model haiku`;
 - `summarizer.api`, to use an OpenAI-compatible endpoint instead: `{"url", "model", "key_env"}`.
 

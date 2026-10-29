@@ -106,7 +106,7 @@ def pids():
 
 
 def proc(pid):
-    """(command name, parent pid, start time) of a process, or None."""
+    """(command name, parent pid, start time) of a process, or None (on macOS another user's has start time 0)."""
     if not MAC:
         try:
             with open(f'/proc/{pid}/stat') as f:
@@ -116,8 +116,12 @@ def proc(pid):
         except (OSError, ValueError, IndexError):
             return None
     b = ctypes.create_string_buffer(136)  # (struct proc_bsdinfo)
-    if _c.proc_pidinfo(int(pid), 3, 0, b, 136) != 136:  # (PROC_PIDTBSDINFO)
-        return None
+    if _c.proc_pidinfo(int(pid), 3, 0, b, 136) != 136:  # (PROC_PIDTBSDINFO: one's own processes only)
+        # (another user's, like the root `login` between a terminal app and its shell: struct proc_bsdshortinfo has
+        # its name and parent, so a chain of ancestors goes on through it)
+        if _c.proc_pidinfo(int(pid), 13, 0, b, 64) != 64:  # (PROC_PIDT_SHORTBSDINFO)
+            return None
+        return b.raw[16:32].split(b'\0')[0].decode('utf-8', 'replace'), struct.unpack_from('I', b.raw, 4)[0], 0.0
     name = (b.raw[64:96].split(b'\0')[0] or b.raw[48:64].split(b'\0')[0]).decode('utf-8', 'replace')  # (pbi_name, else pbi_comm)
     if re.fullmatch(r'[\d.]+', name):  # (Claude Code runs from a file named by its version: the name it was started by)
         name = os.path.basename((_procargs(pid)[0] or [name])[0])
@@ -136,18 +140,20 @@ def _procargs(pid):
     if _c.sysctl((ctypes.c_int * 3)(1, 49, int(pid)), 3, b, ctypes.byref(n), None, 0) != 0 or n.value < 4:
         return None, {}
     raw = b.raw[:n.value]
-    parts, i = raw[4:].split(b'\0'), 1
-    while i < len(parts) and not parts[i]:
-        i += 1
+    end = raw.find(b'\0', 4)
+    if end < 0:
+        return None, {}
+    # (the arguments start where the path's NUL is padded to 8 bytes: skipping every NUL would also skip an empty argv[0])
+    parts = raw[4 + ((end - 3 + 7) & ~7):].split(b'\0')
     argc = struct.unpack_from('i', raw)[0]
     env = {}
-    for x in parts[i + argc:]:
+    for x in parts[argc:]:
         if not x:
             break
         k, eq, v = x.decode('utf-8', 'replace').partition('=')
         if eq:
             env[k] = v
-    return [x.decode('utf-8', 'replace') for x in parts[i:i + argc] if x], env
+    return [x.decode('utf-8', 'replace') for x in parts[:argc] if x], env
 
 
 def proc_args(pid):
