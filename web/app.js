@@ -366,21 +366,30 @@ function space() {
   }
   return { t: 'home' };
 }
+// (a workspace's own color, muted, by its key; shown only in the 暗彩 and 色条 looks)
+const MUTED = ['#5d6b85', '#6b6a4a', '#7a6650', '#6c5f84', '#4f7569', '#86604f', '#7b5566', '#5a6f80', '#5f7550', '#80704a'];
+const wsColor = w => { let h = 0; for (const c of String(w.key)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return MUTED[h % MUTED.length]; };
+const WSC = { graphite: '石墨', muted: '暗彩', stripe: '石墨 + 色条' };
+function applyWsColor() { const v = store.get('deck.wsColor', 'graphite'); document.documentElement.dataset.wsColor = WSC[v] ? v : 'graphite'; }
 const wsNeed = w => S.sessions.filter(s => s.workspace === w.key && attention(s)).length;
 const wsWorking = w => S.sessions.some(s => s.workspace === w.key && s.state === 'working');
 function railWs() {  // (the workspaces on the rail, in order)
   const sp = space(), seen = store.get('deck.wsSeen', []), ws = S.workspaces || [];
   return ws.filter(w => w.live || wsNeed(w) || (sp.t === 'ws' && sp.key === w.key) || seen.includes(w.key));
 }
-let sideOff = store.get('deck.sideOff', false);
-function setSide(off) {
-  sideOff = off;
-  store.set('deck.sideOff', off);
-  document.querySelector('.shell').classList.toggle('side-off', off);
-  delete sig.railnav;
-  drawRail();
+const LAY = ['full', 'rail', 'none'];  // (the rail and the column beside it; the rail only; neither)
+let lay = store.get('deck.lay', store.get('deck.sideOff', false) ? 'rail' : 'full');
+const LAY_NEXT = { full: '收起旁边那栏', rail: '左侧全部收起', none: '展开左侧' };
+function setLay(next) {
+  lay = LAY.includes(next) ? next : 'full';
+  store.set('deck.lay', lay);
+  const sh = document.querySelector('.shell');
+  for (const k of LAY) sh.classList.toggle('lay-' + k, k === lay);
+  const b = $('#layBtn');
+  if (b) { b.title = `${LAY_NEXT[lay]}（⌘B）`; b.setAttribute('aria-label', LAY_NEXT[lay]); }
   fitTerm();
 }
+const cycleLay = () => setLay(LAY[(LAY.indexOf(lay) + 1) % LAY.length]);
 function drawRail() {
   const sp = space(), ws = S.workspaces || [], on = railWs(), rest = ws.length - on.length;
   const loose = roots(S.sessions).filter(s => !s.workspace && live(s)).length;
@@ -391,18 +400,17 @@ function drawRail() {
     const w = wsOf(sp.key), seen = store.get('deck.wsSeen', []);
     if (w && !w.live && !seen.includes(w.key)) store.set('deck.wsSeen', [w.key, ...seen].slice(0, 3));
   }
-  draw('railnav', [sideOff, sp, on.map(w => [w.key, w.name, wsNeed(w), wsWorking(w)]), rest, loose, need, bNew, bCalls, today, qReady], () => {
+  draw('railnav', [sp, on.map(w => [w.key, w.name, wsNeed(w), wsWorking(w)]), rest, loose, need, bNew, bCalls, today, qReady], () => {
     const g = (href, on, icon, label, n, hot) => `<a class="tile g${on ? ' on' : ''}" href="${href}" title="${label}" aria-label="${label}">${icon}${n ? `<span class="badge${hot ? ' hot' : ''}">${n}</span>` : ''}</a>`;
     $('#rail').innerHTML = g('#/', sp.t === 'home', I.grid, '总览：所有工作区', need, true) + '<hr>'
-      + on.map((w, i) => `<a class="tile ws${sp.t === 'ws' && sp.key === w.key ? ' on' : ''}${w.live ? '' : ' quiet'}" href="#/w/${encodeURIComponent(w.key)}" title="${esc(w.name)} · ${esc(home(w.path))}${i < 9 ? ` （⌘${i + 1}）` : ''}" aria-label="${esc(w.name)}">${esc(w.name.slice(0, 1).toUpperCase())}${wsNeed(w) ? `<span class="badge hot">${wsNeed(w)}</span>` : wsWorking(w) ? '<i class="pulse"></i>' : ''}</a>`).join('')
+      + on.map((w, i) => `<a class="tile ws${sp.t === 'ws' && sp.key === w.key ? ' on' : ''}${w.live ? '' : ' quiet'}" href="#/w/${encodeURIComponent(w.key)}" style="--t:${wsColor(w)}" title="${esc(w.name)} · ${esc(home(w.path))}${i < 9 ? ` （⌘${i + 1}）` : ''}" aria-label="${esc(w.name)}">${esc(w.name.slice(0, 1).toUpperCase())}${wsNeed(w) ? `<span class="badge hot">${wsNeed(w)}</span>` : wsWorking(w) ? '<i class="pulse"></i>' : ''}</a>`).join('')
       + (rest > 0 ? g('#/workspaces', sp.t === 'workspaces', `<b>+${rest}</b>`, `所有工作区（还有 ${rest} 个安静的）`) : g('#/workspaces', sp.t === 'workspaces', I.plus, '所有工作区'))
       + (loose ? `<a class="tile g${sp.t === 'ws' && sp.key === '~' ? ' on' : ''}" href="#/w/~" title="不在工作区里的会话" aria-label="不在工作区里"><b>…</b><span class="badge">${loose}</span></a>` : '')
       + '<span class="push"></span>'
       + g('#/boards', sp.t === 'boards', I.chat, '讨论：所有讨论区', bCalls || bNew, bCalls > 0)
       + g('#/talk', sp.t === 'talk', I.mail, '消息：会话之间的信', today)
       + g('#/reports', sp.t === 'reports', I.doc, '报告：每个会话的简报', '')
-      + g('#/queue', sp.t === 'queue', I.list, '排队：等会话空了再发', qReady, true)
-      + `<button class="tile g fold${sideOff ? ' off' : ''}" data-side-toggle title="${sideOff ? '展开' : '收起'}旁边那栏（⌘B）" aria-label="${sideOff ? '展开' : '收起'}旁边那栏">${I.panel}</button>`;
+      + g('#/queue', sp.t === 'queue', I.list, '排队：等会话空了再发', qReady, true);
   });
 }
 function drawSide() {
@@ -464,7 +472,7 @@ function drawSide() {
 function wsListHtml() {
   const f = (sig.wsFilter || '').toLowerCase(), ws = (S.workspaces || []).filter(w => !f || (w.name + ' ' + w.path).toLowerCase().includes(f));
   return [['有会话', ws.filter(w => w.live)], ['安静', ws.filter(w => !w.live)]].filter(([, l]) => l.length).map(([t, l]) => `<div class="side-gh"><span>${t} · ${l.length}</span></div>`
-    + l.map(w => `<a class="nav-item" href="#/w/${encodeURIComponent(w.key)}"><span class="wsdot">${esc(w.name.slice(0, 1).toUpperCase())}</span>${esc(w.name)}<span class="n">${w.live ? w.live + ' 个会话' : w.at ? ago(w.at) + '前' : ''}</span></a>`).join('')).join('')
+    + l.map(w => `<a class="nav-item" href="#/w/${encodeURIComponent(w.key)}"><span class="wsdot" style="--t:${wsColor(w)}">${esc(w.name.slice(0, 1).toUpperCase())}</span>${esc(w.name)}<span class="n">${w.live ? w.live + ' 个会话' : w.at ? ago(w.at) + '前' : ''}</span></a>`).join('')).join('')
     || '<div class="side-empty">没有这个名字的工作区</div>';
 }
 
@@ -526,7 +534,7 @@ function drawTodoProjects(keys) {
 function wsCard(w) {
   const mine = roots(S.sessions).filter(s => s.workspace === w.key && live(s)), c = k => mine.filter(s => standing(s)[0] === k).length, need = wsNeed(w), b = boardOf(w.key);
   const works = workRows(w).length;
-  return `<a class="ws-card${w.live ? '' : ' quiet'}" href="#/w/${encodeURIComponent(w.key)}"><div class="top"><span class="wsdot lg">${esc(w.name.slice(0, 1).toUpperCase())}</span><div><b>${esc(w.name)}</b><span class="path">${esc(home(w.path))}</span></div>${need ? `<span class="n hot">${need}</span>` : ''}</div>
+  return `<a class="ws-card${w.live ? '' : ' quiet'}" href="#/w/${encodeURIComponent(w.key)}"><div class="top"><span class="wsdot lg" style="--t:${wsColor(w)}">${esc(w.name.slice(0, 1).toUpperCase())}</span><div><b>${esc(w.name)}</b><span class="path">${esc(home(w.path))}</span></div>${need ? `<span class="n hot">${need}</span>` : ''}</div>
     <div class="stats">${w.live ? [['waiting', '等你', c('waiting') + c('blocked') + c('review')], ['working', '工作中', c('working')], ['idle', '空闲', c('idle')]].filter(x => x[2]).map(([k, l, v]) => `<span class="chip"><span class="dot ${k}"></span><b>${v}</b>${l}</span>`).join('') : `<span class="chip">${w.at ? ago(w.at) + '前动过' : '安静'}</span>`}
       <span class="chip"><b>${w.projects.length}</b>个项目</span>${works ? `<span class="chip"><b>${works}</b>个工作项在进行</span>` : ''}${b && b.unread ? `<span class="chip">${I.chat}<b>${b.unread}</b>条新讨论</span>` : ''}</div></a>`;
 }
@@ -605,7 +613,7 @@ function renderWs() {
   const mine = roots(S.sessions).filter(s => s.workspace === w.key), on = mine.filter(live), c = k => on.filter(s => standing(s)[0] === k).length, b = boardOf(w.key);
   $('#crumbs').innerHTML = `${I.chev}<a href="#/w/${encodeURIComponent(w.key)}">${esc(w.name)}</a>${route.tab !== 'dash' ? `${I.chev}<b>${route.tab === 'projects' ? '项目' : '工作项'}</b>` : `${I.chev}<b>仪表盘</b>`}`;
   draw('wshead', [w.key, w.name, w.path, w.projects.length, c('working'), c('waiting') + c('blocked'), c('review'), c('idle'), b && b.unread], () => {
-    $('#wsHead').innerHTML = `<span class="wsdot xl">${esc(w.name.slice(0, 1).toUpperCase())}</span><div class="t"><h2>${esc(w.name)}<em>工作区</em></h2>
+    $('#wsHead').innerHTML = `<span class="wsdot xl" style="--t:${wsColor(w)}">${esc(w.name.slice(0, 1).toUpperCase())}</span><div class="t"><h2>${esc(w.name)}<em>工作区</em></h2>
         <div class="sub"><span class="nm">${esc(home(w.path))}</span><span>${w.projects.length} 个项目</span><span>${workRows(w).length} 个工作项在进行</span></div></div>
       <div class="right"><span class="legend">${[['waiting', '等你', c('waiting') + c('blocked') + c('review')], ['working', '工作中', c('working')], ['idle', '空闲', c('idle')]]
         .map(([k, l, v]) => `<span class="chip"><span class="dot ${k}"></span><b>${v}</b>${l}</span>`).join('')}</span>
@@ -1160,7 +1168,7 @@ function drawPalette() {
   const items = palAll();
   palIndex = Math.min(palIndex, Math.max(0, items.length - 1));
   $('#paletteList').innerHTML = items.length ? items.map((s, i) => s.href ? `
-    <div class="p-row${i === palIndex ? ' on' : ''}" data-pal="${i}">${s.ws ? `<span class="wsdot lg">${esc(s.label.slice(0, 1).toUpperCase())}</span>` : `<span class="mark sm pj">${I.folder}</span>`}
+    <div class="p-row${i === palIndex ? ' on' : ''}" data-pal="${i}">${s.ws ? `<span class="wsdot lg" style="--t:${wsColor(s.ws)}">${esc(s.label.slice(0, 1).toUpperCase())}</span>` : `<span class="mark sm pj">${I.folder}</span>`}
       <div class="t"><b>${esc(s.label)}</b><div>${esc(s.sub)}</div></div><span class="loc"></span></div>` : `
     <div class="p-row${i === palIndex ? ' on' : ''}" data-pal="${i}">${mark(s.kind, standing(s)[0], 'sm')}
       <div class="t"><b>${esc(titleOf(s))}</b><div>${esc(s.name)} · ${esc(s.summary || standing(s)[1])}</div></div>
@@ -1273,6 +1281,7 @@ function drawSettings() {
       ${S.summarizer && S.summarizer.error ? `<div class="code">最近一次总结出错：${esc(S.summarizer.error)}</div>` : ''}`,
     look: `<h3>显示</h3><p class="lead">这台机器上的显示偏好。</p>
       <div class="opt"><div><h4>主题</h4><p>跟随系统，或固定浅色、深色。</p></div><div class="seg">${[['auto', '跟随系统'], ['light', '浅色'], ['dark', '深色']].map(([k, l]) => `<button data-theme-set="${k}" class="${t === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+      <div class="opt"><div><h4>工作区图标</h4><p>最左边那条栏里工作区的颜色：都用石墨色、每个工作区一种低饱和的颜色，或者石墨色加一道它的颜色。</p></div><div class="seg">${Object.entries(WSC).map(([k, l]) => `<button data-wscolor="${k}" class="${store.get('deck.wsColor', 'graphite') === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
       <div class="opt"><div><h4>窗格标题</h4><p>用「状态 · 会话名 · 在做的事」做每个 agent 窗格的标题，在 Zellij 或 tmux 里一眼认出是哪个（tmux 要开 pane-border-status 才看得到）。</p></div><label class="switch"><input type="checkbox" id="paneTitles" ${S.pane_titles ? 'checked' : ''}></label></div>`,
     voice: voicePane(),
     access: `<h3>访问</h3><div id="accessBody"></div>`,
@@ -1411,7 +1420,7 @@ document.addEventListener('click', async e => {
   let el;
   if (q('[data-close]')) { closeOverlays(); return; }
   if ((el = q('[data-new]'))) { e.stopPropagation(); openNew(el.dataset.new); return; }
-  if (q('[data-side-toggle]')) { setSide(!sideOff); return; }
+  if (q('#layBtn')) { cycleLay(); return; }
   if ((el = q('[data-newp-ws]'))) { const w = wsOf(el.dataset.newpWs); if (w) openNew(w.groups[0] || '', { cwd: home(w.path) }); return; }
   if ((el = q('[data-works-all]'))) { sig.worksAll = el.dataset.worksAll; delete sig.wsbody; render(); return; }
   if ((el = q('tr[data-href]')) && !q('a, [data-go]')) { location.hash = el.dataset.href; return; }
@@ -1480,6 +1489,7 @@ document.addEventListener('click', async e => {
   if ((el = q('[data-quiet]'))) { toggle(quietOpen, 'deck.quietOpen', el.dataset.quiet); return; }
   if ((el = q('[data-report]'))) { e.stopPropagation(); el.disabled = true; el.textContent = '正在写…'; post('report', { id: el.dataset.report }); return; }
   if ((el = q('[data-acc]'))) { const key = el.dataset.acc; await api('access', { do: 'drop', key }); if (key === 'me') location.reload(); else drawAccess(); return; }
+  if ((el = q('[data-wscolor]'))) { store.set('deck.wsColor', el.dataset.wscolor); applyWsColor(); drawSettings(); return; }
   if ((el = q('[data-theme-set]'))) { store.set('deck.theme', el.dataset.themeSet); applyTheme(); drawSettings(); return; }
   if ((el = q('[data-src]'))) { const role = el.closest('.mblock').dataset.role; MB[role] = { source: el.dataset.src }; drawSettings(); return; }
   if ((el = q('[data-mact]'))) {
@@ -1530,7 +1540,7 @@ document.addEventListener('keydown', e => {
   if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && document.activeElement.id === 'rText') { const b = document.querySelector('[data-act="say"]:not([disabled])'); if (b) b.click(); return; }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openPalette(); return; }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'j') { e.preventDefault(); asstToggle(); return; }
-  if (!typing && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') { e.preventDefault(); setSide(!sideOff); return; }
+  if (!typing && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') { e.preventDefault(); cycleLay(); return; }
   if (!typing && (e.metaKey || e.ctrlKey) && /^[1-9]$/.test(e.key) && S) { const w = railWs()[+e.key - 1]; if (w) { e.preventDefault(); location.hash = `#/w/${encodeURIComponent(w.key)}`; } return; }
   if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === '/') { e.preventDefault(); openPalette(); }
@@ -1539,7 +1549,8 @@ document.addEventListener('keydown', e => {
 
 route = parseRoute();
 applyTheme();
-document.querySelector('.shell').classList.toggle('side-off', sideOff);
+setLay(lay);
+applyWsColor();
 // (a session's or project's head stays at the top while its page scrolls, folded to one line)
 document.addEventListener('scroll', e => {
   const h = e.target && e.target.id === 'sess' && $('#hero');

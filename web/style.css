@@ -46,8 +46,8 @@ code { font: 12px var(--font-mono); background: var(--panel-2); border: 1px soli
 .app { position: relative; z-index: 1; display: grid; grid-template-rows: 56px 1fr 30px; height: 100vh; }
 
 /* ---------- bar ---------- */
-.bar { display: flex; align-items: center; gap: 18px; padding: 0 20px 0 22px; border-bottom: 1px solid var(--hair); background: color-mix(in srgb, var(--panel) 70%, transparent); backdrop-filter: saturate(1.4) blur(18px); }
-.brand { display: flex; align-items: center; gap: 11px; }
+.bar { display: flex; align-items: center; gap: 18px; padding: 0 20px 0 0; border-bottom: 1px solid var(--hair); background: color-mix(in srgb, var(--panel) 70%, transparent); backdrop-filter: saturate(1.4) blur(18px); }
+.brand { display: flex; align-items: center; gap: 4px; align-self: stretch; }
 .logo { width: 26px; height: 26px; border-radius: 8px; display: block; flex: none; box-shadow: 0 3px 10px -4px rgba(0, 0, 0, .45); }
 .word { font-weight: 650; font-size: 15px; letter-spacing: -.015em; }
 .crumbs { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); min-width: 0; }
@@ -809,10 +809,6 @@ table.works .when { color: var(--muted); white-space: nowrap; font-variant-numer
 /* workspaces wear the app's own graphite; the column beside the rail folds away; a page's head stays at the top */
 :root { --graphite: linear-gradient(150deg, #3b3b3f, #151517); }
 [data-theme="dark"] { --graphite: linear-gradient(150deg, #56565c, #2a2a2e); }
-.tile.fold { margin-top: 6px; border-style: dashed; box-shadow: none; }
-.tile.fold.off { border-style: solid; color: var(--ink); }
-.shell.side-off { grid-template-columns: 62px minmax(0, 1fr); }
-.shell.side-off .side { display: none; }
 .s-hero { background: var(--canvas); }
 #hero { position: sticky; top: 0; z-index: 6; }
 #hero .s-hero { transition: padding .18s var(--ease); }
@@ -823,3 +819,18 @@ table.works .when { color: var(--muted); white-space: nowrap; font-variant-numer
 #hero.compact .s-hero .mark.lg { width: 28px; height: 28px; border-radius: 8px; } #hero.compact .s-hero .mark.lg svg { width: 16px; height: 16px; }
 #hero.compact .s-hero .acts { align-self: center; } #hero.compact .s-hero .hbtn { height: 28px; padding: 0 10px; font-size: 12px; }
 #hero.compact .tabs { margin-top: 6px; } #hero.compact .tabs button { padding: 6px 12px 8px; }
+
+/* the logo sits over the rail, centred like its tiles, and folds the left: all → the rail only → nothing */
+.lay-btn { width: 62px; align-self: stretch; display: grid; place-items: center; border: 0; background: none; padding: 0; flex: none; border-radius: 0; }
+.lay-btn .logo { width: 30px; height: 30px; border-radius: 9px; transition: transform .15s var(--ease), box-shadow .15s; }
+.lay-btn:hover .logo { transform: scale(.94); box-shadow: 0 0 0 3px var(--accent-soft), 0 3px 10px -4px rgba(0, 0, 0, .45); }
+.lay-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -6px; }
+.shell.lay-rail { grid-template-columns: 62px minmax(0, 1fr); }
+.shell.lay-rail .side { display: none; }
+.shell.lay-none { grid-template-columns: minmax(0, 1fr); }
+.shell.lay-none .side, .shell.lay-none .rail { display: none; }
+/* workspace colors: graphite (default), muted colors, graphite with a stripe of the muted color */
+[data-ws-color="muted"] .tile.ws, [data-ws-color="muted"] .wsdot { background: linear-gradient(150deg, color-mix(in srgb, var(--t) 88%, #fff), color-mix(in srgb, var(--t) 78%, #000)); }
+[data-ws-color="stripe"] .tile.ws { box-shadow: inset 0 -4px 0 var(--t), inset 0 1px 0 rgba(255, 255, 255, .14), 0 1px 2px rgba(0, 0, 0, .18); }
+[data-ws-color="stripe"] .wsdot { box-shadow: inset 0 -3px 0 var(--t); }
+[data-ws-color="stripe"] .tile.ws.on { box-shadow: inset 0 -4px 0 var(--t), 0 0 0 2px var(--canvas), 0 0 0 4px var(--ink); }
