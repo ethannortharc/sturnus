@@ -823,7 +823,7 @@ table.works .when { color: var(--muted); white-space: nowrap; font-variant-numer
 /* the logo heads the rail (the rail runs from the top of the window) and folds it; the column beside the rail folds on its own */
 .lay-btn { width: 62px; height: calc(100% + 1px); align-self: flex-start; display: grid; place-items: center; border: 0; padding: 0; flex: none; border-radius: 0; position: relative; z-index: 2;
   background: color-mix(in srgb, var(--sunk) 70%, var(--canvas)); border-right: 1px solid var(--hair); }
-.lay-btn .logo { width: 30px; height: 30px; border-radius: 9px; transition: transform .15s var(--ease), box-shadow .15s; }
+.lay-btn .logo { width: 40px; height: 40px; border-radius: 12px; transition: transform .15s var(--ease), box-shadow .15s; }
 .lay-btn:hover .logo { transform: scale(.94); box-shadow: 0 0 0 3px var(--accent-soft), 0 3px 10px -4px rgba(0, 0, 0, .45); }
 .lay-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -6px; }
 .app.rail-off .lay-btn { background: none; border-right-color: transparent; height: auto; align-self: stretch; }
