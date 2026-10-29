@@ -275,7 +275,7 @@ function build() {  // (the frame of a view; render() fills it)
   } else if (route.name === 'queue') {
     crumb('排队');
     $('#view').innerHTML = `<div class="q-page"><div class="q-head"><h2>排队</h2><p>先把要交给会话的事写下来；会话空了，助手先看还要不要做、适不适合，再替你发，或者提醒你。</p></div>
-      <form class="q-new" id="qNew" autocomplete="off"><textarea id="qText" placeholder="要做的事……（比如：等 9c 复现完，让它把 MR 描述补上 rc 的结论）"></textarea>
+      <form class="q-new" id="qNew" autocomplete="off"><textarea id="qText" placeholder="要做的事……（比如：等它把测试跑完，让它把结论写进 PR 描述）"></textarea>
         <div class="row"><label class="hint">交给</label><select id="qTo"></select>
           <div class="seg" id="qMode"><button type="button" data-qmode="auto" class="on">助手确认后自动发</button><button type="button" data-qmode="remind">空了提醒我</button></div>
           <span id="qMic"></span><button type="button" class="btn" id="qRecBtn" title="助手按各会话负责的事，推荐交给谁，或新开一个">${I.spark}帮我选</button>
@@ -1098,7 +1098,7 @@ zellij attach &lt;组名&gt;  |  tmux attach -t &lt;组名&gt;</div>
 }
 // ---------- the assistant: questions about the sessions, answered from what the deck knows ----------
 const ASST = { open: store.get('deck.asstOpen', false), msgs: store.get('deck.asstMsgs', []), busy: false };
-const ASK_SAMPLES = ['现在谁在等我？各要我做什么', '哪个会话在做 NetFlow？', '今天定了哪些事？', '有哪些 MR 已经提了还没合？'];
+const ASK_SAMPLES = ['现在谁在等我？各要我做什么', '哪个会话在改登录页？', '今天定了哪些事？', '有哪些 MR 已经提了还没合？'];
 function asstToggle(open = !ASST.open) {
   ASST.open = open; store.set('deck.asstOpen', open);
   $('#asst').hidden = !open; $('#asstBtn').classList.toggle('on', open);

@@ -37,7 +37,13 @@ It runs on Linux and macOS, with the Python 3 the system has (3.9 or newer) and 
 
 ## Install
 
-Get a release (`sturnus-<version>.tar.gz`) or clone the repository, then, in that folder:
+Either clone it:
+
+```sh
+git clone https://github.com/ethannortharc/sturnus && cd sturnus && ./sturnus install
+```
+
+or take the newest release (https://github.com/ethannortharc/sturnus/releases), unpack it and run `./sturnus install` in its folder.
 
 - `./sturnus install` — installs into `~/.local/share/sturnus`. It adds:
   - `~/.local/bin/sturnus` and `~/.local/bin/amail`,
@@ -47,7 +53,7 @@ Get a release (`sturnus-<version>.tar.gz`) or clone the repository, then, in tha
   - with Tailscale, https://\<machine\>.\<tailnet\>.ts.net:7443 (see below).
 - `sturnus token [--rotate]` — the sign-in token. Every browser needs it once, then stays signed in for 30 days. `--rotate` makes a new token and signs every browser out.
 - `sturnus status` — the version, the service, and every address it is on.
-- `sturnus upgrade` — reinstalls from the folder it was last installed from, when that folder's VERSION is newer (in a clone: `git pull`, then `sturnus upgrade`; a newer release archive: `./sturnus install` in its folder). Three versions are kept.
+- `sturnus upgrade` — the newest version, on Linux and macOS alike. Installed from a clone, it pulls the clone (fast-forward only) and installs it when its VERSION is newer; installed from a release, it takes the newest release on GitHub (checked against its sha256). Three versions are kept, and a new one must pass its own check before it takes over. `--force` installs again, `--release` takes the release even with a clone.
 - `sturnus uninstall [--purge]` — takes all of it out again (`--purge`: its settings, caches and mail too).
 - `amail help` — the mailbox the sessions use.
 
@@ -80,6 +86,7 @@ To give Zellij more room, raise the limit in the shell it is started from, e.g. 
 - `pane_titles`;
 - `zellij_max_files` (macOS: the open-file limit your Zellij sessions start with, once you have raised it);
 - `workspaces`: the folders of projects (default: the folder above each git repository a session works in);
+- `releases`: the GitHub repository `sturnus upgrade` takes releases from (default `ethannortharc/sturnus`);
 - `summarizer.cmd`, which defaults to `claude -p --model haiku`;
 - `summarizer.api`, to use an OpenAI-compatible endpoint instead: `{"url", "model", "key_env"}`.
 
@@ -90,5 +97,9 @@ A second deck can run beside the installed one: `STURNUS_CONF`, `STURNUS_CACHE` 
 ## Building
 
 The Zellij plugin's source is in `zellij-jump/`. Rebuild it with `cargo build --release --target wasm32-wasip1`, then copy the `.wasm` file next to this README. `scripts/release.sh` makes the release archive from a clean checkout of a tag.
+
+## License
+
+MIT (see LICENSE). xterm.js in `web/vendor` is MIT, the fonts in `web/fonts` are under the SIL Open Font License (see `web/fonts/OFL.txt`).
 
 © 2026 Ethan H.B. Zhou

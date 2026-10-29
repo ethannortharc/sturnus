@@ -6,7 +6,9 @@ is (its Zellij session and pane), what they say to each other. Jump to one, writ
                                    plugin, a user service serving http://127.0.0.1:7788 (and, with Tailscale,
                                    https://<machine>.<tailnet>.ts.net:7443 for the owner's own devices)
   sturnus token [--rotate]         the sign-in token every browser needs once (--rotate: a new one, all signed out)
-  sturnus upgrade [--force]        install again from the source it came from, when that is newer
+  sturnus upgrade [--force] [--release]
+                                   the newest version: a git clone it was installed from is pulled first; one installed
+                                   from a release archive (or --release) takes the newest release on GitHub
   sturnus uninstall [--purge]      take everything out again (--purge: its settings and caches too)
   sturnus status | open | serve | version
 """
@@ -3191,7 +3193,7 @@ def service(do):
     return r
 
 
-FILES = ['sturnus', 'amail', 'VERSION', 'README.md', 'web', 'zellij-jump.wasm']
+FILES = ['sturnus', 'amail', 'VERSION', 'README.md', 'LICENSE', 'web', 'zellij-jump.wasm']
 
 
 def move_into(old, new):
@@ -3354,6 +3356,80 @@ def newer(a, b):
     return [int(x) for x in a.split('.')] > [int(x) for x in b.split('.')]
 
 
+RELEASES = 'ethannortharc/sturnus'  # (the GitHub repository releases come from; config "releases" names another)
+
+
+def git_source(src):
+    """A git checkout to upgrade from: pull it (fast-forward only, when nothing is uncommitted). Says what happened."""
+    if not src or run(['git', '-C', src, 'rev-parse', '--is-inside-work-tree']).stdout.strip() != 'true':
+        return None
+    if run(['git', '-C', src, 'status', '--porcelain']).stdout.strip():
+        return f'{src} has uncommitted changes: not pulled'
+    if run(['git', '-C', src, 'rev-parse', '--abbrev-ref', '@{u}']).returncode != 0:
+        return f'{src} follows no remote branch: not pulled'
+    r = run(['git', '-C', src, 'pull', '--ff-only', '-q'], timeout=120)
+    return f'pulled {src}' if r.returncode == 0 else f'could not pull {src}: {(r.stderr or r.stdout).strip()[:200]}'
+
+
+def latest_release(cfg):
+    """The newest release on GitHub: (version, archive url, checksum url)."""
+    repo = cfg.get('releases') or RELEASES
+    d = http_json(f'https://api.github.com/repos/{repo}/releases/latest', headers={'Accept': 'application/vnd.github+json', 'User-Agent': f'sturnus/{VERSION}'}, timeout=30)
+    v = str(d.get('tag_name') or '').lstrip('v')
+    if not re.fullmatch(r'\d+(\.\d+)*', v):
+        raise ValueError(f'the newest release of {repo} is not a version: {d.get("tag_name")!r}')
+    assets = {a.get('name'): a.get('browser_download_url') for a in d.get('assets') or []}
+    tar, sha = assets.get(f'sturnus-{v}.tar.gz'), assets.get(f'sturnus-{v}.tar.gz.sha256')
+    if not tar or not sha:
+        raise ValueError(f'release v{v} of {repo} has no sturnus-{v}.tar.gz with its .sha256')
+    return v, tar, sha
+
+
+def fetch_release(v, tar, sha):
+    """A release archive, downloaded, checked against its checksum and unpacked under the install's own folder: the
+    folder to install from."""
+    import io, tarfile
+    get = lambda url: urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': f'sturnus/{VERSION}'}), timeout=120).read()
+    data, want = get(tar), get(sha).decode().split()[0].lower()
+    if hashlib.sha256(data).hexdigest() != want:
+        raise ValueError(f'sturnus-{v}.tar.gz does not match its checksum: not installed')
+    top, dest = f'sturnus-{v}', os.path.join(SHARE, 'src')
+    with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as t:
+        for m in t.getmembers():  # (only plain files and folders inside its own folder)
+            parts = m.name.split('/')
+            if parts[0] != top or '..' in parts or m.name.startswith('/') or not (m.isfile() or m.isdir()):
+                raise ValueError(f'sturnus-{v}.tar.gz holds {m.name!r}: not installed')
+        shutil.rmtree(os.path.join(dest, top), ignore_errors=True)
+        os.makedirs(dest, exist_ok=True)
+        t.extractall(dest)
+    return os.path.join(dest, top)
+
+
+def upgrade(argv):
+    """The newest version, installed by itself (its own install steps, not this one's)."""
+    cfg = A.get(CONF, {}) or {}
+    src = cfg.get('source')
+    pulled = None if '--release' in argv else git_source(src)
+    if pulled is not None:
+        print(pulled)
+        v = open(os.path.join(src, 'VERSION')).read().strip()
+        if not newer(v, VERSION) and '--force' not in argv:
+            return print(f'sturnus {VERSION} is current ({src} has {v}); --force to install it again')
+    else:
+        try:
+            v, tar, sha = latest_release(cfg)
+        except Exception as e:
+            sys.exit(f'sturnus: could not see the newest release: {e}')
+        if not newer(v, VERSION) and '--force' not in argv:
+            return print(f'sturnus {VERSION} is current (the newest release is {v}); --force to install it again')
+        try:
+            src = fetch_release(v, tar, sha)
+        except Exception as e:
+            sys.exit(f'sturnus: could not get release {v}: {e}')
+        print(f'got release {v}')
+    os.execv(sys.executable, [sys.executable, os.path.join(src, 'sturnus'), 'install', '--from', src] + (['--no-service'] if '--no-service' in argv else []))
+
+
 def main(argv):
     c = argv[0] if argv else 'help'
     if c == 'serve':
@@ -3362,15 +3438,7 @@ def main(argv):
         src = argv[argv.index('--from') + 1] if '--from' in argv else APP
         print(install(src, '--no-service' not in argv))
     elif c == 'upgrade':
-        src = (A.get(CONF, {}) or {}).get('source')
-        if not src or not os.path.exists(os.path.join(src, 'VERSION')):
-            sys.exit('sturnus: no source to upgrade from (sturnus install --from DIR)')
-        v = open(os.path.join(src, 'VERSION')).read().strip()
-        if not newer(v, VERSION) and '--force' not in argv:
-            print(f'sturnus {VERSION} is current (source {src} has {v}); --force to reinstall')
-            return
-        # (the new version installs itself: its own install steps, not this one's)
-        os.execv(sys.executable, [sys.executable, os.path.join(src, 'sturnus'), 'install', '--from', src])
+        upgrade(argv)
     elif c == 'uninstall':
         print(uninstall('--purge' in argv, '--no-service' not in argv))
     elif c == 'status':
