@@ -540,6 +540,7 @@ Object.assign(EN, {
 "MATE 终端": "MATE Terminal"
 });
 let LANG = 'zh';
+const tt = (zh, en) => (LANG === 'en' ? en : zh);  // (a label whose English differs by where it stands)
 const t = (s, v) => { let x = LANG === 'en' && EN[s] !== undefined ? EN[s] : s; for (const k in v || {}) x = x.split('{' + k + '}').join(v[k]); return x; };
 const agoT = t0 => { const a = ago(t0); return a === t('刚刚') ? a : t('{t}前', { t: a }); };
 // how a session outside Zellij and tmux was started: the deck writes it in Chinese, the page puts it in its own language
@@ -618,6 +619,8 @@ function parseRoute() {
   if (mt) return { name: 'project', key: decodeURIComponent(mt[1]), tab: mt[2] || 'overview' };
   mt = h.match(/^\/b\/([^/]+)$/);
   if (mt) return { name: 'board', key: decodeURIComponent(mt[1]) };
+  const sub = h.match(/^\/s\/(.+?)\/sub\/([0-9a-f]{6,40})$/);
+  if (sub) return { name: 'session', id: decodeURIComponent(sub[1]), tab: 'sub', sub: sub[2] };
   const m = h.match(/^\/s\/(.+?)(?:\/(overview|report|chat|term|msgs))?$/);
   return m ? { name: 'session', id: decodeURIComponent(m[1]), tab: m[2] || 'overview' } : { name: 'home' };
 }
@@ -801,16 +804,22 @@ function drawRail() {
 }
 function drawSide() {
   const sp = space(), cur = route.name === 'session' ? S.sessions.find(x => x.id === route.id) : null, tops = roots(S.sessions);
-  draw('side', [sp, route, S.sessions.map(s => [s.id, s.title, s.state, s.status, s.needs_you && 1, s.stale, s.kind, s.project, s.workspace, s.branch]), (S.workspaces || []).map(w => [w.key, w.live, w.projects.length]),
+  draw('side', [sp, route, S.sessions.map(s => [s.id, s.title, s.state, s.status, s.needs_you && 1, s.stale, s.kind, s.project, s.workspace, s.branch, (s.subs || []).map(a => [a.id, a.state, a.task])]), Math.floor(Date.now() / 60000), (S.workspaces || []).map(w => [w.key, w.live, w.projects.length]),
     Object.values(S.boards || {}).map(b => [b.key, b.unread]), Object.entries(S.groups || {}).map(([g, z]) => [g, z.clients.length, z.agents]), (S.queue || []).map(i => i.status), railTab, [...quietOpen],
     Object.values(S.projects || {}).map(p => [p.key, p.facts && p.facts.at]), (S.workspaces || []).map(w => w.groups)], () => {
     const head = (x, sub, extra = '') => `<div class="sp-head"><b>${t(x)}</b>${sub ? `<span>${t(sub)}</span>` : ''}${extra}</div>`;
     const item = (href, on, icon, label, n, hot) => `<a class="nav-item${on ? ' on' : ''}" href="${href}">${icon}${t(label)}${n ? `<span class="n${hot ? ' hot' : ''}">${n}</span>` : ''}</a>`;
     const row = (s, pre) => { const [st, label] = standing(s), p = projOf(s.project); return `<div class="side-s${cur && cur.id === s.id ? ' on' : ''}${s.stale ? ' quiet' : ''}" data-go="${esc(s.id)}" title="${esc(s.name)}">${mark(FULL[s.kind] ? s.kind : 'codex', st, 'sm')}<b>${esc(titleOf(s))}</b><span><em class="${st}">${label}</em> · ${pre ? esc(pre) + ' · ' : ''}${p ? esc(p.name) + (s.branch && s.work !== p.path ? ' · ' + esc(s.branch) : '') : s.workspace ? t('工作区顶层') : esc(s.name)}</span></div>`; };
+    const subLines = s => {  // (a session's own sub-agents under its row: running ones, the finished folded)
+      const subs = s.subs || [], on = subs.filter(a => a.state !== 'done'), done = subs.filter(a => a.state === 'done'), k = 'subs:' + s.id, open = quietOpen.has(k);
+      if (!subs.length) return '';
+      const r = a => `<div class="side-sub${route.sub === a.id ? ' on' : ''}" data-go="${esc(s.id)}" data-tab="sub/${esc(a.id)}" title="${subWho(a)} · ${subLabel(a)}"><i class="${a.state}"></i><b>${esc(a.task || a.type)}</b><span>${esc(a.type)}</span></div>`;
+      return `<div class="side-subs">${on.map(r).join('')}${done.length ? `<div class="side-sub more" data-quiet="${esc(k)}">${chev(open)}${tt(`已完成的子 agent ${done.length} 个`, `${done.length} finished sub-agent${done.length > 1 ? 's' : ''}`)}</div>${open ? done.map(r).join('') : ''}` : ''}</div>`;
+    };
     const byState = (list, k, pre) => {
       const act = list.filter(s => !s.stale && !['gone', 'ended'].includes(s.state)), quiet = list.filter(s => s.stale), qOpen = quietOpen.has(k);
       const groups = [['等你', act.filter(s => ['waiting', 'blocked', 'review'].includes(standing(s)[0]))], ['工作中', act.filter(s => standing(s)[0] === 'working')], ['空闲', act.filter(s => standing(s)[0] === 'idle')]];
-      return groups.filter(([, l]) => l.length).map(([x, l]) => `<div class="side-gh"><span>${t(x)} · ${l.length}</span></div>${l.map(s => row(s, pre && pre(s))).join('')}`).join('')
+      return groups.filter(([, l]) => l.length).map(([x, l]) => `<div class="side-gh"><span>${t(x)} · ${l.length}</span></div>${l.map(s => row(s, pre && pre(s)) + subLines(s)).join('')}`).join('')
         + (quiet.length ? `<div class="side-quiet" data-quiet="${esc(k)}">${chev(qOpen)}${t('一天以上没动静 {n} 个', { n: quiet.length })}</div>${qOpen ? quiet.map(s => row(s, pre && pre(s))).join('') : ''}` : '')
         + (!act.length && !quiet.length ? `<div class="side-empty">${t('现在没有会话')}</div>` : '');
     };
@@ -893,7 +902,7 @@ function drawAttn(wkey) {
         <span class="bar4"></span>${mark(s.kind, ATT[a][1], 'sm')}
         <div class="t"><div class="k">${t(ATT[a][0])}<span>${esc(s.name)}${!wkey && wsOf(s.workspace) ? ` · ${esc(wsOf(s.workspace).name)}` : ''}${projOf(s.project) ? ` · ${esc(projOf(s.project).name)}` : ''}${parentOf(s) ? ` · ${t('启动自 {n}', { n: esc(parentOf(s).name) })}` : ''} · ${ago(s.since)}</span></div>
           <b>${esc(titleOf(s))}</b><p>${esc(s.state === 'waiting' && s.waiting_for ? t('在等你批准：{w}', { w: s.waiting_for }) : s.needs_you || s.summary || '')}</p></div>
-        <div class="acts"><button class="btn" data-go="${esc(s.id)}" data-tab="overview">${I.reply}${t('回复')}</button><button class="btn dark" data-go="${esc(s.id)}" data-tab="term" ${webOk(s) ? '' : 'disabled'}>${I.enter}${t('进入')}</button></div>
+        <div class="acts"><button class="btn" data-go="${esc(s.id)}" data-tab="overview">${I.reply}${t('回复')}</button><button class="btn dark" data-go="${esc(s.id)}" data-tab="term" ${webOk(s) ? '' : 'disabled'}>${I.term}${t('终端')}</button></div>
       </div>`).join('')}</div>` : `<div class="calm">${I.check}${t('现在没有要你决定或验收的事，它们都在各自干活。')}</div>`;
   });
   const q = S.queue || [], qReady = q.filter(i => i.status === 'ready'), qWait = q.filter(i => ['waiting', 'held', 'checking'].includes(i.status));
@@ -1006,7 +1015,7 @@ function renderWs() {
         <a class="btn" href="#/b/${encodeURIComponent(w.key)}" title="${t('这个工作区里所有会话都收得到')}">${I.chat}${t('讨论区')}${b && b.unread ? ` · ${b.unread}` : ''}</a><button class="btn" data-newp-ws="${esc(w.key)}">${I.plus}${t('新建会话')}</button></div>`;
   });
   const sig_ = [w.key, route.tab, w.projects, Object.values(S.projects || {}).filter(p => p.workspace === w.key).map(p => [p.key, p.facts && p.facts.at, p.at]),
-    mine.map(s => [s.id, s.state, s.status, s.title, s.summary, s.work, s.project, s.stale, s.needs_you, s.tool]), Object.values(S.boards || {}).map(b => [b.key, b.unread, b.last && b.last.at]), (S.decisions || []).length, Object.keys(S.reports || {}).length, tick(), sig.worksAll];
+    mine.map(s => [s.id, s.state, s.status, s.title, s.summary, s.work, s.project, s.stale, s.needs_you, s.tool, subsOn(s).map(a => [a.id, a.state])]), Object.values(S.boards || {}).map(b => [b.key, b.unread, b.last && b.last.at]), (S.decisions || []).length, Object.keys(S.reports || {}).length, tick(), sig.worksAll];
   if (route.tab === 'projects') {
     draw('wsbody', sig_, () => { $('#wsBody').innerHTML = `<div class="h-title"><h2>${t('项目')}</h2><span class="sub">${t('{n} 个 · 有会话的在前', { n: w.projects.length })}</span></div>${projGrid(w.projects)}`; });
     return;
@@ -1057,11 +1066,22 @@ async function takeTodo(which) {
   if (j && j.ok) { $('#tText').value = ''; $('#tRec').innerHTML = ''; TREC = null; }
 }
 
+// a Claude Code session's own sub-agents (its Agent tool): how one stands, in a few words
+const subsOn = s => (s.subs || []).filter(a => a.state !== 'done');
+function spanT(sec) { sec = Math.max(0, sec); return sec < 3600 ? t('{n} 分钟', { n: Math.max(1, Math.round(sec / 60)) }) : t('{n} 小时', { n: Math.floor(sec / 3600) }); }
+function subLabel(a) {
+  if (a.state === 'done') return tt(`已完成 · 跑了 ${spanT(a.at - a.start)}`, `Finished · ran ${spanT(a.at - a.start)}`);
+  if (a.state === 'working') return tt(`运行中 · 已跑 ${spanT(Date.now() / 1000 - a.start)}`, `Running · for ${spanT(Date.now() / 1000 - a.start)}`);
+  return tt(`没有动静 · ${ago(a.at)}`, `Quiet · ${ago(a.at)}`);
+}
+const subWho = a => esc(a.type) + (a.model ? ' · ' + esc(a.model) : '');
+const subRow = (s, a) => `<div class="kid sub" data-go="${esc(s.id)}" data-tab="sub/${esc(a.id)}" title="${subWho(a)}"><span class="sub-ic ${a.state}">${I.spark}</span><b>${esc(a.task || a.type)}</b><span>${subLabel(a)}</span></div>`;
 function kidRows(s, all) {
-  const kids = kidsOf(s);
-  if (!kids.length) return '';
+  const kids = kidsOf(s), subs = subsOn(s);
+  if (!kids.length && !subs.length) return '';
+  if (!kids.length) return `<div class="kids">${subs.slice(0, all ? 20 : 3).map(a => subRow(s, a)).join('')}</div>`;
   const shown = all ? kids : kids.slice(0, 3);
-  return `<div class="kids">${shown.map(c => { const [st, label] = standing(c); return `<div class="kid" data-go="${esc(c.id)}">${mark(c.kind, st, 'xs')}<b>${esc(titleOf(c))}</b><span>${label} ${ago(c.since)}</span></div>`; }).join('')}${kids.length > shown.length ? `<div class="kid more">${t('还有 {n} 个子 agent', { n: kids.length - shown.length })}</div>` : ''}</div>`;
+  return `<div class="kids">${subs.slice(0, all ? 20 : 3).map(a => subRow(s, a)).join('')}${shown.map(c => { const [st, label] = standing(c); return `<div class="kid" data-go="${esc(c.id)}">${mark(c.kind, st, 'xs')}<b>${esc(titleOf(c))}</b><span>${label} ${ago(c.since)}</span></div>`; }).join('')}${kids.length > shown.length ? `<div class="kid more">${t('还有 {n} 个子 agent', { n: kids.length - shown.length })}</div>` : ''}</div>`;
 }
 function card(s) {
   const [st, label] = standing(s), a = attention(s);
@@ -1160,11 +1180,12 @@ function renderSession() {
         <div class="sub"><span class="nm">${esc(s.name)}</span>${projOf(s.project) ? `<a class="pj-link" href="#/p/${encodeURIComponent(s.project)}">${I.folder}${esc(projOf(s.project).name)}${s.branch && s.work !== projOf(s.project).path ? ` / ${esc(s.branch)}` : ''}</a>` : ''}${parentOf(s) ? `<span>${t('由 {n} 启动', { n: `<a data-go="${esc(parentOf(s).id)}">${esc(parentOf(s).name)}</a>` })}</span>` : s.origin && !s.loc ? `<span>${esc(originT(s.origin))}</span>` : ''}<span>${FULL[s.kind] || esc(s.kind)}</span><span>${label} · ${ago(s.since)}</span>${s.loc ? `<span>${esc(groupName(s.loc.session))} › ${t('窗格 {n}', { n: esc(s.loc.pane) })}</span>` : ''}<span title="${esc(s.cwd || '')}">${esc(home(s.cwd))}</span></div></div>
       </div>
       <nav class="tabs">${[['overview', '概览'], ['report', '报告'], ['chat', '对话'], ['term', '终端'], ['msgs', '消息']].map(([x, l]) => `<button data-tab-go="${x}" class="${sessTab === x ? 'on' : ''}">${t(l)}</button>`).join('')}
-        <div class="acts"><button class="hbtn" data-act="jump" ${s.loc ? '' : 'disabled'} title="${t('让连着这个组的终端切到它')}">${I.jump}${t('在终端里打开')}</button><button class="hbtn primary" data-tab-go="term" ${webOk(s) ? '' : 'disabled'}>${I.enter}${t('进入')}</button></div></nav></div>`;
+        <div class="acts"><button class="hbtn" data-act="jump" ${s.loc ? '' : 'disabled'} title="${tt('让这台 Mac 上连着它的终端窗口跳到它的窗格（不在网页里打开）', 'Makes the terminal on this Mac that is attached to it jump to its pane (nothing opens in the page)')}">${I.jump}${tt('在本机终端里切过去', 'Switch to it in my terminal')}</button></div></nav></div>`;
   });
   if (sessTab === 'overview') drawOverview(s, k);
   else if (sessTab === 'report') draw('tab', ['report', s.id, (S.reports || {})[s.id], S.reporting, s.title, s.state, tick()], () => { $('#tabBody').innerHTML = `<div class="s-body"><div class="rep-one">${repCard(s, (S.reports || {})[s.id])}</div></div>`; });
   else if (sessTab === 'chat') drawChat(s, k);
+  else if (sessTab === 'sub') drawSub(s, k, route.sub);
   else if (sessTab === 'term') drawTerm(s);
   else drawMsgs(s);
 }
@@ -1174,7 +1195,7 @@ function drawOverview(s, k) {
   const decs = (S.decisions || []).filter(d => d.sid === s.id);
   const typing = document.activeElement && ['rText', 'rName'].includes(document.activeElement.id);
   if (typing && sig.ov) return drawSay(s);
-  draw('ov', [s.id, s.summary, s.needs_you, s.waiting_for, a, s.said, s.loc, s.cwd, s.session, decs.length, s.summary_at && Math.floor(s.summary_at / 30), tick(), kidsOf(s).map(c => [c.id, c.state, c.status, c.summary]),
+  draw('ov', [s.id, s.summary, s.needs_you, s.waiting_for, a, s.said, s.loc, s.cwd, s.session, decs.length, s.summary_at && Math.floor(s.summary_at / 30), tick(), kidsOf(s).map(c => [c.id, c.state, c.status, c.summary]), (s.subs || []).map(x => [x.id, x.state, x.at]),
     s.project, s.workspace, s.attrib, s.work, s.branch, Object.keys(S.projects || {}).length], () => {
     const keep = $('#rText') ? $('#rText').value : '';
     $('#tabBody').innerHTML = `<div class="s-body"><div class="s-grid"><div>
@@ -1182,13 +1203,14 @@ function drawOverview(s, k) {
         : `<div class="panel"><h4>${t('写给它')}</h4>${replyBox(s)}</div>`}
       <div class="panel"><h4>${t('现在在做')}<span class="r hint">${s.summary_at ? t('总结于 {t}前', { t: ago(s.summary_at) }) : ''}</span></h4><div class="now ${k === 'claude' ? 'serif' : k === 'codex' ? 'mono' : ''}">${esc(s.summary || t('还没有总结'))}</div></div>
       ${s.said ? `<div class="panel"><h4>${t('它最后说的话')}</h4><div class="said">${md(s.said)}</div></div>` : ''}
-      ${kidsOf(s).length ? `<div class="panel"><h4>${t('它启动的子 agent')}<span class="r hint">${t('{n} 个', { n: kidsOf(s).length })}</span></h4><div class="kid-list">${kidsOf(s).map(c => { const [st, label] = standing(c); return `
+      ${kidsOf(s).length || (s.subs || []).length ? `<div class="panel"><h4>${t('它启动的子 agent')}<span class="r hint">${t('{n} 个', { n: kidsOf(s).length + (s.subs || []).length })}</span></h4><div class="kid-list">${(s.subs || []).map(a => `
+        <div class="kid-row"><span class="mark sm sub ${a.state}">${I.spark}</span><div data-go="${esc(s.id)}" data-tab="sub/${esc(a.id)}"><b>${esc(a.task || a.type)}</b><p>${subWho(a)} · ${subLabel(a)}</p></div></div>`).join('')}${kidsOf(s).map(c => { const [st, label] = standing(c); return `
         <div class="kid-row">${mark(c.kind, st, 'sm')}<div data-go="${esc(c.id)}"><b>${esc(titleOf(c))}</b><p>${esc(label)} ${ago(c.since)} · ${esc(c.name)}${c.summary ? ' · ' + esc(c.summary) : ''}</p></div>
           ${['gone', 'ended'].includes(c.state) ? '' : `<button class="btn" data-stop="${esc(c.id)}">${t('停止')}</button>`}</div>`; }).join('')}</div></div>` : ''}
     </div><div>
       <div class="panel"><h4>${t('决定')}<span class="r hint">${t('{n} 条', { n: decs.length })}</span></h4><div class="d-list">${decs.length ? decs.map(d => `<div class="dec"><span class="by ${d.by}">${d.by === 'user' ? t('你') : 'AI'}</span><div class="w">${esc(d.what)}</div><time>${clock(d.at)}</time></div>`).join('') : `<div class="hint">${t('还没有记下决定。会话里拍板的事会自动记在这里。')}</div>`}</div></div>
       <div class="panel"><h4>${t('在哪里')}</h4><dl class="kv">${parentOf(s) ? `<dt>${t('启动者')}</dt><dd><a data-go="${esc(parentOf(s).id)}">${esc(parentOf(s).name)}</a></dd>` : s.origin ? `<dt>${t('启动方式')}</dt><dd>${esc(originT(s.origin))}</dd>` : ''}
-        <dt>${t('项目')}</dt><dd>${projSelect(s)}</dd><dt>${t('工作项')}</dt><dd>${s.work ? esc(home(s.work)) + (s.branch ? ` (${esc(s.branch)})` : '') : '—'}</dd>
+        <dt>${tt('项目', 'Project')}</dt><dd>${projSelect(s)}</dd><dt>${tt('工作项', 'Work item')}</dt><dd>${s.work ? esc(home(s.work)) + (s.branch ? ` (${esc(s.branch)})` : '') : '—'}</dd>
         <dt>${t('组')}</dt><dd>${s.loc ? esc(groupName(s.loc.session)) + (s.loc.mux === 'tmux' ? ' (tmux)' : '') : groupName('~none')}</dd><dt>${t('窗格')}</dt><dd>${s.loc ? esc(s.loc.pane) : '—'}</dd>
         <dt>${t('目录')}</dt><dd>${esc(home(s.cwd) || '—')}</dd><dt>${t('会话 ID')}</dt><dd>${esc(s.session || '—')}</dd>${s.loc ? `<dt>${t('命令行')}</dt><dd>${esc(attachCmd(s.loc.session))}</dd>` : ''}</dl></div>
       <div class="panel"><h4>${t('名字')}</h4>${s.kind === 'claude' ? `<div class="hint">${t('Claude 会话的名字由它自己定：在那个会话里输入 {c}，这里、amail 和窗格标题会跟着变。', { c: `<code>/rename ${t('新名字')}</code>` })}</div>`
@@ -1274,7 +1296,7 @@ function drawProjOverview(p, ss) {
       ${idle.length ? `<button class="quiet-tg" data-quiet="${esc(qk)}">${chev(quietOpen.has(qk))}${t('没有会话的 {n} 个工作项', { n: idle.length })}</button>${quietOpen.has(qk) ? idle.map(wi).join('') : ''}` : ''}
       ${!ss.length ? `<div class="hint" style="margin-top:10px">${t('现在没有会话在这个项目上。')}</div>` : ''}</div>`;
     const open = b ? b.topics.filter(t => !t.closed) : [];
-    const right = `<div class="panel"><h4>${t('讨论区')}<span class="r"><a class="lnk" href="#/p/${encodeURIComponent(p.key)}/board">${t('打开')}</a></span></h4>
+    const right = `<div class="panel"><h4>${t('讨论区')}<span class="r"><a class="lnk" href="#/p/${encodeURIComponent(p.key)}/board">${tt('打开', 'Open')}</a></span></h4>
         ${b && b.last ? `<div class="m">${face(b.last.from)}<div><div class="route"><b>${esc(who(b.last.from))}</b><time>${clock(b.last.at)}</time></div><div class="txt">${md(b.last.text)}</div></div></div>${b.unread ? `<div class="hint">${t('{n} 条新消息', { n: b.unread })}</div>` : ''}`
           : `<div class="hint">${t('还没有人在这里说过话。发在这里的话，在这个项目上工作的会话都会收到。')}</div>`}
         ${open.map(tp => `<a class="topic-line" href="#/p/${encodeURIComponent(p.key)}/board" data-topic-open="${esc(tp.id)}">${I.chat}<b>${esc(tp.title)}</b><span>${t('{n} 方在谈', { n: tp.members.length })}</span></a>`).join('')}</div>
@@ -1411,6 +1433,33 @@ async function drawChat(s, k) {
       box.innerHTML = items.length ? items.map(it => `<div class="bub ${it.who}${it.who === 'assistant' ? ' ' + k : ''}">${it.who === 'tool' ? esc(it.text) : md(it.text)}${it.at && it.who !== 'tool' ? `<time>${clock(it.at)}</time>` : ''}</div>`).join('') : `<div class="hint">${t('读不到它的对话记录。')}</div>`;
       if (atEnd || sig.chatFirst !== s.id) { sig.chatFirst = s.id; sess.scrollTop = sess.scrollHeight; }
     })) return;
+  } catch {}
+}
+
+let subTimer = 0;
+async function drawSub(s, k, aid) {  // (a sub-agent's conversation: read only, it answers to its session)
+  const a = (s.subs || []).find(x => x.id === aid), key = s.id + ':' + aid;
+  if (sig.subFor !== key) {
+    sig.subFor = key; subTimer = 0;
+    $('#tabBody').innerHTML = `<div class="s-body"><div id="subHead"></div><div class="convo" id="convo"><div class="hint">${t('读取对话……')}</div></div></div>`;
+  }
+  draw('subhead', [key, a && [a.state, Math.floor(Date.now() / 30000)], LANG], () => {
+    $('#subHead').innerHTML = a ? `<div class="panel sub-panel"><h4>${tt('子 agent', 'Sub-agent')}<span class="r hint">${subWho(a)}</span></h4><b>${esc(a.task || a.type)}</b>
+        <p class="hint">${subLabel(a)} · ${tt('它由这个会话启动和管理，你不能直接对它说话；这里是它的对话记录。', 'Its session started it and manages it; you cannot write to it. This is its conversation.')}</p>
+        <button class="btn" data-go="${esc(s.id)}" data-tab="chat">${I.back}${tt('回到会话的对话', 'Back to the session’s conversation')}</button></div>`
+      : `<div class="hint">${tt('读不到这个子 agent。', 'This sub-agent is not found.')}</div>`;
+  });
+  if (subTimer && Date.now() - subTimer < 5000) return;
+  subTimer = Date.now();
+  try {
+    const j = await (await fetch('/api/transcript?id=' + encodeURIComponent(s.id) + '&sub=' + encodeURIComponent(aid), { cache: 'no-store' })).json();
+    const items = j.items || [];
+    draw('subchat', [key, items.length, items.length && items[items.length - 1].text.slice(0, 50)], () => {
+      const box = $('#convo'); if (!box) return;
+      const sess = $('#sess'), atEnd = sess.scrollHeight - sess.scrollTop - sess.clientHeight < 80;
+      box.innerHTML = items.length ? items.map(it => `<div class="bub ${it.who}${it.who === 'assistant' ? ' ' + k : ''}">${it.who === 'tool' ? esc(it.text) : md(it.text)}${it.at && it.who !== 'tool' ? `<time>${clock(it.at)}</time>` : ''}</div>`).join('') : `<div class="hint">${t('读不到它的对话记录。')}</div>`;
+      if (atEnd || sig.subFirst !== key) { sig.subFirst = key; sess.scrollTop = sess.scrollHeight; }
+    });
   } catch {}
 }
 
@@ -1670,7 +1719,7 @@ function drawSettings() {
       ${modelBlock('summary', t('总结模型'), t('给每个会话起任务名、写进展、判断要不要你处理、记下决定（用小而快的模型就好）'))}
       ${S.summarizer && S.summarizer.error ? `<div class="code">${t('最近一次总结出错：{m}', { m: esc(S.summarizer.error) })}</div>` : ''}`,
     look: `<h3>${t('显示')}</h3><p class="lead">${t('这台机器上的显示偏好。')}</p>
-      <div class="opt"><div><h4>${t('语言')}</h4><p>${t('页面用的语言。')}</p></div><div class="seg">${[['auto', t('跟随系统')], ['zh', '中文'], ['en', 'English']].map(([k, l]) => `<button data-lang-set="${k}" class="${store.get('deck.lang', 'auto') === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+      <div class="opt"><div><h4>${t('语言')}</h4><p>${tt('页面用的语言；agent 写总结、简报用哪种语言，在「助手与模型」里设。', 'The language of the page; the language agents write summaries and reports in is set under Assistant & models.')}</p></div><div class="seg">${[['auto', t('跟随系统')], ['zh', '中文'], ['en', 'English']].map(([k, l]) => `<button data-lang-set="${k}" class="${store.get('deck.lang', 'auto') === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
       <div class="opt"><div><h4>${t('主题')}</h4><p>${t('跟随系统，或固定浅色、深色。')}</p></div><div class="seg">${[['auto', '跟随系统'], ['light', '浅色'], ['dark', '深色']].map(([k, l]) => `<button data-theme-set="${k}" class="${th === k ? 'on' : ''}">${t(l)}</button>`).join('')}</div></div>
       <div class="opt col"><div><h4>${t('工作区图标')}</h4><p>${t('最左边那条栏里工作区的颜色。')}</p></div>
         <div class="wsc-pick">${Object.entries(WSC).map(([k, l]) => `<button class="wsc-card${store.get('deck.wsColor', 'graphite') === k ? ' on' : ''}" data-wscolor="${k}" aria-pressed="${store.get('deck.wsColor', 'graphite') === k}">
@@ -1834,7 +1883,6 @@ document.addEventListener('click', async e => {
   if ((el = q('[data-rail]'))) { railTab = el.dataset.rail; store.set('deck.rail', railTab); document.querySelectorAll('[data-rail]').forEach(b => b.classList.toggle('on', b === el)); sig.rail = ''; render(); return; }
   if ((el = q('[data-q]'))) { const b = { do: el.dataset.q, id: el.dataset.id }; if (b.do === 'delete' && !confirm(t('删掉这件排队的事？'))) return; post('queue', b); return; }
   if ((el = q('[data-qmode]'))) { qMode = el.dataset.qmode; document.querySelectorAll('[data-qmode]').forEach(b => b.classList.toggle('on', b === el)); return; }
-  if ((el = q('[data-old]'))) { const k = el.dataset.old; openOld.has(k) ? openOld.delete(k) : openOld.add(k); render(); return; }
   if ((el = q('[data-msg]'))) { const k = el.dataset.msg; openMsgs.has(k) ? openMsgs.delete(k) : openMsgs.add(k); el.classList.toggle('open'); return; }
   if ((el = q('[data-pal]'))) { palOpen(palAll()[+el.dataset.pal]); return; }
   if ((el = q('[data-act]'))) {

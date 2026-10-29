@@ -449,6 +449,74 @@ def jump(loc, via=None):  # (Zellij)
 _transcripts = {}
 
 
+AGENT_DEFS = os.path.expanduser('~/.claude/agents')
+_agent_models = {}
+
+
+def agent_model(kind):
+    """The model a custom agent type runs on, from its definition's front matter (e.g. sonnet), or ''."""
+    if kind not in _agent_models:
+        m = ''
+        try:
+            with open(os.path.join(AGENT_DEFS, f'{os.path.basename(kind)}.md')) as f:
+                x = re.search(r'^model:\s*([^\n]+)$', f.read(3000), re.M)
+            m = x.group(1).strip().strip('"\'') if x else ''
+        except OSError:
+            pass
+        _agent_models[kind] = m
+    return _agent_models[kind]
+
+
+def first_time(path):
+    """When a conversation file begins: its first line's timestamp, or None."""
+    try:
+        with open(path, 'rb') as f:
+            ts = json.loads(f.readline(400000)).get('timestamp')
+        return time.mktime(time.strptime(ts[:19], '%Y-%m-%dT%H:%M:%S')) - time.timezone if ts else None
+    except Exception:
+        return None
+
+
+SUB = re.compile(r'[0-9a-f]{6,40}')
+_subs = {}
+
+
+def subagents_of(s):
+    """A Claude Code session's own sub-agents (its Agent tool: they have no process or hooks of their own), from the
+    files Claude Code keeps beside its conversation: <session>/subagents/agent-<id>.meta.json (type, task, finished)
+    and agent-<id>.jsonl (the sub-agent's conversation). Running ones first, then the last finished; at most 20."""
+    path = transcript_of(s) if s['kind'] == 'claude' else None
+    if not path or not path.endswith('.jsonl'):
+        return []
+    d = os.path.join(path[:-6], 'subagents')
+    try:
+        names = [n for n in os.listdir(d) if n.startswith('agent-') and n.endswith('.meta.json')]
+    except OSError:
+        return []
+    now, out = time.time(), []
+    for n in names:
+        aid = n[6:-10]
+        if not SUB.fullmatch(aid):
+            continue
+        mf, jf = os.path.join(d, n), os.path.join(d, f'agent-{aid}.jsonl')
+        try:
+            mt = os.path.getmtime(mf)
+            jt = os.path.getmtime(jf) if os.path.exists(jf) else mt
+        except OSError:
+            continue
+        hit = _subs.get(mf)
+        if not hit or hit[0] != (mt, jt):
+            m = A.get(mf, {}) or {}
+            hit = ((mt, jt), {'id': aid, 'type': str(m.get('agentType') or ''), 'task': str(m.get('description') or '')[:200], 'finished': bool(m.get('finished')),
+                               'start': (_subs.get(mf) or (None, {}))[1].get('start') or first_time(jf) or mt, 'at': max(mt, jt)})
+            _subs[mf] = hit
+        a = dict(hit[1])
+        a['state'] = 'done' if a['finished'] else 'working' if now - a['at'] < 120 else 'quiet'  # (quiet: no word for two minutes)
+        a['model'] = agent_model(a['type'])
+        out.append(a)
+    return sorted(out, key=lambda a: (a['state'] == 'done', -a['at']))[:20]
+
+
 def transcript_of(s):
     if s.get('transcript') and os.path.exists(s['transcript']):
         return s['transcript']
@@ -1604,6 +1672,8 @@ class Deck:
                              'needs_you': tx('去它的窗格看一眼：多半在等你确认（比如是否信任这个目录）', 'Take a look at its pane: it is probably waiting for you to confirm (for example, whether to trust this folder)') if slow else ''})
         for s in sessions:
             self.projects.attribute(s)
+            if s['kind'] == 'claude' and s['state'] not in ('gone', 'ended'):
+                s['subs'] = subagents_of(s)
             was = self.names.get(s['id'])
             if was and was != s['name'] and not s.get('unknown'):
                 A.move_member(was, s['name'])  # (renamed in its own CLI: its places on channels go with it)
@@ -3105,9 +3175,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({'meta': meta, 'posts': A.posts(key, limit=400), 'topics': A.topics(key), 'members': [m for m in A.members(key) if m != ME_NAME]})
         if self.path.startswith('/api/transcript'):
             from urllib.parse import urlparse, parse_qs
-            sid = (parse_qs(urlparse(self.path).query).get('id') or [''])[0]
+            q = parse_qs(urlparse(self.path).query)
+            sid, sub = (q.get('id') or [''])[0], (q.get('sub') or [''])[0]
             s = DECK.find(sid)
             path = transcript_of(s) if s else None
+            if path and sub:  # (one of its sub-agents' conversations, from beside its own)
+                f = os.path.join(path[:-6], 'subagents', f'agent-{sub}.jsonl') if SUB.fullmatch(sub) and path.endswith('.jsonl') else None
+                path = f if f and os.path.exists(f) else None
             return self.send_json({'items': transcript_items(path) if path else []})
         bare = self.path.split('?')[0].split('#')[0]
         self.static('index.html' if bare in ('/', '/index.html') else bare.lstrip('/'))

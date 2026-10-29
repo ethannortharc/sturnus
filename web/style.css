@@ -398,7 +398,7 @@ code { font: 12px var(--font-mono); background: var(--panel-2); border: 1px soli
 .side-s.on { background: var(--panel); box-shadow: var(--shadow-1); }
 .side-s .mark { grid-row: span 2; }
 .side-s b { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.side-s span { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.side-s > span:not(.mark) { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .side-s span em { font-style: normal; font-weight: 650; }
 .side-s span em.working { color: var(--ok); } .side-s span em.waiting { color: var(--warn); } .side-s span em.review { color: var(--review); } .side-s span em.blocked { color: var(--bad); }
 .side-more { border: 0; background: none; color: var(--faint); font-size: 11.5px; padding: 4px 10px; }
@@ -642,7 +642,7 @@ code { font: 12px var(--font-mono); background: var(--panel-2); border: 1px soli
 .wi-s:hover { background: color-mix(in srgb, var(--ink) 5%, transparent); }
 .wi-s .mark { grid-row: span 2; }
 .wi-s b { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.wi-s span { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wi-s > span:not(.mark) { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wi-s em { font-style: normal; font-weight: 650; }
 .wi-s em.working { color: var(--ok); } .wi-s em.waiting { color: var(--warn); } .wi-s em.review { color: var(--review); } .wi-s em.blocked { color: var(--bad); }
 .topic-line { display: flex; align-items: center; gap: 8px; padding: 8px 10px; margin-top: 8px; border-radius: 10px; background: var(--panel-2); font-size: 13px; }
@@ -706,7 +706,7 @@ code { font: 12px var(--font-mono); background: var(--panel-2); border: 1px soli
 .b-pick { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 6px; max-height: 200px; overflow-y: auto; }
 .pk { display: flex; align-items: center; gap: 7px; padding: 6px 9px; border: 1px solid var(--hair); border-radius: 9px; background: var(--panel); font-size: 12px; cursor: pointer; min-width: 0; }
 .pk b { font: 600 11.5px var(--font-mono); white-space: nowrap; }
-.pk span { color: var(--muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0; }
+.pk > span:not(.mark) { color: var(--muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0; }
 .pk:has(input:checked) { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .b-rows { display: grid; gap: 8px; }
 .b-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px 14px; border-radius: 14px; background: var(--panel); border: 1px solid var(--hair); box-shadow: var(--shadow-1); }
@@ -865,3 +865,21 @@ table.works .when { color: var(--muted); white-space: nowrap; font-variant-numer
 .palette-foot i { font-style: normal; }
 .seg button { white-space: nowrap; }
 .search-trigger span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* a session's own sub-agents: under its row in the column, in its card, in its overview */
+.side-subs { margin: -3px 0 4px 44px; display: grid; gap: 1px; }
+.side-sub { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 3px 8px; border-radius: 7px; font-size: 11.5px; color: var(--ink-2); cursor: pointer; }
+.side-sub:hover { background: color-mix(in srgb, var(--ink) 5%, transparent); }
+.side-sub.on { background: var(--panel); box-shadow: var(--shadow-1); }
+.side-sub i { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--idle); }
+.side-sub i.working { background: var(--ok); animation: blinkdot 1.6s infinite; } .side-sub i.done { background: var(--hair); }
+.side-sub b { font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side-sub span { flex: none; font: 10.5px var(--font-mono); color: var(--faint); }
+.side-sub.more { color: var(--faint); }
+.kid.sub .sub-ic { width: 18px; height: 18px; border-radius: 5px; display: grid; place-items: center; flex: none; background: var(--graphite); color: #fff; }
+.kid.sub .sub-ic svg { width: 11px; height: 11px; }
+.kid.sub .sub-ic.working svg { animation: spin 6s linear infinite; }
+.mark.sub { background: var(--graphite); color: #fff; } .mark.sub.done { opacity: .55; }
+.mark.sub.working svg { animation: spin 6s linear infinite; }
+.sub-panel b { display: block; font-size: 15px; margin-bottom: 4px; }
+.sub-panel .btn { margin-top: 8px; }
