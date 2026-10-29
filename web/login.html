@@ -28,22 +28,36 @@
 <main class="signin">
   <form id="f" autocomplete="off">
     <div class="head"><img class="logo" src="icon.svg" alt="">Sturnus</div>
-    <h1>登录</h1>
-    <p>在这台机器的终端里运行 <code>sturnus token</code>，把令牌粘贴到这里。这个浏览器会保持登录 30 天。</p>
+    <h1 id="h">登录</h1>
+    <p id="p">在这台机器的终端里运行 <code>sturnus token</code>，把令牌粘贴到这里。这个浏览器会保持登录 30 天。</p>
     <input id="t" type="password" placeholder="登录令牌" autofocus aria-label="登录令牌">
-    <button class="btn primary" type="submit">登录</button>
+    <button class="btn primary" id="b" type="submit">登录</button>
     <div class="err" id="e" role="alert"></div>
   </form>
 </main>
 <script>
+  // language: the choice made in the deck (Settings → Display), else the browser's
+  const TX = {
+    en: { h: 'Sign in', p: 'Run <code>sturnus token</code> in a terminal on this machine and paste the token here. This browser stays signed in for 30 days.', t: 'Sign-in token', b: 'Sign in', bad: 'Could not sign in', off: 'Can’t reach the Sturnus service' },
+    zh: { h: '登录', p: '在这台机器的终端里运行 <code>sturnus token</code>，把令牌粘贴到这里。这个浏览器会保持登录 30 天。', t: '登录令牌', b: '登录', bad: '登录不了', off: '没连上 sturnus 服务' },
+  };
+  let LANG = 'zh';
+  try { const v = JSON.parse(localStorage.getItem('deck.lang') || '"auto"'); LANG = v === 'en' ? 'en' : v === 'zh' ? 'zh' : /^zh/i.test(navigator.language || 'zh') ? 'zh' : 'en'; } catch {}
+  const X = TX[LANG];
+  document.documentElement.lang = LANG === 'en' ? 'en' : 'zh-CN';
+  document.getElementById('h').textContent = X.h;
+  document.getElementById('p').innerHTML = X.p;
+  document.getElementById('t').placeholder = X.t;
+  document.getElementById('t').setAttribute('aria-label', X.t);
+  document.getElementById('b').textContent = X.b;
   document.getElementById('f').onsubmit = async ev => {
     ev.preventDefault();
     const e = document.getElementById('e'); e.textContent = '';
     try {
-      const r = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Deck': '1' }, body: JSON.stringify({ token: document.getElementById('t').value }) });
+      const r = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Deck': '1', 'X-Lang': LANG }, body: JSON.stringify({ token: document.getElementById('t').value }) });
       const j = await r.json();
-      if (j.ok) location.replace('/' + location.hash); else e.textContent = j.msg || '登录不了';
-    } catch (x) { e.textContent = '没连上 sturnus 服务'; }
+      if (j.ok) location.replace('/' + location.hash); else e.textContent = j.msg || X.bad;
+    } catch (x) { e.textContent = X.off; }
   };
 </script>
 </body>

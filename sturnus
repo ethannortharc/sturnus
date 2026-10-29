@@ -16,6 +16,24 @@ import base64, fcntl, functools, ipaddress, glob, hashlib, hmac, importlib.machi
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+_REQ = threading.local()  # (the language of the request being handled: the page sends X-Lang; none for the background loops)
+
+
+def lang_now():
+    l = getattr(_REQ, 'lang', None)
+    if l:
+        return l
+    try:
+        return 'en' if (DECK.cfg.get('work_lang') or 'zh') == 'en' else 'zh'  # (no request behind it: the agents' working language)
+    except Exception:
+        return 'zh'
+
+
+def tx(zh, en):
+    """The words the page shows: Chinese or English, by the request's language (else the working language)."""
+    return en if lang_now() == 'en' else zh
+
+
 APP = os.path.dirname(os.path.realpath(__file__))
 SHARE = os.path.expanduser('~/.local/share/sturnus')
 CONF = os.environ.get('STURNUS_CONF') or os.path.expanduser('~/.config/sturnus/config.json')  # (another one: a second deck to try things on)
@@ -166,13 +184,13 @@ class Tmux:
         sock, pane, name = loc['sock'], loc['pane'], loc['session'][5:]
         clients = [c for c in self.clients() if c['sock'] == sock]
         if not clients:
-            return False, f'没有终端连着 tmux。在终端里运行：tmux attach -t {name}'
+            return False, tx(f'没有终端连着 tmux。在终端里运行：tmux attach -t {name}', f'No terminal is attached to tmux. Run in a terminal: tmux attach -t {name}')
         c = next((c for c in clients if c['pid'] == via), None) or next((c for c in clients if c['session'] == loc['session']), clients[0])
         for args in (['select-window', '-t', pane], ['select-pane', '-t', pane], ['switch-client', '-c', c['tty'], '-t', pane]):
             r = self.tm(sock, *args)
             if r.returncode != 0:
-                return False, f'切换失败：{(r.stderr or r.stdout).strip()[:200]}'
-        return True, f'已把 {c["tty"]} 上的 tmux 切到 {name} 的这个窗格'
+                return False, tx(f'切换失败：{(r.stderr or r.stdout).strip()[:200]}', f'Switch failed: {(r.stderr or r.stdout).strip()[:200]}')
+        return True, tx(f'已把 {c["tty"]} 上的 tmux 切到 {name} 的这个窗格', f'Switched tmux on {c["tty"]} to this pane of {name}')
 
     def title(self, loc, text):
         return self.tm(loc['sock'], 'select-pane', '-t', loc['pane'], '-T', text).returncode == 0
@@ -195,7 +213,7 @@ class Tmux:
         if r.returncode != 0:
             return False, (r.stderr or r.stdout).strip()[:200], None
         pane = r.stdout.strip()
-        return True, '' if have else f'新建了 tmux 组 {name}，', self.place(sock, pane) if pane.startswith('%') else None
+        return True, '' if have else tx(f'新建了 tmux 组 {name}，', f'Created tmux group {name}. '), self.place(sock, pane) if pane.startswith('%') else None
 
 
 TMUX = Tmux()
@@ -407,7 +425,7 @@ def origin_of(pid):
 def go_to(loc, via=None):
     """Bring a terminal to an agent's pane."""
     if not loc:
-        return False, '这个会话不在 Zellij 或 tmux 里'
+        return False, tx('这个会话不在 Zellij 或 tmux 里', 'This session is not in Zellij or tmux')
     return TMUX.focus(loc, via) if loc.get('mux') == 'tmux' else jump(loc, via)
 
 
@@ -416,14 +434,14 @@ def jump(loc, via=None):  # (Zellij)
     clients = zellij_clients(procs())
     if any(c['session'] == target for c in clients):
         ok = focus_in(target, pane)
-        return ok, (f'已在 {target} 里切到这个窗格' if ok else f'没在 {target} 里找到窗格 {pane}')
+        return ok, (tx(f'已在 {target} 里切到这个窗格', f'Switched to this pane in {target}') if ok else tx(f'没在 {target} 里找到窗格 {pane}', f'No pane {pane} found in {target}'))
     if not clients:
-        return False, f'没有终端连着 Zellij。在终端里运行：zellij attach {target}'
+        return False, tx(f'没有终端连着 Zellij。在终端里运行：zellij attach {target}', f'No terminal is attached to Zellij. Run in a terminal: zellij attach {target}')
     src = next((c for c in clients if c['pid'] == via), clients[0])
     r = plugin(src['session'], f'switch {target} {pane}')
     if r.returncode == 0 and 'ok' in r.stdout:
-        return True, f'已把连着 {src["session"]} 的终端（{src["via"]}）切到 {target}'
-    return False, f'切换失败：{(r.stderr or r.stdout).strip()[:200]}'
+        return True, tx(f'已把连着 {src["session"]} 的终端（{src["via"]}）切到 {target}', f'Switched the terminal attached to {src["session"]} ({src["via"]}) to {target}')
+    return False, tx(f'切换失败：{(r.stderr or r.stdout).strip()[:200]}', f'Switch failed: {(r.stderr or r.stdout).strip()[:200]}')
 
 
 # ---------- transcripts ----------
@@ -570,7 +588,7 @@ def transcript_items(path, limit=120):
             if m.get('role') == 'user' and re.match(r'\s*<(task-notification|system-reminder|local-command|command-)', t):
                 note = re.search(r'<summary>(.*?)</summary>', t, re.S)  # (the harness speaking, not the person: one line)
                 if note:
-                    out.append({'who': 'tool', 'text': f'后台通知：{" ".join(note.group(1).split())[:200]}', 'at': at})
+                    out.append({'who': 'tool', 'text': tx(f'后台通知：{" ".join(note.group(1).split())[:200]}', f'Background notice: {" ".join(note.group(1).split())[:200]}'), 'at': at})
                 continue
             if t.strip():
                 out.append({'who': m.get('role'), 'text': t.strip()[:4000], 'at': at})
@@ -736,7 +754,7 @@ def transcribe(audio, ctype, v, key):
     p, lang = v['provider'], v.get('lang') or ''
     model = v.get('model') or STT_MODEL[p]
     if not key:
-        raise RuntimeError('还没填 API key')
+        raise RuntimeError(tx('还没填 API key', 'No API key yet'))
     if p == 'openai':
         body, ct = multipart([('model', model)] + ([('language', lang)] if lang else []), audio, ctype)
         url = (v.get('url') or 'https://api.openai.com/v1').rstrip('/') + '/audio/transcriptions'
@@ -755,8 +773,8 @@ def transcribe(audio, ctype, v, key):
             if r.get('status') == 'completed':
                 return r.get('text') or ''
             if r.get('status') == 'error':
-                raise RuntimeError(r.get('error') or 'AssemblyAI 出错')
-        raise RuntimeError('AssemblyAI 太久没转完')
+                raise RuntimeError(r.get('error') or tx('AssemblyAI 出错', 'AssemblyAI failed'))
+        raise RuntimeError(tx('AssemblyAI 太久没转完', 'AssemblyAI took too long'))
     if p == 'soniox':
         h, base = {'Authorization': f'Bearer {key}'}, 'https://api.soniox.com/v1'
         body, ct = multipart([], audio, ctype)
@@ -771,8 +789,8 @@ def transcribe(audio, ctype, v, key):
                     if r.get('status') == 'completed':
                         return http_json(f'{base}/transcriptions/{t["id"]}/transcript', headers=h).get('text', '')
                     if r.get('status') == 'error':
-                        raise RuntimeError(r.get('error_message') or 'Soniox 出错')
-                raise RuntimeError('Soniox 太久没转完')
+                        raise RuntimeError(r.get('error_message') or tx('Soniox 出错', 'Soniox failed'))
+                raise RuntimeError(tx('Soniox 太久没转完', 'Soniox took too long'))
             finally:
                 try:
                     http_json(f'{base}/transcriptions/{t["id"]}', headers=h, method='DELETE')
@@ -783,7 +801,7 @@ def transcribe(audio, ctype, v, key):
                 http_json(f'{base}/files/{f["id"]}', headers=h, method='DELETE')  # (nothing of the person's voice stays there)
             except Exception:
                 pass
-    raise RuntimeError('选一个语音服务')
+    raise RuntimeError(tx('选一个语音服务', 'Pick a voice service'))
 
 
 def silence():
@@ -905,7 +923,7 @@ class Summaries:
             out = ask_model(prompt, cfg, 'summary')
             m = re.search(r'\{.*\}', out, re.S)
             if not m:  # (a model that wandered off, say into a tool call: the last summary stays)
-                raise ValueError(f'不是 JSON：{out.strip()[:80]}')
+                raise ValueError(tx(f'不是 JSON：{out.strip()[:80]}', f'Not JSON: {out.strip()[:80]}'))
             r = json.loads(m.group(0))
             need = str(r.get('needs_you') or '').strip()
             if NONE.match(need):
@@ -1463,7 +1481,7 @@ class Projects:
                         continue
                     self.facts[p['key']] = self.git_facts(p) or {'at': time.time(), 'works': [], 'none': True}
             except Exception as e:
-                deck.note(f'读 git 出错：{e!r}', False)
+                deck.note(tx(f'读 git 出错：{e!r}', f'git read failed: {e!r}'), False)
             time.sleep(5)
 
 
@@ -1582,8 +1600,8 @@ class Deck:
             sessions = [x for x in sessions if not (x.get('unknown') and x.get('loc') == loc)]
             sessions.append({'id': f'new:{marker}', 'name': l['name'], 'kind': l['kind'], 'state': 'waiting' if slow else 'working',
                              'since': l['at'], 'at': now, 'cwd': l['cwd'], 'loc': loc, 'unknown': True, 'starting': True,
-                             'summary': '刚开起来，还没登记成会话' if slow else '正在启动…',
-                             'needs_you': '去它的窗格看一眼：多半在等你确认（比如是否信任这个目录）' if slow else ''})
+                             'summary': tx('刚开起来，还没登记成会话', 'Just started, not registered as a session yet') if slow else tx('正在启动…', 'Starting…'),
+                             'needs_you': tx('去它的窗格看一眼：多半在等你确认（比如是否信任这个目录）', 'Take a look at its pane: it is probably waiting for you to confirm (for example, whether to trust this folder)') if slow else ''})
         for s in sessions:
             self.projects.attribute(s)
             was = self.names.get(s['id'])
@@ -1775,7 +1793,7 @@ class Deck:
             try:
                 self.collect()
             except Exception as e:
-                self.note(f'收集出错：{e!r}', False)
+                self.note(tx(f'收集出错：{e!r}', f'Collecting failed: {e!r}'), False)
             time.sleep(2)
 
     # ---------- amail, with what the deck knows ----------
@@ -1803,16 +1821,16 @@ class Deck:
         for l in locks:
             s = by.get(l['holder'])
             if not s or s['state'] in ('gone', 'ended'):
-                out.append({**l, 'why': f'{l["holder"]} 已经退出'})
+                out.append({**l, 'why': tx(f'{l["holder"]} 已经退出', f'{l["holder"]} has exited')})
             elif s['state'] != 'working' and time.time() - (s.get('at') or 0) > 3 * 3600:
-                out.append({**l, 'why': f'{l["holder"]} {int((time.time() - s["at"]) // 3600)} 小时没动静'})
+                out.append({**l, 'why': tx(f'{l["holder"]} {int((time.time() - s["at"]) // 3600)} 小时没动静', f'{l["holder"]} has been quiet for {int((time.time() - s["at"]) // 3600)} h')})
         return out
 
     def assist(self, q, history):
         """The deck's assistant: a question about the sessions, answered from everything the deck knows (and, for the
         sessions the question names, their latest conversation)."""
         if not q:
-            return False, '先写问题'
+            return False, tx('先写问题', 'Write a question first')
         now, all_ = time.time(), getattr(self, 'all', [])
         live = [s for s in all_ if not s['hidden']]
         dur = lambda t: '刚刚' if not t or now - t < 60 else f'{int((now - t) // 60)} 分钟前' if now - t < 3600 else f'{int((now - t) // 3600)} 小时前' if now - t < 86400 else f'{int((now - t) // 86400)} 天前'
@@ -1842,11 +1860,11 @@ class Deck:
         try:
             return True, {'answer': ask_model(prompt, self.cfg, 'assist').strip()}
         except Exception as e:
-            return False, f'助手没答上来：{e}'[:300]
+            return False, tx(f'助手没答上来：{e}', f'The assistant had no answer: {e}')[:300]
 
     def recommend(self, text, group, project=''):
         if not text:
-            return False, '先写要做的事'
+            return False, tx('先写要做的事', 'Write what to do first')
         live = [s for s in getattr(self, 'all', []) if not s.get('parent_id') and not s.get('unknown') and s['state'] not in ('gone', 'ended')
                 and (s.get('project') == project if project else not group or (s.get('loc') or {}).get('session') == group)]
         proj = self.projects.known.get(project)
@@ -1862,7 +1880,7 @@ class Deck:
             out = ask_model(RECOMMEND.format(scope=scope, text=text, sessions='\n'.join(map(line, live)) or '（这里还没有会话）'), self.cfg, 'assist')
             r = json.loads(re.search(r'\{.*\}', out, re.S).group(0))
         except Exception as e:
-            return False, f'助手没给出建议：{e}'[:200]
+            return False, tx(f'助手没给出建议：{e}', f'The assistant gave no suggestion: {e}')[:200]
         to = next((s for s in live if s['name'] == r.get('to')), None)
         new = r.get('new') if isinstance(r.get('new'), dict) else None
         if new:
@@ -1892,7 +1910,7 @@ class Deck:
         if not s or s['state'] != 'idle' or s.get('prompting'):
             return False
         if DRY:
-            self.note(f'（试用，没有真的叫醒）{name}')
+            self.note(tx(f'（试用，没有真的叫醒）{name}', f'(trial, nobody was really woken) {name}'))
             return True
         if s['kind'] == 'codex' and s.get('session'):
             mails, items = A.take(name), A.news(name)
@@ -1928,7 +1946,7 @@ class Deck:
                     if self.wake(n):
                         self.woke[n] = w + [now]
                         if len(w) + 1 == 20:
-                            self.note(f'{n} 这一小时被讨论区叫醒了 20 次，先不再叫它了', False)
+                            self.note(tx(f'{n} 这一小时被讨论区叫醒了 20 次，先不再叫它了', f'{n} was woken 20 times by channels this hour; not waking it again for now'), False)
         self.chan_seen = {i: at for i, at in self.chan_seen.items() if now - at < 3600}
         if now - getattr(self, 'pruned', 0) > 600:  # (a channel keeps its last 3000 posts)
             self.pruned = now
@@ -1944,7 +1962,7 @@ class Deck:
             try:
                 self.mind()
             except Exception as e:
-                self.note(f'amail 跟进出错：{e!r}', False)
+                self.note(tx(f'amail 跟进出错：{e!r}', f'amail follow-up failed: {e!r}'), False)
             time.sleep(4)
 
     def mind(self):
@@ -2055,63 +2073,65 @@ class Deck:
         return next((s for s in self.state['sessions'] if s['id'] == sid), None)
 
     # actions
-    def act(self, what, body):
+    def act(self, what, body, lang=None):
+        if lang:
+            _REQ.lang = lang
         s = self.find(body.get('id')) if body.get('id') else None
         if what == 'say':  # (words for a session, as the person's: how they get there follows how it stands)
             text = (body.get('text') or '').strip()
             if not s or not text:
-                return False, '先写要说的话'
+                return False, tx('先写要说的话', 'Write what to say first')
             how = say_how(s, bool(body.get('now')))
             if how == 'gone':
-                return False, f'{s["name"]} 已经退出了'
+                return False, tx(f'{s["name"]} 已经退出了', f'{s["name"]} has exited')
             if how == 'menu':
-                return False, f'{s["name"]} 停在一个授权或选择提示上，打进去的字会被当成对它的回答：先进终端处理它'
+                return False, tx(f'{s["name"]} 停在一个授权或选择提示上，打进去的字会被当成对它的回答：先进终端处理它', f'{s["name"]} is stopped at a permission or choice prompt, and typed text would answer it: handle it in the terminal first')
             if how == 'type':
                 return self.type_in(s, text, True)
             if how == 'queue':
                 return self.queue_act({'do': 'add', 'text': text, 'to': s['name'], 'mode': 'plain'})
             if not A.send(ME_NAME, s['name'], text, 'question'):
-                return False, '发不出去'
+                return False, tx('发不出去', 'Could not send')
             self.wake(s['name'])
-            return True, f'放进了 {s["name"]} 的信箱：它不在 Zellij 或 tmux 里，下一步就会看到'
+            return True, tx(f'放进了 {s["name"]} 的信箱：它不在 Zellij 或 tmux 里，下一步就会看到', f'Put in the mailbox of {s["name"]}: it is not in Zellij or tmux, and sees it next')
         if what == 'attribute':  # (the person's word on which project a session works on; '' goes back to what was found)
             v = str(body.get('project') or '')
             if not s:
-                return False, '找不到这个会话'
+                return False, tx('找不到这个会话', 'Session not found')
             if v and v not in self.projects.known and not (v.startswith('w:') and self.projects.ws_channel(v[2:])):
-                return False, '没有这个项目'
+                return False, tx('没有这个项目', 'No such project')
             self.projects.set_manual(s['id'], v)  # (the next collect places it so: only that thread changes what is known)
             p = self.projects.known.get(v)
-            return True, f'{s["name"]} 算作' + (f'项目 {p["name"]} 的' if p else '工作区本身的' if v else '按它的目录和改的文件找到的项目的') + '会话'
+            return True, tx(f'{s["name"]} 算作' + (f'项目 {p["name"]} 的' if p else '工作区本身的' if v else '按它的目录和改的文件找到的项目的') + '会话', f'{s["name"]} now counts as a session of ' + (f'project {p["name"]}' if p else 'the workspace itself' if v else 'the project found from its folder and the files it changes'))
         if what in ('board_post', 'board_seen', 'topic_new', 'topic_close'):
             return self.board_act(what, str(body.get('key') or ''), body)
         if what == 'jump':
             if not s:
-                return False, '找不到这个会话'
+                return False, tx('找不到这个会话', 'Session not found')
             return go_to(s.get('loc'), body.get('via'))
         if what == 'send':
             to = s['name'] if s else body.get('to')
             text = (body.get('text') or '').strip()
             if not to or not text:
-                return False, '缺少收件人或内容'
+                return False, tx('缺少收件人或内容', 'Missing recipient or text')
             if body.get('wake'):
                 threading.Thread(target=self._ask, args=(to, text), daemon=True).start()
-                return True, f'已发给 {to}，并在叫醒它'
+                return True, tx(f'已发给 {to}，并在叫醒它', f'Sent to {to}, and waking it')
             sent = A.send(ME_NAME, to, text)
-            return bool(sent), f'已发给 {", ".join(sent)}' if sent else '没有发出'
+            return bool(sent), tx(f'已发给 {", ".join(sent)}', f'Sent to {", ".join(sent)}') if sent else tx('没有发出', 'Nothing sent')
         if what == 'rename':
             new = (body.get('name') or '').strip()
             if not s or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,40}', new):
-                return False, '名字只能用字母、数字和 _ . -'
+                return False, tx('名字只能用字母、数字和 _ . -', 'A name can use only letters, digits and _ . -')
             return self.rename(s, new)
         if what == 'dirs':  # (the folders of this machine, for picking where a new session runs)
             d = os.path.realpath(os.path.expanduser(str(body.get('path') or '~')))
             if not os.path.isdir(d):
-                return False, f'没有这个目录：{d}'
+                return False, tx(f'没有这个目录：{d}', f'No such folder: {d}')
             try:
                 names = sorted((e.name for e in os.scandir(d) if not e.name.startswith('.') and e.is_dir()), key=str.lower)
             except OSError as e:
-                return False, f'读不了 {d}：{e.strerror}'
+                return False, tx(f'读不了 {d}：{e.strerror}', f'Can’t read {d}: {e.strerror}')
             h = os.path.expanduser('~')
             return True, {'path': d, 'show': d.replace(h, '~', 1) if d == h or d.startswith(h + '/') else d, 'dirs': names[:500], 'more': max(0, len(names) - 500)}
         if what == 'assistant':  # (a question to the deck's assistant)
@@ -2120,47 +2140,47 @@ class Deck:
             return self.recommend(str(body.get('text') or '').strip(), str(body.get('group') or ''), str(body.get('project') or ''))
         if what == 'stop':  # (a session another one started: it and the processes under it)
             if not s or not s.get('parent_id') or not s.get('pid') or s['state'] in ('gone', 'ended'):
-                return False, '只能停止由别的会话启动、还在跑的子 agent'
+                return False, tx('只能停止由别的会话启动、还在跑的子 agent', 'Only a running sub-agent started by another session can be stopped')
             kids = [p for p in A.pids() if any(a == s['pid'] for a, _ in A.ancestors(p)[1:])]
             for pid in [s['pid']] + kids:
                 try:
                     os.kill(pid, signal.SIGTERM)
                 except OSError:
                     pass
-            return True, f'停止了 {s["name"]}（{s["parent"]} 启动的）'
+            return True, tx(f'停止了 {s["name"]}（{s["parent"]} 启动的）', f'Stopped {s["name"]} (started by {s["parent"]})')
         if what == 'unlock':  # (the person lets go of a push lock whose holder is gone; those it turned away are told)
             key = str(body.get('key') or '')
             f = A.path('locks', f'{key}.json')
             if not re.fullmatch(r'[0-9a-f]{12}', key) or not os.path.exists(f):
-                return False, '这把锁已经不在了'
+                return False, tx('这把锁已经不在了', 'This lock is already gone')
             l = A.get(f) or {}
             os.remove(f)
-            return True, f'释放了 {l.get("holder")} 在 {os.path.basename(l.get("repo") or "")} 上的 {l.get("branch")} 推送锁'
+            return True, tx(f'释放了 {l.get("holder")} 在 {os.path.basename(l.get("repo") or "")} 上的 {l.get("branch")} 推送锁', f'Released the push lock of {l.get("holder")} on {l.get("branch")} in {os.path.basename(l.get("repo") or "")}')
         if what in ('mail_read', 'mail_reply'):  # (mail to the person: read, or answered, which wakes the writer)
             mid = str(body.get('mid') or '')
             f = next(iter(glob.glob(A.path('mail', ME_NAME, 'new', f'*-{mid}.json')))) if re.fullmatch(r'[0-9a-f]{12}', mid) else None
             m = f and A.get(f)
             if not m:
-                return False, '这封已经处理过了'
+                return False, tx('这封已经处理过了', 'This one is already handled')
             text = (body.get('text') or '').strip()
             if what == 'mail_reply':
                 if not text:
-                    return False, '先写回复'
+                    return False, tx('先写回复', 'Write a reply first')
                 if not A.send(ME_NAME, m['from'], text, 'question'):
-                    return False, '发不出去'
+                    return False, tx('发不出去', 'Could not send')
                 self.wake(m['from'])
             os.replace(f, A.path('mail', ME_NAME, 'cur', os.path.basename(f)))
-            return True, f'已回复 {m["from"]}' if what == 'mail_reply' else {}
+            return True, tx(f'已回复 {m["from"]}', f'Replied to {m["from"]}') if what == 'mail_reply' else {}
         if what == 'report':  # (a report now, before the next summaries)
             if not s or not transcript_of(s):
-                return False, '读不到这个会话的对话，写不了报告'
+                return False, tx('读不到这个会话的对话，写不了报告', 'Can’t read this session’s conversation, so no report')
             self.reports.asked.add(s['id'])
             return True, {}
         if what == 'summarize':
             if not s:
-                return False, '找不到这个会话'
+                return False, tx('找不到这个会话', 'Session not found')
             self.sums.data.pop(s['id'], None)
-            return True, '马上重新总结'
+            return True, tx('马上重新总结', 'Summarizing again now')
         if what == 'new':
             return self.new_session(body)
         if what == 'queue':
@@ -2178,37 +2198,37 @@ class Deck:
             save_config({'models': models})
             if key is not None:
                 put_secret(role, key)
-            return True, f'{"总结模型" if role == "summary" else "辅助模型"}已换成 {model_label(self.cfg, role)}'
+            return True, tx(f'{"总结模型" if role == "summary" else "辅助模型"}已换成 {model_label(self.cfg, role)}', f'The {"summary" if role == "summary" else "assistant"} model is now {model_label(self.cfg, role)}')
         if what == 'voice' and 'only_on' in body:  # (the switch: at once, the rest as it was)
             v = {**voice_cfg(self.cfg), 'on': bool(body['only_on'])}
             self.cfg['voice'] = v
             save_config({'voice': v})
             self.state['voice'] = self.voice_view()  # (the page reads it back at once)
-            return True, f'语音输入{"已开启：" + voice_label(v) if v["on"] else "已关闭"}'
+            return True, tx(f'语音输入{"已开启：" + voice_label(v) if v["on"] else "已关闭"}', f'Voice input {"turned on: " + voice_label(v) if v["on"] else "turned off"}')
         if what in ('voice', 'voice_test'):
             v = voice_cfg(self.cfg)
             if body.get('provider') not in STT:
-                return False, '选一个语音服务'
+                return False, tx('选一个语音服务', 'Pick a voice service')
             model = str(body.get('model') or '').strip()[:80]
             v.update(on=bool(body.get('on')), provider=body['provider'], model='' if model == STT_MODEL[body['provider']] else model,
                      url=str(body.get('url') or '').strip(), lang=body.get('lang') if body.get('lang') in ('zh', 'en') else '')
             if v['url'] and not re.match(r'^https?://', v['url']):
-                return False, '接口地址要以 http:// 或 https:// 开头'
+                return False, tx('接口地址要以 http:// 或 https:// 开头', 'The API address must start with http:// or https://')
             key = body.get('key')
-            key = key if key and '…' not in key and key != '已设置' else None
+            key = key if key and '…' not in key and key not in ('已设置', 'set') else None
             if what == 'voice_test':
                 t = time.time()
                 try:
                     transcribe(silence(), 'audio/wav', v, key if key is not None else voice_key(v['provider']))
                 except Exception as e:
-                    return False, f'{voice_label(v)} 没调通：{e}'[:300]
-                return True, f'{voice_label(v)} 调通了（{time.time() - t:.1f} 秒）'
+                    return False, tx(f'{voice_label(v)} 没调通：{e}', f'{voice_label(v)} did not work: {e}')[:300]
+                return True, tx(f'{voice_label(v)} 调通了（{time.time() - t:.1f} 秒）', f'{voice_label(v)} works ({time.time() - t:.1f} s)')
             self.cfg['voice'] = v
             save_config({'voice': v})
             if key is not None:
                 put_secret(f'voice:{v["provider"]}', key)
             self.state['voice'] = self.voice_view()  # (the page reads it back at once)
-            return True, f'已保存：{voice_label(v)}' + ('' if v['on'] else '（语音输入还关着）')
+            return True, tx(f'已保存：{voice_label(v)}' + ('' if v['on'] else '（语音输入还关着）'), f'Saved: {voice_label(v)}' + ('' if v['on'] else ' (voice input is still off)'))
         if what == 'models_test':
             try:
                 role, m, key = self.model_from(body)
@@ -2218,18 +2238,18 @@ class Deck:
             try:
                 out = ask_model('只回复两个字：好的', self.cfg, role, m=m, key=key if key is not None else None)
             except Exception as e:
-                return False, f'没调通：{e}'[:300]
-            return True, f'调通了（{time.time() - t:.1f} 秒）：{out.strip()[:40]}'
+                return False, tx(f'没调通：{e}', f'Did not work: {e}')[:300]
+            return True, tx(f'调通了（{time.time() - t:.1f} 秒）：{out.strip()[:40]}', f'Works ({time.time() - t:.1f} s): {out.strip()[:40]}')
         if what == 'draft':
             if not s:
-                return False, '找不到这个会话'
+                return False, tx('找不到这个会话', 'Session not found')
             path = transcript_of(s)
             lines = recent(path, 5000) if path else []
             need = s.get('needs_you') or s.get('waiting_for') or s.get('summary') or ''
             try:
                 text = ask_model(DRAFT.format(name=s['name'], need=need, text='\n'.join(lines) or (s.get('said') or '')), self.cfg, 'assist')
             except Exception as e:
-                return False, f'起草失败：{e}'[:300]
+                return False, tx(f'起草失败：{e}', f'Drafting failed: {e}')[:300]
             return True, {'draft': text.strip()[:600]}
         if what == 'work_lang':  # (the language the models write in for the person)
             v = 'en' if body.get('lang') == 'en' else 'zh'
@@ -2239,8 +2259,8 @@ class Deck:
         if what == 'titles':
             self.cfg['pane_titles'] = bool(body.get('on'))
             save_config({'pane_titles': self.cfg['pane_titles']})
-            return True, '窗格标题：' + ('开' if self.cfg['pane_titles'] else '关')
-        return False, f'不认识的操作 {what}'
+            return True, tx('窗格标题：' + ('开' if self.cfg['pane_titles'] else '关'), 'Pane titles: ' + ('on' if self.cfg['pane_titles'] else 'off'))
+        return False, tx(f'不认识的操作 {what}', f'Unknown action {what}')
 
     def board_act(self, what, key, body):
         """The person on a channel: posts, starts or closes a discussion, has read it."""
@@ -2248,7 +2268,7 @@ class Deck:
         if not meta:  # (a project's or a workspace's that nobody has posted to yet)
             ch = self.projects.channel(self.projects.known.get(key)) or self.projects.ws_channel(key)
             if not ch:
-                return False, '没有这个讨论区'
+                return False, tx('没有这个讨论区', 'No such channel')
             A.chan_ensure(ch)
             meta = ch
         try:
@@ -2258,19 +2278,19 @@ class Deck:
             if what == 'board_post':
                 text = (body.get('text') or '').strip()
                 if not text:
-                    return False, '先写要说的话'
+                    return False, tx('先写要说的话', 'Write what to say first')
                 m = A.post(ME_NAME, key, text, body.get('topic') or None)
                 A.put(A.seen_file(key, ME_NAME), {'at': m['at'], 'ids': [], 'auto': False})
-                return True, f'发到了 {meta["name"]} 的讨论区' + (f'，叫了 {"、".join(m["to"])}' if m['to'] else '')
+                return True, tx(f'发到了 {meta["name"]} 的讨论区' + (f'，叫了 {"、".join(m["to"])}' if m['to'] else ''), f'Posted to the channel of {meta["name"]}' + (f', calling {", ".join(m["to"])}' if m['to'] else ''))
             if what == 'topic_new':
                 title = (body.get('title') or '').strip()
                 invite = [n for n in body.get('invite') or [] if isinstance(n, str) and NAME.fullmatch(n)]
                 if not title:
-                    return False, '给讨论起个题目'
+                    return False, tx('给讨论起个题目', 'Give the discussion a topic')
                 t = A.topic_new(ME_NAME, key, title, (body.get('text') or '').strip(), invite, int(body.get('max') or A.TOPIC_MAX))
-                return True, {'msg': f'在 {meta["name"]} 发起了讨论「{t["title"]}」' + (f'，叫了 {"、".join(invite)}' if invite else ''), 'topic': t['id']}
+                return True, {'msg': tx(f'在 {meta["name"]} 发起了讨论「{t["title"]}」' + (f'，叫了 {"、".join(invite)}' if invite else ''), f'Started the discussion “{t["title"]}” in {meta["name"]}' + (f', calling {", ".join(invite)}' if invite else '')), 'topic': t['id']}
             t = A.topic_close(ME_NAME, key, str(body.get('topic') or ''))
-            return True, f'讨论「{t["title"]}」结束了'
+            return True, tx(f'讨论「{t["title"]}」结束了', f'The discussion “{t["title"]}” has ended')
         except ValueError as e:
             return False, str(e)
 
@@ -2283,23 +2303,23 @@ class Deck:
         if what == 'add':
             text = (b.get('text') or '').strip()
             if not text:
-                return False, '写下要做的事'
+                return False, tx('写下要做的事', 'Write what to do first')
             to, group = (b.get('to') or '').strip(), (b.get('group') or '').strip()
             item = {'id': os.urandom(5).hex(), 'text': text[:4000], 'to': to, 'group': group, 'mode': b.get('mode') if b.get('mode') in ('remind', 'plain') else 'auto',
                     'status': 'waiting', 'created': time.time(), 'note': ''}
             self.queue.append(item)
             self.qsave()
             if item['mode'] == 'plain':
-                return True, f'{to} 正在做事：等它这一轮做完，把你的原话发给它'
-            where = f'等 {to} 空闲' if to else f'等{group + " 组里" if group else ""}有会话空闲'
-            return True, f'排上了：{where}，' + ('到时先由助手确认再发' if item['mode'] == 'auto' else '到时提醒你')
+                return True, tx(f'{to} 正在做事：等它这一轮做完，把你的原话发给它', f'{to} is working: your words will be sent when it finishes this turn')
+            where = tx(f'等 {to} 空闲', f'wait for {to} to be free') if to else tx(f'等{group + " 组里" if group else ""}有会话空闲', f'wait for a free session{" in group " + group if group else ""}')
+            return True, tx(f'排上了：{where}，' + ('到时先由助手确认再发' if item['mode'] == 'auto' else '到时提醒你'), f'Queued: {where}; ' + ('the assistant checks it before sending' if item['mode'] == 'auto' else 'you will be reminded then'))
         item = next((q for q in self.queue if q['id'] == b.get('id')), None)
         if not item:
-            return False, '找不到这件排队的事'
+            return False, tx('找不到这件排队的事', 'Queued item not found')
         if what == 'delete':
             self.queue.remove(item)
         elif what == 'drop':
-            item.update(status='dropped', note=item.get('note') or '你取消了')
+            item.update(status='dropped', note=item.get('note') or tx('你取消了', 'You dropped it'))
         elif what == 'restore':
             item.update(status='waiting', note='', checked=0)
         elif what == 'edit':
@@ -2309,15 +2329,15 @@ class Deck:
         elif what == 'send':
             s = self.find_name(b.get('to') or item.get('to') or item.get('ready_to'))
             if not s:
-                return False, '先选一个要发给的会话'
+                return False, tx('先选一个要发给的会话', 'Pick a session to send to first')
             ok, msg = self.deliver(s, item.get('text'))
             if not ok:
                 return False, msg
-            item.update(status='sent', sent_to=s['name'], sent_at=time.time(), note='你手动发出')
+            item.update(status='sent', sent_to=s['name'], sent_at=time.time(), note=tx('你手动发出', 'Sent by you'))
         else:
-            return False, '不认识的操作'
+            return False, tx('不认识的操作', 'Unknown action')
         self.qsave()
-        return True, {'delete': '删掉了', 'drop': '不发了', 'restore': '重新排上了', 'edit': '改好了', 'send': f'发给了 {item.get("sent_to")}'}[what]
+        return True, tx({'delete': '删掉了', 'drop': '不发了', 'restore': '重新排上了', 'edit': '改好了', 'send': f'发给了 {item.get("sent_to")}'}[what], {'delete': 'Deleted', 'drop': 'Dropped', 'restore': 'Queued again', 'edit': 'Changed', 'send': f'Sent to {item.get("sent_to")}'}[what])
 
     def find_name(self, name):
         return next((x for x in self.state['sessions'] if x['name'] == name and not x.get('unknown')), None) if name else None
@@ -2329,7 +2349,7 @@ class Deck:
             if ok:
                 return True, msg
         sent = A.send(ME_NAME, s['name'], text)
-        return (True, f'放进了 {s["name"]} 的信箱') if sent else (False, '发不出去')
+        return (True, tx(f'放进了 {s["name"]} 的信箱', f'Put in the mailbox of {s["name"]}')) if sent else (False, tx('发不出去', 'Could not send'))
 
     def free(self, s):
         return s['state'] == 'idle' and not s.get('needs_you') and s.get('status') not in ('waiting_user', 'blocked') and not s.get('unknown') and not s.get('stale')
@@ -2339,7 +2359,7 @@ class Deck:
             try:
                 self.queue_pass()
             except Exception as e:
-                self.note(f'排队处理出错：{e!r}', False)
+                self.note(tx(f'排队处理出错：{e!r}', f'Queue pass failed: {e!r}'), False)
             time.sleep(8)
 
     def queue_pass(self):
@@ -2353,14 +2373,14 @@ class Deck:
             if item['to']:
                 t = self.find_name(item['to'])
                 if not t:
-                    item.update(status='held', note=f'{item["to"]} 不在了：换一个会话，或删掉', checked=now)
+                    item.update(status='held', note=tx(f'{item["to"]} 不在了：换一个会话，或删掉', f'{item["to"]} is gone: pick another session, or delete it'), checked=now)
                     self.qsave()
                     continue
                 if item['mode'] == 'plain':  # (the person's own words, held while it worked: as they are, once it stops)
                     if t['state'] in ('idle', 'waiting') and not t.get('prompting') and not t.get('unknown'):
                         ok, msg = self.deliver(t, item['text'])
                         item.update(status='sent' if ok else 'held', sent_to=t['name'] if ok else None, sent_at=now if ok else None, checked=now,
-                                    note='它这一轮做完了，原话发出' if ok else f'没发出去：{msg}'[:200])
+                                    note=tx('它这一轮做完了，原话发出', 'It finished its turn; your words were sent') if ok else tx(f'没发出去：{msg}', f'Not sent: {msg}')[:200])
                         self.qsave()
                     continue
                 cands = [t] if self.free(t) else []
@@ -2369,7 +2389,7 @@ class Deck:
             if not cands:
                 continue
             if item['mode'] == 'remind':
-                item.update(status='ready', note=f'{cands[0]["name"]} 空了，可以发了', ready_to=cands[0]['name'])
+                item.update(status='ready', note=tx(f'{cands[0]["name"]} 空了，可以发了', f'{cands[0]["name"]} is free; ready to send'), ready_to=cands[0]['name'])
                 self.qsave()
                 continue
             item['status'] = 'checking'
@@ -2383,24 +2403,24 @@ class Deck:
                 m = re.search(r'\{.*\}', out, re.S)
                 r = json.loads(m.group(0)) if m else {}
             except Exception as e:
-                item.update(status='waiting', note=f'助手没回上来，稍后再试：{e}'[:160], checked=now)
+                item.update(status='waiting', note=tx(f'助手没回上来，稍后再试：{e}', f'The assistant did not answer; will try again later: {e}')[:160], checked=now)
                 self.qsave()
                 continue
             verdict, reason = r.get('verdict'), str(r.get('reason') or '')[:160]
             item['checked'] = now
             if verdict == 'drop':
-                item.update(status='dropped', note=f'助手觉得不用发了：{reason}')
+                item.update(status='dropped', note=tx(f'助手觉得不用发了：{reason}', f'The assistant thinks it need not be sent: {reason}'))
             elif verdict == 'send':
                 t = self.find_name(item['to'] or r.get('to'))
                 t = t if t in cands else cands[0]
                 text = str(r.get('text') or item['text']).strip() or item['text']
                 ok, msg = self.deliver(t, text)
                 item.update(status='sent' if ok else 'held', sent_to=t['name'] if ok else None, sent_at=now if ok else None,
-                            sent_text=text if ok else None, note=(f'助手确认后发出：{reason}' if ok else f'没发出去：{msg}')[:200])
+                            sent_text=text if ok else None, note=(tx(f'助手确认后发出：{reason}', f'Sent after the assistant checked: {reason}') if ok else tx(f'没发出去：{msg}', f'Not sent: {msg}'))[:200])
                 if ok:
-                    self.note(f'排队的事发给了 {t["name"]}')
+                    self.note(tx(f'排队的事发给了 {t["name"]}', f'Queued item sent to {t["name"]}'))
             else:
-                item.update(status='held', note=f'助手建议先等：{reason}')
+                item.update(status='held', note=tx(f'助手建议先等：{reason}', f'The assistant suggests waiting: {reason}'))
             self.qsave()
 
     def new_session(self, b):
@@ -2412,15 +2432,15 @@ class Deck:
         name, prompt = (b.get('name') or '').strip(), (b.get('prompt') or '').strip()
         cwd = os.path.realpath(os.path.expanduser((b.get('cwd') or '~').strip()))
         if kind not in ('claude', 'codex', 'cursor', 'shell'):
-            return False, '选一个 agent，或终端'
+            return False, tx('选一个 agent，或终端', 'Pick an agent, or a terminal')
         if not NAME.fullmatch(group):
-            return False, '组名只能用字母、数字和 _ . -'
+            return False, tx('组名只能用字母、数字和 _ . -', 'A group name can use only letters, digits and _ . -')
         if name and not NAME.fullmatch(name):
-            return False, '名字只能用字母、数字和 _ . -'
+            return False, tx('名字只能用字母、数字和 _ . -', 'A name can use only letters, digits and _ . -')
         if name and name in A.rows():
-            return False, f'{name} 已经有会话在用了'
+            return False, tx(f'{name} 已经有会话在用了', f'{name} is already used by a session')
         if not os.path.isdir(cwd):
-            return False, f'目录不存在：{cwd}'
+            return False, tx(f'目录不存在：{cwd}', f'Folder does not exist: {cwd}')
         argv = [os.environ.get('SHELL') or '/bin/bash', '-l'] if kind == 'shell' else list(self.cfg.get('launch', DEFAULTS['launch']).get(kind) or DEFAULTS['launch'][kind])
         if kind == 'claude' and name:
             argv += ['--name', name]
@@ -2428,11 +2448,11 @@ class Deck:
             argv.append(prompt)
         marker = os.urandom(6).hex()
         env = [f'STURNUS_NEW={marker}'] + ([f'AMAIL_NAME={name}'] if name else [])
-        tab = name or f'{"终端" if kind == "shell" else kind}·{os.path.basename(cwd) or "~"}'
+        tab = name or f'{tx("终端", "shell") if kind == "shell" else kind}·{os.path.basename(cwd) or "~"}'
         if mux == 'tmux':
             ok, made, loc = TMUX.new(group, tab, cwd, env, argv)
             if not ok:
-                return False, f'tmux 开不了：{made}'
+                return False, tx(f'tmux 开不了：{made}', f'tmux could not start: {made}')
             return self.started(b, kind, name, tab, f'tmux:{group}', cwd, marker, made, loc)
         layout = f'''layout {{
     tab name={kdl(tab)} cwd={kdl(cwd)} {{
@@ -2460,17 +2480,17 @@ class Deck:
                     break
                 time.sleep(.25)
             else:
-                return False, f'建不了组 {group}：{(r.stderr or r.stdout).strip()[:160]}'
-            made = f'新建了组 {group}，'
+                return False, tx(f'建不了组 {group}：{(r.stderr or r.stdout).strip()[:160]}', f'Could not create group {group}: {(r.stderr or r.stdout).strip()[:160]}')
+            made = tx(f'新建了组 {group}，', f'Created group {group}. ')
         else:
             with ROOM:
                 room = zellij_room(group, 'tab')
             if room and not room['ok']:
-                return False, (f'没有开：{group} 的 Zellij 已经开着 {room["held"]} 个文件，上限 {room["limit"]}，再开一个标签页要约 '
-                               f'{room["need"]} 个，超过上限它会崩掉，里面的会话全部结束。先关掉一个连着它的终端，或者调高上限（见 README）。')
+                return False, tx((f'没有开：{group} 的 Zellij 已经开着 {room["held"]} 个文件，上限 {room["limit"]}，再开一个标签页要约 '
+                               f'{room["need"]} 个，超过上限它会崩掉，里面的会话全部结束。先关掉一个连着它的终端，或者调高上限（见 README）。'), f'Not opened: Zellij for {group} already has {room["held"]} files open, with a limit of {room["limit"]}; another tab needs about {room["need"]} more, and past the limit it crashes and every session in it ends. Close a terminal attached to it, or raise the limit (see the README).')
         r = zj(group, 'action', 'new-tab', '--layout', f, timeout=10)
         if r.returncode != 0:
-            return False, f'开不了新标签页：{(r.stderr or r.stdout).strip()[:200]}'
+            return False, tx(f'开不了新标签页：{(r.stderr or r.stdout).strip()[:200]}', f'Could not open a new tab: {(r.stderr or r.stdout).strip()[:200]}')
         return self.started(b, kind, name, tab, group, cwd, marker, made, zellij_marked(group, marker))
 
     def started(self, b, kind, name, tab, group, cwd, marker, made, loc=None):
@@ -2478,37 +2498,37 @@ class Deck:
             for _ in range(24):
                 loc = loc or marked(marker)
                 if loc:
-                    return True, {'msg': f'{made}在 {group.removeprefix("tmux:")} 里开了终端「{tab}」', 'term': {'group': loc['session'], 'pane': loc['pane']}}
+                    return True, {'msg': tx(f'{made}在 {group.removeprefix("tmux:")} 里开了终端「{tab}」', f'{made}Opened terminal “{tab}” in {group.removeprefix("tmux:")}'), 'term': {'group': loc['session'], 'pane': loc['pane']}}
                 time.sleep(.25)
-            return True, f'{made}在 {group.removeprefix("tmux:")} 里开了终端「{tab}」'
+            return True, tx(f'{made}在 {group.removeprefix("tmux:")} 里开了终端「{tab}」', f'{made}Opened terminal “{tab}” in {group.removeprefix("tmux:")}')
         if kind == 'codex' and name:
             self.pending[marker] = name  # (a Codex thread takes its name once it shows up)
         self.launched[marker] = {'kind': kind, 'name': name or tab, 'group': group, 'cwd': cwd, 'at': time.time()}
         if b.get('jump'):
             threading.Thread(target=self._jump_when_up, args=(marker, tab), daemon=True).start()
-        return True, f'{made}在 {group.removeprefix("tmux:")} 里开了「{tab}」（{ {"claude": "Claude Code", "codex": "Codex", "cursor": "Cursor"}[kind]}，{cwd.replace(os.path.expanduser("~"), "~")}）'
+        return True, tx(f'{made}在 {group.removeprefix("tmux:")} 里开了「{tab}」（{ {"claude": "Claude Code", "codex": "Codex", "cursor": "Cursor"}[kind]}，{cwd.replace(os.path.expanduser("~"), "~")}）', f'{made}Opened “{tab}” in {group.removeprefix("tmux:")} ({ {"claude": "Claude Code", "codex": "Codex", "cursor": "Cursor"}[kind]}, {cwd.replace(os.path.expanduser("~"), "~")})')
 
     def type_in(self, s, text, enter):
         """Type into a session's pane as if at its keyboard (and press Enter)."""
         if not s or not s.get('loc'):
-            return False, '这个会话不在 Zellij 或 tmux 里'
+            return False, tx('这个会话不在 Zellij 或 tmux 里', 'This session is not in Zellij or tmux')
         if DRY:
-            self.note(f'（试用，没有真的输入）{s["name"]}：{text[:80]}')
-            return True, f'（试用）会在 {s["name"]} 的终端里输入'
+            self.note(tx(f'（试用，没有真的输入）{s["name"]}：{text[:80]}', f'(trial, nothing was typed) {s["name"]}: {text[:80]}'))
+            return True, tx(f'（试用）会在 {s["name"]} 的终端里输入', f'(trial) would type in the terminal of {s["name"]}')
         loc = s['loc']
         if loc['mux'] == 'tmux':
-            return (True, f'已在 {s["name"]} 的终端里输入') if TMUX.type(loc, text, enter) else (False, '写不进它的 tmux 窗格')
+            return (True, tx(f'已在 {s["name"]} 的终端里输入', f'Typed in the terminal of {s["name"]}')) if TMUX.type(loc, text, enter) else (False, tx('写不进它的 tmux 窗格', 'Could not write to its tmux pane'))
         if text:
             r = plugin(loc['session'], f'type {loc["pane"]} {text}')
             if r.returncode != 0 or 'ok' not in r.stdout:
                 if (self.state['groups'].get(loc['session']) or {}).get('clients'):
                     ask_grant(loc['session'])
-                    return False, f'第一次在组 {loc["session"]} 里输入：Zellij 在你的终端里弹了一个授权框，按 y 同意后再发一次'
-                return False, f'写不进去：组 {loc["session"]} 要有终端连着'
+                    return False, tx(f'第一次在组 {loc["session"]} 里输入：Zellij 在你的终端里弹了一个授权框，按 y 同意后再发一次', f'First time typing in group {loc["session"]}: Zellij showed a permission prompt in your terminal; press y, then send again')
+                return False, tx(f'写不进去：组 {loc["session"]} 要有终端连着', f'Could not type: group {loc["session"]} needs a terminal attached')
         if enter:
             time.sleep(.15)  # (a TUI takes pasted text, then the key)
             plugin(loc['session'], f'enter {loc["pane"]}')
-        return True, f'已在 {s["name"]} 的终端里输入'
+        return True, tx(f'已在 {s["name"]} 的终端里输入', f'Typed in the terminal of {s["name"]}')
 
     def _jump_when_up(self, marker, tab):
         for _ in range(40):
@@ -2518,11 +2538,11 @@ class Deck:
                 self.note(f'「{tab}」：{msg}', ok)
                 return
             time.sleep(.25)
-        self.note(f'「{tab}」还没起来，稍后在卡片上点跳转', False)
+        self.note(tx(f'「{tab}」还没起来，稍后在卡片上点跳转', f'“{tab}” has not come up yet; use Jump on the card in a moment'), False)
 
     def voice_view(self):
         v = voice_cfg(self.cfg)
-        mask = lambda k: (k[:3] + '…' + k[-4:]) if len(k) > 10 else ('已设置' if k else '')
+        mask = lambda k: (k[:3] + '…' + k[-4:]) if len(k) > 10 else (tx('已设置', 'set') if k else '')
         return {**v, 'keys': {p: mask(voice_key(p)) for p in STT}, 'label': voice_label(v), 'defaults': STT_MODEL}
 
     def models_view(self):
@@ -2531,50 +2551,50 @@ class Deck:
             m = model_for(self.cfg, role)
             k = secret(role)
             out[role] = {'source': m['source'], 'model': m.get('model') or '', 'url': m.get('url') or '', 'key_env': m.get('key_env') or '',
-                         'key': (k[:3] + '…' + k[-4:]) if len(k) > 10 else ('已设置' if k else ''), 'label': model_label(self.cfg, role)}
+                         'key': (k[:3] + '…' + k[-4:]) if len(k) > 10 else (tx('已设置', 'set') if k else ''), 'label': model_label(self.cfg, role)}
         return out
 
     def model_from(self, b):
         role = b.get('role')
         if role not in ('summary', 'assist'):
-            raise ValueError('不认识的模型用途')
+            raise ValueError(tx('不认识的模型用途', 'Unknown model role'))
         src = b.get('source')
         if src not in SOURCES:
-            raise ValueError('选一个来源')
+            raise ValueError(tx('选一个来源', 'Pick a source'))
         m = {'source': src, 'model': str(b.get('model') or '').strip()[:80]}
         if src == 'api':
             m['url'] = str(b.get('url') or '').strip()
             if not re.match(r'^https?://', m['url']):
-                raise ValueError('接口地址要以 http:// 或 https:// 开头')
+                raise ValueError(tx('接口地址要以 http:// 或 https:// 开头', 'The API address must start with http:// or https://'))
             if not m['model']:
-                raise ValueError('填上模型名')
+                raise ValueError(tx('填上模型名', 'Fill in the model name'))
             if b.get('key_env'):
                 m['key_env'] = str(b['key_env']).strip()
         key = b.get('key')
-        key = key if key and '…' not in key and key != '已设置' else None  # (the masked one shown back is not a new key)
+        key = key if key and '…' not in key and key not in ('已设置', 'set') else None  # (the masked one shown back is not a new key)
         return role, m, key
 
     def _ask(self, to, text):
         try:
             r = A.ask(ME_NAME, to, text)
-            self.note(f'问 {to}：{r}')
+            self.note(tx(f'问 {to}：{r}', f'Asked {to}: {r}'))
         except Exception as e:
-            self.note(f'问 {to} 失败：{e!r}', False)
+            self.note(tx(f'问 {to} 失败：{e!r}', f'Asking {to} failed: {e!r}'), False)
 
     def rename(self, s, new):
         if s['kind'] == 'claude':
-            return False, f'Claude 会话的名字由它自己定：在那个会话里输入 /rename {new}，这里和 amail 会跟着变'
+            return False, tx(f'Claude 会话的名字由它自己定：在那个会话里输入 /rename {new}，这里和 amail 会跟着变', f'A Claude session names itself: type /rename {new} in that session, and the name changes here and in amail')
         if new in A.rows():
-            return False, f'{new} 已经有人用了'
+            return False, tx(f'{new} 已经有人用了', f'{new} is already taken')
         if s['kind'] == 'codex' and s.get('session'):
             ok, msg = codex_set_name(s['session'], new)
             if not ok:
-                self.note(f'Codex 会话名没改成：{msg}', False)
+                self.note(tx(f'Codex 会话名没改成：{msg}', f'Codex session name was not changed: {msg}'), False)
         r = run([sys.executable, os.path.join(APP, 'amail'), '--as', s['name'], 'rename', new])
         if r.returncode != 0:
             return False, (r.stderr or r.stdout).strip()[:200]
         self.titles = {}
-        return True, f'{s["name"]} 改名为 {new}（amail、Zellij 窗格{"、Codex 会话" if s["kind"] == "codex" else ""}都已同步）'
+        return True, tx(f'{s["name"]} 改名为 {new}（amail、Zellij 窗格{"、Codex 会话" if s["kind"] == "codex" else ""}都已同步）', f'{s["name"]} renamed to {new} (amail, the Zellij pane{" and the Codex session" if s["kind"] == "codex" else ""} are in sync)')
 
 
 ASKS = ('AskUserQuestion', 'ExitPlanMode')  # (tools that put a choice to the person in the terminal)
@@ -2718,10 +2738,10 @@ class Access:
         with self.lock:
             self.fresh()
             if sum(1 for t in self.fails if now - t < 600) >= 8:
-                return None, '试错太多次，10 分钟后再试'
+                return None, tx('试错太多次，10 分钟后再试', 'Too many wrong tries; try again in 10 minutes')
             if not hmac.compare_digest(token.encode(), self.d['token'].encode()):
                 self.fails.append(now)
-                return None, '令牌不对'
+                return None, tx('令牌不对', 'Wrong token')
             sid = secrets.token_urlsafe(32)
             self.d['sessions'] = {k: v for k, v in self.d['sessions'].items() if now - v['at'] < 30 * DAY}
             self.d['sessions'][self.key(sid)] = {'at': now, 'who': who}
@@ -3013,7 +3033,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.command == 'GET' and bare in ('/', '/index.html'):
             self.static('login.html')
             return False
-        self.send_json({'ok': False, 'msg': '要先登录', 'login': True}, 401)
+        self.send_json({'ok': False, 'msg': tx('要先登录', 'Sign in first'), 'login': True}, 401)
         return False
 
     def static(self, name):
@@ -3045,7 +3065,7 @@ class Handler(BaseHTTPRequestHandler):
         if (self.headers.get('Upgrade') or '').lower() != 'websocket' or not self.headers.get('Sec-WebSocket-Key') or origin != host.strip('[]'):
             return self.send_json({'ok': False, 'msg': 'forbidden'}, 403)
         if not loc:
-            return self.send_json({'ok': False, 'msg': '不在 Zellij 或 tmux 里'}, 404)
+            return self.send_json({'ok': False, 'msg': tx('不在 Zellij 或 tmux 里', 'Not in Zellij or tmux')}, 404)
         room = None
         if loc['mux'] == 'zellij':
             with ROOM:
@@ -3093,6 +3113,13 @@ class Handler(BaseHTTPRequestHandler):
         self.static('index.html' if bare in ('/', '/index.html') else bare.lstrip('/'))
 
     def do_POST(self):
+        _REQ.lang = 'en' if self.headers.get('X-Lang') == 'en' else 'zh'
+        try:
+            return self._post()
+        finally:
+            _REQ.lang = None
+
+    def _post(self):
         if not self.gate():
             return
         # (only this page: a cross-site form cannot set this header)
@@ -3102,14 +3129,14 @@ class Handler(BaseHTTPRequestHandler):
             n = int(self.headers.get('Content-Length') or 0)
             v = voice_cfg(DECK.cfg)
             if not v['on']:
-                return self.send_json({'ok': False, 'msg': '语音输入没开：设置 → 语音输入'})
+                return self.send_json({'ok': False, 'msg': tx('语音输入没开：设置 → 语音输入', 'Voice input is off: Settings → Voice input')})
             if not 0 < n <= 25 * 1024 * 1024:
-                return self.send_json({'ok': False, 'msg': '录音太长了（最多 25 MB）' if n else '没录到声音'})
+                return self.send_json({'ok': False, 'msg': tx('录音太长了（最多 25 MB）', 'The recording is too long (25 MB at most)') if n else tx('没录到声音', 'No sound recorded')})
             audio = self.rfile.read(n)
             try:
                 return self.send_json({'ok': True, 'via': voice_label(v), 'text': transcribe(audio, self.headers.get('Content-Type') or 'audio/webm', v, voice_key(v['provider'])).strip()})
             except Exception as e:
-                return self.send_json({'ok': False, 'msg': f'没转成文字：{e}'[:300]})
+                return self.send_json({'ok': False, 'msg': tx(f'没转成文字：{e}', f'Could not turn it into text: {e}')[:300]})
         try:
             body = json.loads(self.rfile.read(int(self.headers.get('Content-Length') or 0)) or b'{}')
         except ValueError:
@@ -3120,7 +3147,7 @@ class Handler(BaseHTTPRequestHandler):
             sid, msg = ACCESS_.login(str(body.get('token') or '').strip(), self.via)
             if not sid:
                 return self.send_json({'ok': False, 'msg': msg}, 401)
-            DECK.note(f'新登录：{self.via}', True)
+            DECK.note(tx(f'新登录：{self.via}', f'New sign-in: {self.via}'), True)
             return self.send_json({'ok': True}, cookie=f'deck={sid}; HttpOnly; SameSite=Strict; Path=/; Max-Age={30 * DAY}{secure}')
         if what == 'access':  # (the signed-in browsers: list, sign one out, or this one)
             mine = Access.key(self.cookie('deck'))
@@ -3148,7 +3175,7 @@ def serve():
     try:
         DECK.collect()
     except Exception as e:  # (the loop keeps trying; the page says what went wrong)
-        DECK.note(f'收集出错：{e!r}', False)
+        DECK.note(tx(f'收集出错：{e!r}', f'Collecting failed: {e!r}'), False)
     threading.Thread(target=DECK.loop, daemon=True).start()
     threading.Thread(target=DECK.summarize_loop, daemon=True).start()
     threading.Thread(target=DECK.queue_loop, daemon=True).start()
