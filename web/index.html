@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sturnus</title>
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%233b3b3f'/%3E%3Cstop offset='1' stop-color='%23151517'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='9' fill='url(%23g)'/%3E%3Crect x='8' y='9' width='16' height='3.4' rx='1.7' fill='white'/%3E%3Crect x='8' y='14.3' width='11' height='3.4' rx='1.7' fill='white' opacity='.75'/%3E%3Crect x='8' y='19.6' width='14' height='3.4' rx='1.7' fill='white' opacity='.5'/%3E%3C/svg%3E">
+<link rel="preload" href="fonts/inter.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="style.css">
+<script>
+  try { const t = JSON.parse(localStorage.getItem('deck.theme') || '"auto"'); document.documentElement.dataset.theme = t === 'auto' ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : t } catch {}
+</script>
+</head>
+<body>
+<div class="app">
+  <header class="bar">
+    <a class="brand" href="#/"><span class="logo" aria-hidden="true"><i></i><i></i><i></i></span><span class="word">Sturnus</span></a>
+    <nav class="crumbs" id="crumbs"></nav>
+    <div class="bar-right">
+      <button class="search-trigger" id="searchBtn" type="button"><svg viewBox="0 0 20 20"><circle cx="8.8" cy="8.8" r="5.6"/><path d="m13 13 4 4"/></svg><span>搜索会话</span><kbd>/</kbd></button>
+      <button class="new-btn" id="newBtn" type="button" title="新建会话（N）"><svg viewBox="0 0 20 20"><path d="M10 4.5v11M4.5 10h11"/></svg>新建会话</button>
+      <span class="conn" id="conn" title="与本机 sturnus 服务的连接"><i></i><span>实时</span></span>
+      <button class="icon-btn" id="themeBtn" type="button" title="主题"></button>
+      <button class="icon-btn" id="settingsBtn" type="button" title="设置">
+        <svg viewBox="0 0 20 20"><path d="M8.6 2.8h2.8l.4 2 1.6.9 1.9-.7 1.4 2.4-1.5 1.3v1.8l1.5 1.3-1.4 2.4-1.9-.7-1.6.9-.4 2H8.6l-.4-2-1.6-.9-1.9.7-1.4-2.4 1.5-1.3V9.1L3.3 7.8l1.4-2.4 1.9.7 1.6-.9z"/><circle cx="10" cy="10" r="2.3"/></svg>
+      </button>
+    </div>
+  </header>
+  <div class="shell"><aside class="side" id="side"></aside><main class="view" id="view"></main></div>
+  <aside class="asst" id="asst" hidden></aside>
+  <button class="asst-fab" id="asstBtn" type="button" title="助手：问各个会话的事（⌘/Ctrl+J）"><svg class="i-open" viewBox="0 0 16 16"><path d="M8 2.5v3M8 10.5v3M2.5 8h3M10.5 8h3M4.2 4.2l2 2M9.8 9.8l2 2M4.2 11.8l2-2M9.8 6.2l2-2"/></svg><svg class="i-close" viewBox="0 0 16 16"><path d="m4 6 4 4 4-4"/></svg><i class="dot-new"></i></button>
+  <footer class="status" id="status"></footer>
+</div>
+
+<div class="ovl" id="palette" hidden>
+  <div class="scrim" data-close></div>
+  <div class="palette" role="dialog" aria-label="搜索会话">
+    <div class="palette-input"><svg viewBox="0 0 20 20"><circle cx="8.8" cy="8.8" r="5.6"/><path d="m13 13 4 4"/></svg><input id="paletteQ" placeholder="输入任务、名字、目录……"></div>
+    <div class="palette-list" id="paletteList"></div>
+    <div class="palette-foot"><span><kbd>↑</kbd><kbd>↓</kbd> 选择</span><span><kbd>Enter</kbd> 打开</span><span><kbd>Esc</kbd> 关闭</span></div>
+  </div>
+</div>
+
+<div class="ovl" id="newSess" hidden>
+  <div class="scrim" data-close></div>
+  <div class="modal single" role="dialog" aria-label="新建会话"><div class="modal-body" id="newBody"></div></div>
+</div>
+
+<div class="ovl" id="settings" hidden>
+  <div class="scrim" data-close></div>
+  <div class="modal" role="dialog" aria-label="设置">
+    <nav class="modal-nav" id="settingsNav">
+      <h3>设置</h3>
+      <button data-pane="models" class="on">助手与模型</button>
+      <button data-pane="voice">语音输入</button>
+      <button data-pane="look">显示</button>
+      <button data-pane="access">访问</button>
+      <button data-pane="about">关于</button>
+    </nav>
+    <div class="modal-body" id="settingsBody"></div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<script src="app.js"></script>
+</body>
+</html>

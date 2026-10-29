@@ -1,0 +1,2787 @@
+#!/usr/bin/env python3
+"""sturnus - one page for the Claude Code, Codex and Cursor sessions on this machine: what each is doing, where it
+is (its Zellij session and pane), what they say to each other. Jump to one, write to one, give it one name everywhere.
+
+  sturnus install [--from DIR]     install DIR's version (default: this one): the app, amail and its hooks, the Zellij
+                                   plugin, a user service serving http://127.0.0.1:7788 (and, with Tailscale,
+                                   https://<machine>.<tailnet>.ts.net:7443 for the owner's own devices)
+  sturnus token [--rotate]         the sign-in token every browser needs once (--rotate: a new one, all signed out)
+  sturnus upgrade [--force]        install again from the source it came from, when that is newer
+  sturnus uninstall [--purge]      take everything out again (--purge: its settings and caches too)
+  sturnus status | open | serve | version
+"""
+import base64, fcntl, functools, ipaddress, glob, hashlib, hmac, importlib.machinery, importlib.util, json, os, pty, re, secrets, shutil, signal, sqlite3, struct, subprocess, sys, termios, threading, time, urllib.error, urllib.request
+from collections import deque
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+APP = os.path.dirname(os.path.realpath(__file__))
+SHARE = os.path.expanduser('~/.local/share/sturnus')
+CONF = os.path.expanduser('~/.config/sturnus/config.json')
+CACHE = os.path.expanduser('~/.cache/sturnus')
+WASM = os.path.join(SHARE, 'zellij-jump.wasm')  # (one path for every version: Zellij's grant is by path)
+UNIT = os.path.expanduser('~/.config/systemd/user/sturnus.service')
+BIN = os.path.expanduser('~/.local/bin')
+VERSION = open(os.path.join(APP, 'VERSION')).read().strip()
+ME_NAME = 'user'  # (who the person is on amail when writing from this page)
+
+DEFAULTS = {
+    'host': '127.0.0.1', 'port': 7788, 'pane_titles': True,
+    # (what a new session runs; add your own flags here)
+    'launch': {'claude': ['claude'], 'codex': ['codex'], 'cursor': ['cursor-agent']},
+    'summarizer': {'cmd': ['claude', '-p', '--model', 'haiku', '--no-session-persistence', '--strict-mcp-config',
+                           '--setting-sources', 'project', '--disable-slash-commands', '--tools='],
+                   'api': None,  # or {"url": "https://.../v1", "model": "...", "key_env": "MY_KEY"} (OpenAI-compatible)
+                   'every_working': 90, 'every_other': 20},
+}
+
+
+def load_amail():
+    loader = importlib.machinery.SourceFileLoader('amail', os.path.join(APP, 'amail'))
+    spec = importlib.util.spec_from_loader('amail', loader)
+    m = importlib.util.module_from_spec(spec)
+    loader.exec_module(m)
+    return m
+
+
+A = load_amail()
+
+
+def config():
+    c = json.loads(json.dumps(DEFAULTS))
+    try:
+        with open(CONF) as f:
+            for k, v in json.load(f).items():
+                if isinstance(v, dict) and isinstance(c.get(k), dict):
+                    c[k].update(v)
+                else:
+                    c[k] = v
+    except (OSError, ValueError):
+        pass
+    return c
+
+
+def run(argv, timeout=10, **kw):
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, **kw)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return subprocess.CompletedProcess(argv, 1, '', str(e))
+
+
+# ---------- processes and Zellij ----------
+
+BOOT = next(float(l.split()[1]) for l in open('/proc/stat') if l.startswith('btime'))
+TICK = os.sysconf('SC_CLK_TCK')
+
+
+def procs():
+    out = []
+    for p in os.listdir('/proc'):
+        if not p.isdigit():
+            continue
+        try:
+            with open(f'/proc/{p}/comm') as f:
+                comm = f.read().strip()
+            if comm not in ('claude', 'codex', 'zellij', 'cursor-agent', 'agent', 'node', 'MainThread'):
+                continue
+            with open(f'/proc/{p}/cmdline', 'rb') as f:
+                args = [a.decode('utf-8', 'replace') for a in f.read().split(b'\0') if a]
+            with open(f'/proc/{p}/stat') as f:
+                start = BOOT + int(f.read().rsplit(')', 1)[1].split()[19]) / TICK
+            out.append({'pid': int(p), 'comm': comm, 'args': args, 'start': start})
+        except OSError:
+            continue
+    return out
+
+
+# A group is a Zellij session (its name) or a tmux session ("tmux:<name>"); an agent's place is a pane in it:
+# {'mux': 'zellij' | 'tmux', 'session': <group>, 'pane': <id>, 'sock': <tmux server socket>}.
+
+def environ(pid):
+    try:
+        with open(f'/proc/{pid}/environ', 'rb') as f:
+            return dict(x.decode('utf-8', 'replace').split('=', 1) for x in f.read().split(b'\0') if b'=' in x)
+    except OSError:
+        return {}
+
+
+def place_of(pid):
+    """Where a process runs: the innermost multiplexer's pane (tmux started in a Zellij pane is tmux's)."""
+    env = environ(pid)
+    if env.get('TMUX') and env.get('TMUX_PANE'):
+        return TMUX.place(env['TMUX'].split(',')[0], env['TMUX_PANE'])
+    if env.get('ZELLIJ_PANE_ID'):
+        return {'mux': 'zellij', 'session': env.get('ZELLIJ_SESSION_NAME', ''), 'pane': env['ZELLIJ_PANE_ID']}
+    return None
+
+
+def place_from(e):
+    """The place a hook recorded (amail's board): tmux by socket and pane, Zellij by session and pane."""
+    if e.get('tmux'):
+        return TMUX.place(e['tmux'].get('sock'), e['tmux'].get('pane'))
+    z = e.get('zellij')
+    return {'mux': 'zellij', **z} if z else None
+
+
+WEB_TMUX = 'deck-web-'  # (the browser's own tmux sessions, grouped with an agent's: not groups of their own)
+
+
+class Tmux:
+    """tmux: a session is a group, a pane (%N) an agent's place; terminals attached are its clients."""
+
+    def __init__(self):
+        self.socks, self.cache = set(), {}
+
+    @staticmethod
+    def tm(sock, *args, timeout=5):
+        return run(['tmux', '-S', sock, *args], timeout=timeout)
+
+    def sockets(self):
+        default = os.path.join(os.environ.get('TMUX_TMPDIR') or '/tmp', f'tmux-{os.getuid()}', 'default')
+        return sorted(x for x in self.socks | {default} if os.path.exists(x))
+
+    def names(self, sock):  # (pane -> session, read once every couple of seconds per server)
+        c = self.cache.get(sock)
+        if not c or time.time() - c[0] > 2:
+            r = self.tm(sock, 'list-panes', '-a', '-F', '#{pane_id}\t#{session_name}')
+            c = self.cache[sock] = (time.time(), dict(l.split('\t', 1) for l in r.stdout.splitlines() if '\t' in l and not l.split('\t', 1)[1].startswith(WEB_TMUX)))
+        return c[1]
+
+    def place(self, sock, pane):
+        if not sock or not pane:
+            return None
+        self.socks.add(sock)
+        name = self.names(sock).get(pane)
+        return name and {'mux': 'tmux', 'session': f'tmux:{name}', 'pane': pane, 'sock': sock}
+
+    def sessions(self):
+        out = []
+        for sock in self.sockets():
+            for l in self.tm(sock, 'list-sessions', '-F', '#{session_name}').stdout.splitlines():
+                if l.strip() and not l.startswith(WEB_TMUX):
+                    out.append((f'tmux:{l.strip()}', sock))
+        return out
+
+    def clients(self):
+        out = []
+        for sock in self.sockets():
+            for l in self.tm(sock, 'list-clients', '-F', '#{client_tty}\t#{session_name}\t#{client_pid}').stdout.splitlines():
+                tty, name, pid = (l.split('\t') + ['', '', ''])[:3]
+                if tty and not name.startswith(WEB_TMUX) and not environ(pid).get('STURNUS_TERM'):
+                    out.append({'tty': tty, 'session': f'tmux:{name}', 'pid': int(pid or 0), 'sock': sock})
+        return out
+
+    def focus(self, loc, via=None):
+        sock, pane, name = loc['sock'], loc['pane'], loc['session'][5:]
+        clients = [c for c in self.clients() if c['sock'] == sock]
+        if not clients:
+            return False, f'没有终端连着 tmux。在终端里运行：tmux attach -t {name}'
+        c = next((c for c in clients if c['pid'] == via), None) or next((c for c in clients if c['session'] == loc['session']), clients[0])
+        for args in (['select-window', '-t', pane], ['select-pane', '-t', pane], ['switch-client', '-c', c['tty'], '-t', pane]):
+            r = self.tm(sock, *args)
+            if r.returncode != 0:
+                return False, f'切换失败：{(r.stderr or r.stdout).strip()[:200]}'
+        return True, f'已把 {c["tty"]} 上的 tmux 切到 {name} 的这个窗格'
+
+    def title(self, loc, text):
+        return self.tm(loc['sock'], 'select-pane', '-t', loc['pane'], '-T', text).returncode == 0
+
+    def type(self, loc, text, enter):
+        ok = not text or self.tm(loc['sock'], 'send-keys', '-t', loc['pane'], '-l', '--', text).returncode == 0
+        if ok and enter:
+            time.sleep(.15)  # (a TUI takes pasted text, then the key)
+            ok = self.tm(loc['sock'], 'send-keys', '-t', loc['pane'], 'Enter').returncode == 0
+        return ok
+
+    def new(self, name, tab, cwd, env, argv):
+        """A window running argv in session name (made when new); returns (ok, what was made or why not)."""
+        sock = next(iter(self.sockets()), None) or os.path.join(os.environ.get('TMUX_TMPDIR') or '/tmp', f'tmux-{os.getuid()}', 'default')
+        envs = [x for kv in env for x in ('-e', kv)]
+        have = any(k == f'tmux:{name}' for k, _ in self.sessions())
+        r = self.tm(sock, *(['new-window', '-t', f'={name}:'] if have else ['new-session', '-d', '-s', name]), '-n', tab, '-c', cwd, *envs, '--', *argv, timeout=10)
+        self.cache.pop(sock, None)
+        return r.returncode == 0, ('' if have else f'新建了 tmux 组 {name}，') if r.returncode == 0 else (r.stderr or r.stdout).strip()[:200]
+
+
+TMUX = Tmux()
+
+
+def env_of(pid, key):
+    try:
+        with open(f'/proc/{pid}/environ', 'rb') as f:
+            for x in f.read().split(b'\0'):
+                if x.startswith(key.encode() + b'='):
+                    return x.split(b'=', 1)[1].decode()
+    except OSError:
+        pass
+    return None
+
+
+def cwd_of(pid):
+    try:
+        return os.readlink(f'/proc/{pid}/cwd')
+    except OSError:
+        return None
+
+
+def zellij_clients(ps):
+    """The terminals attached to a Zellij session ('zellij a NAME' / 'zellij attach NAME'), newest first."""
+    out = []
+    for p in ps:
+        a = p['args']
+        if p['comm'] == 'zellij' and len(a) >= 3 and a[1] in ('a', 'attach') and not a[2].startswith('-') and not environ(p['pid']).get('STURNUS_TERM'):
+            via = 'local'
+            for pid, name in A.ancestors(p['pid']):
+                if name == 'sshd':
+                    via = 'ssh'
+                    break
+            out.append({'pid': p['pid'], 'session': a[2], 'via': via, 'start': p['start']})
+    return sorted(out, key=lambda c: -c['start'])
+
+
+def zellij_sessions():
+    r = run(['zellij', 'list-sessions', '-n'], timeout=5)
+    return [l.split()[0] for l in r.stdout.splitlines() if l.strip() and 'EXITED' not in l] if r.returncode == 0 else []
+
+
+def zj(session, *args, timeout=5):
+    return run(['zellij', '--session', session, *args], timeout=timeout)
+
+
+def focused(session):
+    """Where the session's first client stands: the one its command line moves."""
+    r = zj(session, 'action', 'list-clients')
+    return set(re.findall(r'^\d+\s+terminal_(\d+)', r.stdout, re.M)[:1])
+
+
+def focus_in(session, pane):
+    """Bring a pane of a session forward in the terminals attached to it: the command line has no focus-by-id, so
+    walk the tabs and their panes until the attached client stands on it. ponytail: a walk, O(panes) calls."""
+    pane = str(pane)
+    if pane in focused(session):
+        return True
+    tabs = len([l for l in zj(session, 'action', 'query-tab-names').stdout.splitlines() if l.strip()]) or 1
+    for t in range(1, tabs + 1):
+        zj(session, 'action', 'go-to-tab', str(t))
+        seen = set()
+        for _ in range(24):
+            f = focused(session)
+            if pane in f:
+                return True
+            key = ','.join(sorted(f))
+            if key in seen:
+                break
+            seen.add(key)
+            zj(session, 'action', 'focus-next-pane')
+    return False
+
+
+NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,40}')
+
+
+def kdl(s):
+    return '"' + str(s).replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n') + '"'
+
+
+def marked(marker):
+    """The place of the process started with STURNUS_NEW=marker, once it runs."""
+    want = f'STURNUS_NEW={marker}'.encode()
+    for p in os.listdir('/proc'):
+        if not p.isdigit():
+            continue
+        try:
+            with open(f'/proc/{p}/environ', 'rb') as f:
+                env = f.read()
+        except OSError:
+            continue
+        if want in env.split(b'\0'):
+            loc = place_of(int(p))
+            if loc:
+                return loc
+    return None
+
+
+@functools.cache
+def plugin_v():
+    # (a configuration per build, not per version: Zellij keeps a loaded plugin running, so a new build needs its own
+    # instance, and each new instance may ask for permission in the person's terminal)
+    try:
+        return hashlib.sha256(open(WASM, 'rb').read()).hexdigest()[:10]
+    except OSError:
+        return VERSION
+
+
+def clients_of(session):
+    return re.findall(r'^(\d+)\s', zj(session, 'action', 'list-clients').stdout, re.M)
+
+
+def plugin(session, text, client=None):
+    # (it may type into panes and share the session on the web, which the person allows once per Zellij server;
+    # Zellij hands a pipe to the plugin's instance in every client, so one client's is named to do it: by default the first)
+    client = client or next(iter(clients_of(session)), None)
+    said = f'@{client} {text}' if client else text
+    for _ in range(2):  # (an instance just launched may be another client's: by then each client has one)
+        # (-s: a new instance compiles this build, not Zellij's cached copy of the same path)
+        r = zj(session, 'action', 'pipe', '-s', '--plugin', f'file:{WASM}', '--plugin-configuration', f'v={plugin_v()}', '--', said, timeout=8)
+        if r.stdout.strip():
+            return r
+    return r
+
+
+def ask_grant(session):
+    """Show the plugin in a session's terminal, so the person can allow it (Zellij's own prompt); the one already
+    asking is brought forward rather than another opened. It hides itself once answered."""
+    return zj(session, 'action', 'launch-or-focus-plugin', '--floating', '--configuration', f'v={plugin_v()}', f'file:{WASM}')
+
+
+def in_view(loc):
+    """Whether a terminal (the person's, or the page's) shows this pane now."""
+    if loc['mux'] == 'tmux':
+        return loc['pane'] in TMUX.tm(loc['sock'], 'list-clients', '-F', '#{pane_id}').stdout.split()
+    return str(loc['pane']) in re.findall(r'^\d+\s+terminal_(\d+)', zj(loc['session'], 'action', 'list-clients').stdout, re.M)
+
+
+TERMS = {'gnome-terminal-server': 'GNOME 终端', 'kgx': 'GNOME Console', 'ptyxis-agent': 'Ptyxis', 'konsole': 'Konsole', 'xterm': 'xterm',
+         'alacritty': 'Alacritty', 'kitty': 'kitty', 'wezterm-gui': 'WezTerm', 'foot': 'foot', 'terminator': 'Terminator', 'tilix': 'Tilix',
+         'xfce4-terminal': 'Xfce 终端', 'mate-terminal': 'MATE 终端', 'urxvt': 'urxvt', 'st': 'st', 'ghostty': 'Ghostty'}
+
+
+def origin_of(pid):
+    """How a session outside Zellij and tmux was started, in words: what stands above its process."""
+    chain = A.ancestors(pid)[1:] if pid else []
+    for p, comm in chain:
+        try:
+            exe = os.readlink(f'/proc/{p}/exe').lower()
+        except OSError:
+            exe = ''
+        if comm in ('sshd', 'sshd-session'):
+            return 'ssh 登录的终端'
+        if comm in TERMS or comm.startswith('gnome-terminal'):
+            return f'终端窗口（{TERMS.get(comm, comm)}）'
+        if comm.lower() == 'screen':
+            return 'screen 会话'
+        if comm == 'code' or exe.endswith('/code'):
+            return 'VS Code 的终端'
+        if comm == 'cursor' or (exe.endswith('/cursor') and 'cursor-agent' not in exe):
+            return 'Cursor 编辑器的终端'
+        if comm == 'ChatGPT' or '/chatgpt/' in exe:
+            return 'Codex 桌面应用'
+        if comm == 'cron':
+            return 'cron 定时任务'
+        if comm == 'systemd':
+            return '后台服务（systemd）'
+    first = next((c for _, c in chain if c not in ('bash', 'zsh', 'sh', 'fish', 'dash', 'env', 'sudo', 'timeout', 'nohup', 'setsid')), None)
+    return f'由 {first} 启动' if first else '来源不明'
+
+
+def go_to(loc, via=None):
+    """Bring a terminal to an agent's pane."""
+    if not loc:
+        return False, '这个会话不在 Zellij 或 tmux 里'
+    return TMUX.focus(loc, via) if loc.get('mux') == 'tmux' else jump(loc, via)
+
+
+def jump(loc, via=None):  # (Zellij)
+    target, pane = loc['session'], str(loc['pane'])
+    clients = zellij_clients(procs())
+    if any(c['session'] == target for c in clients):
+        ok = focus_in(target, pane)
+        return ok, (f'已在 {target} 里切到这个窗格' if ok else f'没在 {target} 里找到窗格 {pane}')
+    if not clients:
+        return False, f'没有终端连着 Zellij。在终端里运行：zellij attach {target}'
+    src = next((c for c in clients if c['pid'] == via), clients[0])
+    r = plugin(src['session'], f'switch {target} {pane}')
+    if r.returncode == 0 and 'ok' in r.stdout:
+        return True, f'已把连着 {src["session"]} 的终端（{src["via"]}）切到 {target}'
+    return False, f'切换失败：{(r.stderr or r.stdout).strip()[:200]}'
+
+
+# ---------- transcripts ----------
+
+_transcripts = {}
+
+
+def transcript_of(s):
+    if s.get('transcript') and os.path.exists(s['transcript']):
+        return s['transcript']
+    key = (s['kind'], s.get('session'))
+    if key in _transcripts and os.path.exists(_transcripts[key]):
+        return _transcripts[key]
+    found = None
+    if s['kind'] == 'claude' and s.get('session'):
+        found = next(iter(glob.glob(os.path.expanduser(f'~/.claude/projects/*/{s["session"]}.jsonl'))), None)
+    elif s['kind'] == 'codex' and s.get('session'):
+        found = next(iter(sorted(glob.glob(os.path.expanduser(f'~/.codex/sessions/*/*/*/rollout-*-{s["session"]}.jsonl')))), None)
+    if found:
+        _transcripts[key] = found
+    return found
+
+
+def codex_meta(path, _seen={}):
+    if path not in _seen:
+        try:
+            with open(path) as f:
+                _seen[path] = json.loads(f.readline()).get('payload') or {}
+        except (OSError, ValueError):
+            _seen[path] = {}
+    return _seen[path]
+
+
+def codex_launch_thread(start, cwd):
+    """The thread a Codex window began with, for a window its hooks never saw (opened before they were installed):
+    Codex starts one as the window opens, in its folder. ponytail: a later /new in that window is not followed."""
+    best = None
+    for f in glob.glob(os.path.expanduser(f'~/.codex/sessions/{time.strftime("%Y/%m/%d", time.localtime(start))}/rollout-*.jsonl')):
+        m = re.search(r'rollout-(\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d)-(.+)\.jsonl$', f)
+        gap = m and time.mktime(time.strptime(m.group(1), '%Y-%m-%dT%H-%M-%S')) - start
+        if m and -5 <= gap <= 120 and (not best or abs(gap) < best[0]):
+            meta = codex_meta(f)
+            if meta.get('cwd') == cwd and isinstance(meta.get('source'), str):  # (a sub-agent's source is not a word)
+                best = (abs(gap), f, m.group(2))
+    return best and best[1:]
+
+
+def cursor_chat(pid):
+    """The chat a Cursor window shows: the store it holds open."""
+    for fd in glob.glob(f'/proc/{pid}/fd/*'):
+        try:
+            p = os.readlink(fd)
+        except OSError:
+            continue
+        if p.endswith('/store.db') and '/.cursor/chats/' in p:
+            return p
+    return None
+
+
+def cursor_messages(path):
+    """A Cursor chat's messages {role, content}, in order (its latest root lists them by id); a person's words
+    without the wrappers Cursor puts around them, and what Cursor itself tells the agent left out."""
+    out = []
+    try:
+        db = sqlite3.connect(f'file:{path}?mode=ro', uri=True)
+        try:
+            meta = json.loads(bytes.fromhex(db.execute("select value from meta where key='0'").fetchone()[0]))
+            root = db.execute('select data from blobs where id=?', (meta['latestRootBlobId'],)).fetchone()[0]
+            for m in re.finditer(rb'\x0a\x20', root):  # ponytail: ids read as 32-byte fields, not a protobuf parse
+                r = db.execute('select data from blobs where id=?', (root[m.end():m.end() + 32].hex(),)).fetchone()
+                if r and r[0][:1] == b'{':
+                    out.append(json.loads(r[0]))
+        finally:
+            db.close()
+    except (sqlite3.Error, TypeError, ValueError, KeyError):
+        return []
+    for d in out:
+        if d.get('role') == 'user':
+            t, _ = text_of(d.get('content'))
+            q = re.search(r'<user_query>\s*(.*?)\s*</user_query>', t, re.S)
+            d['content'] = q.group(1) if q else ''
+    return out
+
+
+_said = {}
+
+
+def last_said(path, at):
+    """What a conversation's agent said last (read again only when the conversation moved)."""
+    if not path:
+        return None
+    if _said.get(path, (None,))[0] != at:
+        said = next((i['text'] for i in reversed(transcript_items(path, 60)) if i['who'] == 'assistant'), None)
+        _said[path] = (at, said and said[:1500])
+    return _said[path][1]
+
+
+def lines_of(path, size=400000):
+    if path.endswith('/store.db'):
+        return [json.dumps(d) for d in cursor_messages(path)]
+    return tail_lines(path, size)
+
+
+def tail_lines(path, size=400000):
+    try:
+        with open(path, 'rb') as f:
+            f.seek(max(0, os.path.getsize(path) - size))
+            data = f.read().decode('utf-8', 'replace')
+    except OSError:
+        return []
+    lines = data.splitlines()
+    return lines[1:] if len(lines) > 1 else lines
+
+
+def text_of(content):
+    if isinstance(content, str):
+        return content, []
+    texts, tools = [], []
+    for x in content or []:
+        if not isinstance(x, dict):
+            continue
+        if x.get('type') in ('text', 'input_text', 'output_text') and x.get('text'):
+            texts.append(x['text'])
+        elif x.get('type') in ('tool_use', 'tool-call'):  # (Claude Code, Cursor)
+            i = x.get('input') or x.get('args') or {}
+            i = i if isinstance(i, dict) else {}
+            tools.append(f'{x.get("name") or x.get("toolName")}({str(i.get("command") or i.get("file_path") or i.get("path") or i.get("description") or "")[:120]})')
+    return '\n'.join(texts), tools
+
+
+def transcript_items(path, limit=120):
+    """A conversation's end as items {who: user|assistant|tool, text, at}, oldest first, for reading on the page."""
+    out = []
+    for line in lines_of(path, 1500000):
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(d, dict):
+            continue
+        at = d.get('timestamp')
+        if d.get('type') in ('user', 'assistant') and isinstance(d.get('message'), dict):
+            m = d['message']
+            c = m.get('content')
+            if m.get('role') == 'user' and isinstance(c, list) and all(isinstance(x, dict) and x.get('type') == 'tool_result' for x in c):
+                continue
+            t, tools = text_of(c)
+            if m.get('role') == 'user' and re.match(r'\s*<(task-notification|system-reminder|local-command|command-)', t):
+                note = re.search(r'<summary>(.*?)</summary>', t, re.S)  # (the harness speaking, not the person: one line)
+                if note:
+                    out.append({'who': 'tool', 'text': f'后台通知：{" ".join(note.group(1).split())[:200]}', 'at': at})
+                continue
+            if t.strip():
+                out.append({'who': m.get('role'), 'text': t.strip()[:4000], 'at': at})
+            for tool in tools:
+                out.append({'who': 'tool', 'text': tool, 'at': at})
+        elif d.get('type') == 'response_item' and isinstance(d.get('payload'), dict):
+            p = d['payload']
+            if p.get('type') == 'message' and p.get('role') in ('user', 'assistant'):
+                t, _ = text_of(p.get('content'))
+                if t.strip() and not t.lstrip().startswith(('<environment_context', '<user_instructions', '# AGENTS.md', '<permissions')):
+                    out.append({'who': p['role'], 'text': t.strip()[:4000], 'at': at})
+            elif p.get('type') in ('function_call', 'custom_tool_call'):
+                out.append({'who': 'tool', 'text': f'{p.get("name")}({str(p.get("arguments") or p.get("input") or "")[:160]})', 'at': at})
+        elif d.get('role') in ('user', 'assistant'):
+            t, tools = text_of(d.get('content') or d.get('message'))
+            if t.strip():
+                out.append({'who': d['role'], 'text': t.strip()[:4000], 'at': at})
+            for tool in tools:
+                out.append({'who': 'tool', 'text': tool, 'at': at})
+    return out[-limit:]
+
+
+def items_of(lines):
+    """A conversation's lines as (who, what), oldest first."""
+    items = []
+    for line in lines:
+        try:
+            d = json.loads(line)
+        except ValueError:
+            if line.strip():
+                items.append(('', line.strip()[:400]))  # (a plain-text transcript)
+            continue
+        if not isinstance(d, dict):
+            continue
+        if d.get('type') in ('user', 'assistant') and isinstance(d.get('message'), dict):  # Claude Code
+            m = d['message']
+            t, tools = text_of(m.get('content'))
+            if m.get('role') == 'user' and isinstance(m.get('content'), list) and all(isinstance(x, dict) and x.get('type') == 'tool_result' for x in m['content']):
+                continue
+            if t.strip():
+                items.append(('用户' if m.get('role') == 'user' else '助手', t.strip()))
+            for tool in tools:
+                items.append(('工具', tool))
+        elif d.get('type') == 'response_item' and isinstance(d.get('payload'), dict):  # Codex
+            p = d['payload']
+            if p.get('type') == 'message' and p.get('role') in ('user', 'assistant'):
+                t, _ = text_of(p.get('content'))
+                if t.strip() and not t.lstrip().startswith(('<environment_context', '<user_instructions', '# AGENTS.md')):
+                    items.append(('用户' if p['role'] == 'user' else '助手', t.strip()))
+            elif p.get('type') in ('function_call', 'custom_tool_call'):
+                items.append(('工具', f'{p.get("name")}({str(p.get("arguments") or p.get("input") or "")[:120]})'))
+        elif d.get('role') in ('user', 'assistant'):  # (Cursor and others)
+            t, tools = text_of(d.get('content') or d.get('message'))
+            if t.strip():
+                items.append(('用户' if d['role'] == 'user' else '助手', t.strip()))
+    return items
+
+
+def recent(path, budget=7000):
+    """The end of a conversation as lines (who: what), oldest first, within budget characters."""
+    out, n = [], 0
+    for who, t in reversed(items_of(lines_of(path))):
+        t = t if len(t) < 1500 else t[:700] + ' … ' + t[-700:]
+        line = f'{who}: {t}' if who else t
+        if n + len(line) > budget:
+            break
+        out.append(line)
+        n += len(line)
+    return list(reversed(out))
+
+
+def opening(path, budget=2500):
+    """How a conversation began: the person's first asks, within budget characters."""
+    if path.endswith('/store.db'):
+        lines = lines_of(path)
+    else:
+        try:
+            with open(path, 'rb') as f:
+                lines = f.read(600000).decode('utf-8', 'replace').splitlines()[:-1]
+        except OSError:
+            return []
+    out, n = [], 0
+    for who, t in items_of(lines):
+        if who != '用户' or t.lstrip().startswith('<'):
+            continue
+        line = f'用户: {t[:900]}'
+        if n + len(line) > budget or len(out) == 6:
+            break
+        out.append(line)
+        n += len(line)
+    return out
+
+
+# ---------- models: one for summaries, one for helping the person (drafts) ----------
+
+SECRETS = os.path.join(os.path.dirname(CONF), 'secrets.json')
+MODEL_DEFAULT = {'summary': {'source': 'claude', 'model': 'haiku'}, 'assist': {'source': 'claude', 'model': 'sonnet'}}
+SOURCES = {'claude': 'Claude Code', 'codex': 'Codex', 'pi': 'pi', 'api': 'OpenAI 兼容接口'}
+
+
+def model_for(cfg, role):
+    m = dict(MODEL_DEFAULT[role])
+    m.update((cfg.get('models') or {}).get(role) or {})
+    old = (cfg.get('summarizer') or {}).get('api')
+    if role == 'summary' and old and not (cfg.get('models') or {}).get('summary'):  # (a setting from before the models page)
+        m = {'source': 'api', 'model': old.get('model'), 'url': old.get('url'), 'key_env': old.get('key_env')}
+    return m
+
+
+def secret(role):
+    return (A.get(SECRETS, {}) or {}).get(role, '')
+
+
+def put_secret(role, key):
+    os.makedirs(os.path.dirname(SECRETS), exist_ok=True)
+    data = A.get(SECRETS, {}) or {}
+    data[role] = key
+    write_private(SECRETS, data)
+
+
+# ---------- voice: a recording to text, by the service the person chose ----------
+
+STT = {'soniox': 'Soniox', 'elevenlabs': 'ElevenLabs', 'assemblyai': 'AssemblyAI', 'openai': 'OpenAI 兼容接口'}
+STT_MODEL = {'soniox': 'stt-async-v3', 'elevenlabs': 'scribe_v1', 'assemblyai': 'universal', 'openai': 'gpt-4o-mini-transcribe'}
+
+
+def voice_cfg(cfg):
+    v = {'on': False, 'provider': 'openai', 'model': '', 'url': '', 'lang': ''}
+    v.update(cfg.get('voice') or {})
+    return v
+
+
+def voice_key(p):
+    return secret(f'voice:{p}') or (secret('voice') if p == (A.get(CONF, {}) or {}).get('voice', {}).get('provider') else '')  # (one key from before: its service's)
+
+
+def voice_label(v):
+    return f'{STT[v["provider"]]} · {v.get("model") or STT_MODEL[v["provider"]]}'
+
+
+def http_json(url, data=None, headers=None, method=None, timeout=90):
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, data=data, headers=headers or {}, method=method), timeout=timeout) as r:
+            return json.loads(r.read() or b'{}')
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f'{e.code}: {e.read().decode("utf-8", "replace")[:240]}')
+
+
+def multipart(fields, audio, ctype):
+    b = uuid4hex()
+    ext = 'mp4' if 'mp4' in ctype else 'ogg' if 'ogg' in ctype else 'wav' if 'wav' in ctype else 'webm'
+    out = b''.join(f'--{b}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode() for k, v in fields)
+    out += f'--{b}\r\nContent-Disposition: form-data; name="file"; filename="voice.{ext}"\r\nContent-Type: {ctype}\r\n\r\n'.encode() + audio + f'\r\n--{b}--\r\n'.encode()
+    return out, f'multipart/form-data; boundary={b}'
+
+
+def uuid4hex():
+    return os.urandom(12).hex()
+
+
+def transcribe(audio, ctype, v, key):
+    """Speech to text by the chosen service: Soniox, ElevenLabs, AssemblyAI, or any OpenAI-compatible endpoint."""
+    p, lang = v['provider'], v.get('lang') or ''
+    model = v.get('model') or STT_MODEL[p]
+    if not key:
+        raise RuntimeError('还没填 API key')
+    if p == 'openai':
+        body, ct = multipart([('model', model)] + ([('language', lang)] if lang else []), audio, ctype)
+        url = (v.get('url') or 'https://api.openai.com/v1').rstrip('/') + '/audio/transcriptions'
+        return http_json(url, body, {'Authorization': f'Bearer {key}', 'Content-Type': ct}).get('text', '')
+    if p == 'elevenlabs':
+        body, ct = multipart([('model_id', model)] + ([('language_code', lang)] if lang else []), audio, ctype)
+        return http_json('https://api.elevenlabs.io/v1/speech-to-text', body, {'xi-api-key': key, 'Content-Type': ct}).get('text', '')
+    if p == 'assemblyai':
+        h, base = {'authorization': key}, 'https://api.assemblyai.com/v2'
+        up = http_json(f'{base}/upload', audio, {**h, 'Content-Type': 'application/octet-stream'})['upload_url']
+        req = {'audio_url': up, 'speech_model': model, **({'language_code': lang} if lang else {'language_detection': True})}
+        t = http_json(f'{base}/transcript', json.dumps(req).encode(), {**h, 'Content-Type': 'application/json'})
+        for _ in range(150):
+            time.sleep(.6)
+            r = http_json(f'{base}/transcript/{t["id"]}', headers=h)
+            if r.get('status') == 'completed':
+                return r.get('text') or ''
+            if r.get('status') == 'error':
+                raise RuntimeError(r.get('error') or 'AssemblyAI 出错')
+        raise RuntimeError('AssemblyAI 太久没转完')
+    if p == 'soniox':
+        h, base = {'Authorization': f'Bearer {key}'}, 'https://api.soniox.com/v1'
+        body, ct = multipart([], audio, ctype)
+        f = http_json(f'{base}/files', body, {**h, 'Content-Type': ct})
+        try:
+            req = {'file_id': f['id'], 'model': model, 'language_hints': [lang] if lang else ['zh', 'en']}
+            t = http_json(f'{base}/transcriptions', json.dumps(req).encode(), {**h, 'Content-Type': 'application/json'})
+            try:
+                for _ in range(150):
+                    time.sleep(.6)
+                    r = http_json(f'{base}/transcriptions/{t["id"]}', headers=h)
+                    if r.get('status') == 'completed':
+                        return http_json(f'{base}/transcriptions/{t["id"]}/transcript', headers=h).get('text', '')
+                    if r.get('status') == 'error':
+                        raise RuntimeError(r.get('error_message') or 'Soniox 出错')
+                raise RuntimeError('Soniox 太久没转完')
+            finally:
+                try:
+                    http_json(f'{base}/transcriptions/{t["id"]}', headers=h, method='DELETE')
+                except Exception:
+                    pass
+        finally:
+            try:
+                http_json(f'{base}/files/{f["id"]}', headers=h, method='DELETE')  # (nothing of the person's voice stays there)
+            except Exception:
+                pass
+    raise RuntimeError('选一个语音服务')
+
+
+def silence():
+    """A second of silence (16 kHz WAV): what the test sends."""
+    n = 16000 * 2
+    return b'RIFF' + struct.pack('<I', 36 + n) + b'WAVEfmt ' + struct.pack('<IHHIIHH', 16, 1, 1, 16000, 32000, 2, 16) + b'data' + struct.pack('<I', n) + bytes(n)
+
+
+def model_label(cfg, role='summary'):
+    m = model_for(cfg, role)
+    return f'{m.get("model") or "默认模型"} · {SOURCES.get(m["source"], m["source"])}'
+
+
+def ask_model(prompt, cfg, role='summary', m=None, key=None):
+    m = m or model_for(cfg, role)
+    env = {**os.environ, 'AMAIL_SKIP': '1'}
+    os.makedirs(CACHE, exist_ok=True)
+    if m['source'] == 'api':
+        key = key if key is not None else (secret(role) or os.environ.get(m.get('key_env') or '', ''))
+        req = urllib.request.Request(str(m.get('url') or '').rstrip('/') + '/chat/completions', method='POST',
+                                     data=json.dumps({'model': m.get('model'), 'messages': [{'role': 'user', 'content': prompt}], 'temperature': 0.2}).encode(),
+                                     headers={'Content-Type': 'application/json', **({'Authorization': f'Bearer {key}'} if key else {})})
+        with urllib.request.urlopen(req, timeout=90) as r:
+            return json.loads(r.read())['choices'][0]['message']['content']
+    if m['source'] == 'codex':
+        out = os.path.join(CACHE, f'codex-{os.getpid()}-{threading.get_ident()}.txt')
+        argv = ['codex', 'exec', '--ephemeral', '--skip-git-repo-check', '-s', 'read-only', '--color', 'never', '-o', out]
+        if m.get('model'):
+            argv += ['-m', m['model']]
+        r = subprocess.run(argv + [prompt], capture_output=True, text=True, timeout=180, cwd=CACHE, env=env, stdin=subprocess.DEVNULL)
+        try:
+            text = open(out).read()
+        except OSError:
+            text = ''
+        finally:
+            try:
+                os.remove(out)
+            except OSError:
+                pass
+        if not text.strip():
+            raise RuntimeError((r.stderr or r.stdout).strip()[-200:] or f'exit {r.returncode}')
+        return text
+    if m['source'] == 'pi':
+        argv = ['pi', '-p', '--no-session'] + (['--model', m['model']] if m.get('model') else [])
+        r = subprocess.run(argv + [prompt], capture_output=True, text=True, timeout=180, cwd=CACHE, env=env, stdin=subprocess.DEVNULL)
+        if r.returncode != 0 or not r.stdout.strip():
+            raise RuntimeError(' '.join((r.stderr or r.stdout).split())[:240] or f'exit {r.returncode}')
+        return r.stdout
+    argv = ['claude', '-p', '--model', m.get('model') or 'haiku', '--no-session-persistence', '--strict-mcp-config',
+            '--setting-sources', 'project', '--disable-slash-commands', '--tools=']
+    r = subprocess.run(argv, input=prompt, capture_output=True, text=True, timeout=120, cwd=CACHE, env=env)
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or r.stdout).strip()[:200] or f'exit {r.returncode}')
+    return r.stdout
+
+
+# ---------- summaries and decisions ----------
+
+PROMPT = '''你在为一位开发者的「会话总览」写状态。下面是一个 AI 编码会话（{kind}，名字 {name}，目录 {cwd}）最近的对话片段，最后几行最新。
+只输出一行 JSON，不要别的：{{"title": "...", "summary": "...", "status": "...", "needs_you": "...", "decisions": [{{"what": "...", "by": "..."}}]}}
+- title：不超过 14 个汉字的任务名，像给这件事起的标题（例如「发布 faw 0.8.2」「复现 Mantis 1349608」）。
+- summary：不超过 40 个汉字。说清做到哪一步、下一步是什么。要具体（带上分支、功能、版本、文件等名字），不要空话。
+- status：working（正在干活）、waiting_user（在等用户回答或拍板）、review（做完了，等用户检查结果）、blocked（卡住或出错）、done（这件事做完了，不用再看）、idle（没有任务）之一。
+- needs_you：只有当它在等用户决定、批准、回答、检查结果或亲手做某件事时，才用一句话说清要用户做什么、怎么做；否则必须是空字符串（不要写「无需…」「暂无」之类）。
+- decisions：片段里已经做出的决定（方案取舍、批准、范围、放弃什么），每条不超过 40 个汉字；by 是 user（用户定的）或 agent（它自己定的）。没有就给空列表。
+
+片段：
+{text}
+'''
+NONE = re.compile(r'^(无需|不需要|暂无|没有需要|无$|无。|none|n/?a)', re.I)
+
+
+class Summaries:
+    def __init__(self):
+        self.file = os.path.join(CACHE, 'summaries.json')
+        self.dfile = os.path.join(CACHE, 'decisions.json')
+        self.data = A.get(self.file, {}) or {}
+        self.decisions = A.get(self.dfile, []) or []
+        self.error = ''
+        self.busy = None
+
+    def get(self, sid):
+        return self.data.get(sid)
+
+    def due(self, s, cfg):
+        if s['state'] in ('gone', 'ended') and time.time() - (s.get('at') or 0) > 3600:
+            return False
+        path = transcript_of(s)
+        basis = f'{os.path.getmtime(path):.0f}' if path and os.path.exists(path) else (s.get('said') or '')[:200]
+        if not basis:
+            return False
+        cur = self.data.get(s['id'])
+        if cur and cur.get('basis') == basis and 'title' in cur:  # (one from before titles is made again once)
+            return False
+        # (anew when it changed: at most every so often while it works, soon once it stops)
+        every = cfg['summarizer']['every_working'] if s['state'] == 'working' else cfg['summarizer']['every_other']
+        if cur and time.time() - cur.get('at', 0) < every:
+            return False
+        return basis
+
+    def make(self, s, basis, cfg):
+        path = transcript_of(s)
+        lines = recent(path) if path else []
+        if not lines and s.get('said'):
+            lines = [f'助手: {s["said"]}']
+        if not lines:
+            return
+        prompt = PROMPT.format(kind=s['kind'], name=s['name'], cwd=s.get('cwd') or '?', text='\n'.join(lines))
+        self.busy = s['id']
+        try:
+            out = ask_model(prompt, cfg, 'summary')
+            m = re.search(r'\{.*\}', out, re.S)
+            if not m:  # (a model that wandered off, say into a tool call: the last summary stays)
+                raise ValueError(f'不是 JSON：{out.strip()[:80]}')
+            r = json.loads(m.group(0))
+            need = str(r.get('needs_you') or '').strip()
+            if NONE.match(need):
+                need = ''  # (a model that says "nothing needed" in words)
+            self.data[s['id']] = {'title': str(r.get('title') or '')[:24], 'summary': str(r.get('summary') or '')[:120],
+                                  'status': r.get('status') or '', 'needs_you': need[:200], 'at': time.time(), 'basis': basis}
+            self.note_decisions(s, r.get('decisions') or [])
+            self.error = ''
+            os.makedirs(CACHE, exist_ok=True)
+            A.put(self.file, self.data)
+        except Exception as e:
+            self.error = f'{type(e).__name__}: {e}'[:300]
+            self.data.setdefault(s['id'], {})['at'] = time.time()  # (do not hammer a failing model)
+        finally:
+            self.busy = None
+
+    def note_decisions(self, s, found):
+        """Keep each decision once (the same excerpt is read again on the next summary)."""
+        key = lambda t: re.sub(r'\W+', '', t).lower()
+        have = {(d['sid'], key(d['what'])) for d in self.decisions}
+        added = False
+        for d in found[:6]:
+            what = str((d or {}).get('what') or '').strip()[:80]
+            if not what or (s['id'], key(what)) in have:
+                continue
+            self.decisions.append({'sid': s['id'], 'name': s['name'], 'what': what, 'by': 'user' if (d or {}).get('by') == 'user' else 'agent', 'at': time.time()})
+            have.add((s['id'], key(what)))
+            added = True
+        if added:
+            self.decisions = self.decisions[-500:]
+            A.put(self.dfile, self.decisions)
+
+
+REPORT = '''你在给一位开发者写某个 AI 编码会话的简报（{kind}，名字 {name}，目录 {cwd}）。他同时开着很多会话，靠这份简报想起：
+这个会话为了什么、做成了什么、谁拍板了什么、现在停在哪、接下来是什么。
+
+要求：只写对话里确实发生的事，不猜；中文，短句；具体到能核对（分支、MR 号、版本号、文件、命令）；不写过程细节和工具调用。
+只输出一个 JSON 对象：
+{{"goal": "这个会话要完成什么，一句话",
+ "done": ["做成了的事，按先后，3 到 6 条"],
+ "decisions": [{{"what": "定下来的事", "by": "user 或 agent"}}],
+ "now": "现在停在哪儿，一句话",
+ "next": ["接下来要做的、或在等这位开发者的事，0 到 3 条"],
+ "refs": ["产出：MR/PR 链接、提交、版本、文档链接，0 到 6 条，原样照抄"]}}
+「决定」只收真正拍板的：开发者明确同意、选择、否决的（by 写 user），或 agent 做的、影响后面的取舍（by 写 agent）；普通步骤不算。
+
+已经记下的决定（参考、补全，别重复）：
+{known}
+
+会话开头，开发者最早的要求：
+{opening}
+
+会话最近的部分（较早的在前，中间有省略）：
+{log}'''
+
+
+def one_line(x, n):
+    return re.sub(r'\s+', ' ', str(x or '')).strip()[:n]
+
+
+def standing(s):
+    """How a session stands, in a word and in words: as the page shows it."""
+    st = s.get('status')
+    if s['state'] in ('gone', 'ended'):
+        return s['state'], 'exited'
+    if s.get('stale'):
+        return 'quiet', 'quiet for a day'
+    if s['state'] == 'waiting' or st == 'waiting_user' or (s.get('needs_you') and st not in ('blocked', 'review')):
+        return 'waiting', 'waits on the person'
+    if st == 'blocked':
+        return 'blocked', 'blocked'
+    if st == 'review':
+        return 'review', 'ready for review'
+    return ('working', 'working') if s['state'] == 'working' else ('idle', 'idle')
+
+
+class Reports:
+    """Each session's report: what it is for, what it got done, what was decided and by whom, where it stands, what is
+    next. Made by the summary model when the conversation has moved on (at most every half hour), at once when asked."""
+
+    def __init__(self):
+        self.file = os.path.join(CACHE, 'reports.json')
+        self.data = A.get(self.file, {}) or {}
+        self.asked, self.busy, self.error = set(), None, ''
+
+    @staticmethod
+    def moved(path):
+        return max((os.path.getmtime(p) for p in (path, path + '-wal') if os.path.exists(p)), default=0)
+
+    def due(self, s):
+        if s['id'] in self.asked:
+            return True
+        path = transcript_of(s)
+        cur = self.data.get(s['id'])
+        if not path or s.get('starting') or (cur and (s.get('stale') or s['state'] in ('gone', 'ended'))):
+            return False
+        return not cur or (self.moved(path) > cur['basis'] + 1 and time.time() - cur['at'] > 1800)
+
+    def make(self, s, cfg, decisions):
+        self.asked.discard(s['id'])
+        path = transcript_of(s)
+        if not path:
+            return
+        known = [f'- {d["what"]}（{"开发者" if d["by"] == "user" else "agent"}）' for d in decisions if d['sid'] == s['id']][-12:]
+        prompt = REPORT.format(kind=s['kind'], name=s['name'], cwd=s.get('cwd') or '?', known='\n'.join(known) or '（无）',
+                               opening='\n'.join(opening(path)) or '（读不到）', log='\n'.join(recent(path, 16000)))
+        self.busy = s['id']
+        try:
+            basis = self.moved(path)
+            out = ask_model(prompt, cfg, 'summary')
+            m = re.search(r'\{.*\}', out, re.S)
+            r = json.loads(m.group(0))
+            lst = lambda k, n, w: [one_line(x, w) for x in (r.get(k) or []) if one_line(x, w)][:n]
+            self.data[s['id']] = {'at': time.time(), 'basis': basis, 'name': s['name'], 'kind': s['kind'],
+                                  'group': (s.get('loc') or {}).get('session'),
+                                  'r': {'goal': one_line(r.get('goal'), 160), 'done': lst('done', 8, 200), 'now': one_line(r.get('now'), 200),
+                                        'next': lst('next', 4, 200), 'refs': lst('refs', 8, 300),
+                                        'decisions': [{'what': one_line(d.get('what'), 160), 'by': 'user' if d.get('by') == 'user' else 'agent'}
+                                                      for d in (r.get('decisions') or []) if isinstance(d, dict) and one_line(d.get('what'), 160)][:8]}}
+            self.error = ''
+            A.put(self.file, self.data)
+        except Exception as e:
+            self.error = f'{type(e).__name__}: {e}'[:300]
+            self.data.setdefault(s['id'], {'r': None, 'basis': 0, 'name': s['name'], 'kind': s['kind']})['at'] = time.time()
+        finally:
+            self.busy = None
+
+
+STARTED = time.time()
+
+
+def ago_text(t):
+    s = time.time() - t
+    return '刚才' if s < 120 else f'{int(s // 60)} 分钟前' if s < 3600 else f'{int(s // 3600)} 小时前' if s < 86400 else f'{int(s // 86400)} 天前'
+
+
+UNTIL = '''一个 AI 编码会话（{name}）在做事，另一个会话在等它：「{until}」。根据它现在的情况判断这件事是不是已经成立了。
+它现在：{label}。任务：{title}。进展：{summary}
+{report}它最后说的：{said}
+只输出一个 JSON：{{"met": true 或 false, "why": "一句话，具体到版本、MR、提交这类可核对的事"}}'''
+
+ROUTE = '''一个 AI 编码会话（{frm}）发了一条给「所有会话」的消息。下面是这台机器上其他在跑的会话。挑出这条消息真正和它有关的会话：
+同一个仓库或目录、在做相关的事、在等发消息的会话、或者消息里点了名的。和它无关的不要选。
+消息：{text}
+会话：
+{sessions}
+只输出一个 JSON：{{"to": ["名字", ...]}}'''
+
+ASSIST = '''你是开发者的「Sturnus 助手」。他在这台机器上同时开着很多 AI 编码会话（Claude Code、Codex、Cursor），分在几个组（Zellij 或 tmux 会话）里。
+下面是此刻的全貌。按它回答他的问题：找出相关的会话，说清楚情况，引用能核对的事实（版本、MR、提交、决定、时间）。不知道就说不知道，不要编。
+中文，简短，先给结论，需要时用短列表。提到某个会话时写 [[open:会话名]]（他点了就打开它）；要他看某个会话的报告写 [[report:会话名]]，要他进它的终端写 [[term:会话名]]。
+
+现在：{now}
+会话（组 · 状态 · 目录 · 最近动静）：
+{sessions}
+
+各会话报告的要点：
+{reports}
+
+最近记下的决定：
+{decisions}
+
+会话之间最近的消息：
+{talk}
+
+排队的事：
+{queue}
+
+推送锁：
+{locks}
+{detail}
+之前的对话：
+{history}
+
+他的问题：{q}'''
+
+RECOMMEND = '''一位开发者有一件事要交给 AI 编码会话去做。{scope}按每个会话负责的事（它的任务、目录、最近的进展、它定过的决定）挑最合适接手的一个：
+同一件事的延续、同一块代码、同一个仓库优先；正在等开发者决定、卡住、或一天没动静的不太适合。
+如果没有哪个会话在管这块，就只建议新开一个会话（给出目录和 agent 种类）；如果这件事是一件独立的新工作（不是谁手上那件事的延续），
+即使有可以接手的会话，也同时给出新开会话的建议，让开发者自己选。
+要做的事：{text}
+会话：
+{sessions}
+只输出一个 JSON：{{"to": "会话名，或 null", "why": "一句话", "new": null 或 {{"kind": "claude、codex 或 cursor", "cwd": "目录", "name": "英文短名，可空", "why": "一句话"}}}}'''
+
+CHECK = '''你是一位开发者的助手，替他管一个「排队」：他先写下要交给某个 AI 编码会话的事，等会话空闲了再发。现在{when}。
+请判断这件事现在还该不该发、发给谁。只输出一行 JSON：{{"verdict": "send|hold|drop", "to": "会话名", "reason": "不超过 40 字", "text": "要发的话"}}
+- send：还需要、而且现在适合交给它；text 是要发的话（可以在原话上补上必要的上下文，但别改意思）。
+- hold：先别发（比如它其实还没做完手上的事、要等别的会话的结果），说清在等什么。
+- drop：已经不需要了（已经做过、被别的决定取代、不再适用），说清为什么。
+- to：{to_rule}
+
+排队的事（{queued}写的）：
+{text}
+
+候选会话（名字 · 状态 · 在做的事 · 进展）：
+{candidates}
+
+最近的决定：
+{decisions}
+'''
+
+
+DRAFT = '''下面是一个 AI 编码会话（{name}）最近的对话片段，它在等用户：{need}
+请替用户起草一条简短、直接的回复（中文，不超过 80 字），让它能继续干活；只输出回复本身。
+
+片段：
+{text}
+'''
+
+
+# ---------- talk between sessions ----------
+
+class Talk:
+    """What the sessions said to each other: amail's mail, and Claude Code's own cross-session messages."""
+    RX = re.compile(r'<cross-session-message[^>]*?from-name="([^"]+)"[^>]*>(.*?)</cross-session-message>', re.S)
+
+    def __init__(self):
+        self.native = deque(maxlen=400)
+        self.offsets = {}
+        self.seen = set()
+
+    def scan_claude(self, name, path):
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            return
+        start = self.offsets.get(path)
+        if start is None:
+            start = max(0, size - 1500000)
+        if size <= start:
+            self.offsets[path] = size
+            return
+        with open(path, 'rb') as f:
+            f.seek(start)
+            data = f.read(size - start).decode('utf-8', 'replace')
+        cut = data.rfind('\n') + 1
+        self.offsets[path] = start + (cut if cut else 0)
+        for line in data[:cut].splitlines():
+            if 'cross-session-message' not in line:
+                continue
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            t, _ = text_of((d.get('message') or {}).get('content'))
+            for frm, body in self.RX.findall(t):
+                key = (frm, name, body[:80])
+                if key in self.seen:
+                    continue
+                self.seen.add(key)
+                at = d.get('timestamp')
+                try:
+                    at = time.mktime(time.strptime(at[:19], '%Y-%m-%dT%H:%M:%S')) - time.timezone if at else time.time()
+                except (ValueError, TypeError):
+                    at = time.time()
+                self.native.append({'key': f'c:{frm}:{name}:{at:.0f}:{len(body)}', 'from': frm, 'to': name, 'text': body.strip()[:1200], 'at': at, 'via': 'claude'})
+
+    def mail(self):
+        out = []
+        root = os.path.join(A.HOME, 'mail')
+        for f in glob.glob(os.path.join(root, '*', '*', '*.json')):
+            m = A.get(f)
+            if m:
+                out.append({'key': 'a:' + str(m.get('id') or os.path.basename(f)), 'from': m.get('from'), 'to': m.get('to'), 'text': (m.get('text') or '')[:1200], 'at': m.get('at') or 0,
+                            'via': 'amail', 'unread': os.path.basename(os.path.dirname(f)) == 'new'})
+        return out
+
+    def all(self):
+        items = self.mail() + list(self.native)
+        items.sort(key=lambda m: -(m.get('at') or 0))
+        return items[:300]
+
+
+# ---------- the deck ----------
+
+ORDER_RANK = {'waiting': 0, 'working': 1, 'idle': 2}
+CODEX_NOT_TUI = {'app-server', 'exec', 'e', 'review', 'queue', 'archive', 'unarchive', 'delete', 'mcp', 'login', 'logout',
+                 'agents', 'plugin', 'debug', 'sandbox', 'apply', 'cloud', 'features', 'completion', 'doctor', 'update', 'fork',
+                 'exec-server', 'migrate-rollouts', 'remote-control'}
+
+
+class Deck:
+    def __init__(self):
+        self.cfg = config()
+        self.sums = Summaries()
+        self.reports = Reports()
+        self.origins = {}  # (pid -> how it was started: the process tree above it does not change)
+        self.talk = Talk()
+        self.state = {'sessions': [], 'talk': [], 'groups': {}, 'locks': [], 'at': 0}
+        self.events = deque(maxlen=50)
+        self.titles = A.get(os.path.join(CACHE, 'titles.json'), {}) or {}
+        self.failed = {}
+        self.pending = {}
+        self.launched = {}  # marker -> what was started from this page, until its session shows up
+        self.qfile = os.path.join(CACHE, 'queue.json')
+        self.queue = A.get(self.qfile, []) or []
+        self._dirs, self._dirs_at = [], 0
+        self.lock = threading.Lock()
+
+    def note(self, text, ok=True):
+        self.events.appendleft({'at': time.time(), 'text': text, 'ok': ok})
+
+    def collect(self):
+        ps = procs()
+        raw = A.board()
+        rows = A.rows()
+        reg = {s['name']: s for s in A.claude_sessions()}
+        sessions = []
+        for name, e in rows.items():
+            if (e.get('cwd') or '').startswith(CACHE):
+                continue  # (the deck's own model runs: a summary, a check, a draft)
+            kind = e.get('kind') or '?'
+            s = {'id': f'{kind}:{e.get("session") or name}', 'name': name, 'kind': kind, 'session': e.get('session'),
+                 'state': e.get('state') or 'idle', 'since': e.get('since') or e.get('at') or 0, 'at': e.get('at') or 0,
+                 'cwd': e.get('cwd'), 'tool': e.get('tool'), 'tool_at': e.get('tool_at'), 'said': e.get('said'),
+                 'unread': e.get('unread', 0), 'pid': e.get('pid'), 'transcript': e.get('transcript'), 'loc': place_from(e),
+                 'parent': (e.get('parent') or {}).get('name'), 'parent_pid': (e.get('parent') or {}).get('pid')}
+            r = raw.get(name) or {}
+            if r.get('state') == 'waiting' and (r.get('at') or 0) >= (s['at'] - 1):
+                s['state'], s['waiting_for'] = 'waiting', r.get('waiting_for')
+            if kind == 'claude' and name in reg:
+                s['loc'] = place_of(reg[name]['pid']) or s['loc']
+            if kind == 'codex':
+                s['loc'] = None  # (set below, from the Codex window showing it)
+            sessions.append(s)
+        # Codex windows: the TUI processes, each showing one thread (by its resume id, else by its folder)
+        tuis = []
+        for p in ps:
+            a = p['args']
+            if p['comm'] != 'codex' or not a:
+                continue
+            sub = next((x for x in a[1:] if not x.startswith('-')), None)
+            if sub in CODEX_NOT_TUI or any('app-server' in x for x in a):
+                continue
+            loc = place_of(p['pid'])
+            tid = a[a.index('resume') + 1] if 'resume' in a and a.index('resume') + 1 < len(a) else None
+            tuis.append({'pid': p['pid'], 'loc': loc, 'cwd': cwd_of(p['pid']), 'thread': tid, 'marker': env_of(p['pid'], 'STURNUS_NEW'), 'start': p['start']})
+        codex = [s for s in sessions if s['kind'] == 'codex' and s['state'] not in ('gone', 'ended')]
+        for t in tuis:
+            hit = next((s for s in codex if t['thread'] and s['session'] == t['thread']), None)
+            if not hit and t['loc']:  # (a window outside any multiplexer is known by its resume id only)
+                same = [s for s in codex if s['cwd'] == t['cwd'] and not s.get('loc') and not s.get('parent')]
+                hit = max(same, key=lambda s: s['at'], default=None)
+            if hit:
+                hit['loc'], hit['window_pid'] = t['loc'], t['pid']
+                want = self.pending.get(t['marker'])
+                if want and hit['name'] != want:
+                    ok, _ = self.rename(hit, want)
+                    if ok:
+                        self.pending.pop(t['marker'], None)
+            else:  # (a live window whose session the hooks have not named yet: it is there all the same)
+                th = codex_launch_thread(t['start'], t['cwd']) or (None, None)
+                sessions.append(self.window('codex', t['pid'], t['loc'], t['start'], t['cwd'], *th))
+        # Cursor windows: the CLI runs as node (its comm "MainThread"), one per pane; matched to its hooks' session by pane
+        seen_panes = set()
+        for p in ps:
+            a = p['args']
+            if not a or not (a[0].endswith('/agent') or a[0].endswith('cursor-agent')) or any(x in ('-p', '--print', 'worker') for x in a):  # (a worker: the editor's, not a session)
+                continue
+            loc = place_of(p['pid'])
+            key = (loc['session'], loc['pane']) if loc else p['pid']
+            if key in seen_panes:
+                continue
+            seen_panes.add(key)
+            hit = next((s for s in sessions if s['kind'] == 'cursor' and ((loc and s.get('loc') == loc) or s.get('pid') == p['pid']) and s['state'] not in ('gone', 'ended')), None)
+            if not hit:
+                chat = cursor_chat(p['pid'])
+                sessions.append(self.window('cursor', p['pid'], loc, p['start'], cwd_of(p['pid']), chat, chat and chat.split('/')[-2]))
+        now = time.time()
+        for marker, l in list(self.launched.items()):  # (what this page started and is not a session yet: a card that says so)
+            if now - l['at'] > 3600:
+                self.launched.pop(marker)
+                continue
+            loc = marked(marker)
+            if not loc and now - l['at'] > 20:
+                self.launched.pop(marker)  # (it ended, or never came up)
+                continue
+            if loc and any((x.get('loc') or {}) == loc and not x.get('unknown') for x in sessions):
+                self.launched.pop(marker)
+                continue
+            slow = now - l['at'] > 8
+            sessions = [x for x in sessions if not (x.get('unknown') and x.get('loc') == loc)]
+            sessions.append({'id': f'new:{marker}', 'name': l['name'], 'kind': l['kind'], 'state': 'waiting' if slow else 'working',
+                             'since': l['at'], 'at': now, 'cwd': l['cwd'], 'loc': loc, 'unknown': True, 'starting': True,
+                             'summary': '刚开起来，还没登记成会话' if slow else '正在启动…',
+                             'needs_you': '去它的窗格看一眼：多半在等你确认（比如是否信任这个目录）' if slow else ''})
+        by_name = {s['name']: s for s in sessions}
+        by_pid = {s['pid']: s for s in sessions if s.get('pid')}
+        for s in sessions:
+            if s.get('starting'):
+                s['stale'] = s['hidden'] = False
+                continue
+            sm = self.sums.get(s['id']) or {}
+            need = sm.get('needs_you') or ''
+            if re.match(r'^(无需|不需要|暂无|没有需要|无$|无。|none|n/?a)', need, re.I):
+                need = ''
+            s['summary'], s['status'], s['needs_you'], s['summary_at'] = sm.get('summary'), sm.get('status'), need, sm.get('at')
+            s['title'] = sm.get('title') or ''
+            if s['state'] == 'idle' and s['status'] == 'waiting_user' and sm.get('at', 0) >= s['at'] - 5:
+                s['state'] = 'waiting'  # (it stopped on a question to the person)
+            s['stale'] = s['state'] != 'working' and now - (s['at'] or s['since'] or 0) > 24 * 3600  # (a day without a stir: out of the way, still there to open)
+            s['hidden'] = s['state'] in ('gone', 'ended')  # (a session that has exited leaves the page)
+            p = by_name.get(s.get('parent')) or by_pid.get(s.get('parent_pid'))
+            if p and p is not s:
+                s['parent'] = p['name']  # (started by another session: shown with it; when done, there for half an hour more)
+                s['parent_id'], s['stale'] = p['id'], False
+                s['hidden'] = s['hidden'] and now - (s['at'] or 0) > 1800
+            elif not s.get('loc') and not s['hidden'] and not s.get('starting'):
+                s['origin'] = self.origins.get(s.get('pid')) or self.origins.setdefault(s.get('pid'), origin_of(s.get('pid')))
+            if s['kind'] == 'claude' and s['state'] not in ('gone', 'ended'):
+                p = transcript_of(s)
+                if p:
+                    self.talk.scan_claude(s['name'], p)
+        clients, tclients = zellij_clients(ps), TMUX.clients()
+        zs = {}
+        for n in zellij_sessions():
+            zs[n] = {'name': n, 'mux': 'zellij', 'clients': [c for c in clients if c['session'] == n]}
+        for n, sock in TMUX.sessions():
+            zs[n] = {'name': n[5:], 'mux': 'tmux', 'sock': sock, 'clients': [c for c in tclients if c['session'] == n]}
+        for n, z in zs.items():
+            z['agents'] = len([s for s in sessions if (s.get('loc') or {}).get('session') == n and s['state'] not in ('gone', 'ended')])
+        if now - getattr(self, '_dirs_at', 0) > 60:
+            dirs = [s['cwd'] for s in sorted(sessions, key=lambda s: -(s['at'] or 0)) if s.get('cwd')]
+            dirs += sorted(d for d in glob.glob(os.path.expanduser('~/projects/*')) if os.path.isdir(d))
+            home = os.path.expanduser('~')
+            self._dirs = list(dict.fromkeys(d.replace(home, '~', 1) for d in dirs if os.path.isdir(d)))[:60]
+            self._dirs_at = now
+        locks = []
+        d = os.path.join(A.HOME, 'locks')
+        for f in glob.glob(os.path.join(d, '*.json')):
+            l = A.get(f)
+            if l:
+                locks.append({**l, 'key': os.path.basename(f)[:-5]})
+        self.all = sessions
+        self.publish(sessions)
+        with self.lock:
+            self.state = {'sessions': [s for s in sessions if not s['hidden']], 'talk': self.talk.all(), 'groups': zs, 'locks': locks,
+                          'muxes': [m for m in ('zellij', 'tmux') if shutil.which(m)], 'voice': self.voice_view(),
+                          'at': now, 'version': VERSION, 'summarizer': {'busy': self.sums.busy, 'error': self.sums.error},
+                          'decisions': list(reversed(self.sums.decisions[-60:])), 'models': self.models_view(),
+                          'queue': list(reversed(self.queue[-120:])),
+                          'inbox': A.take(ME_NAME, peek=True), 'lock_issues': self.lock_issues(sessions, locks),
+                          'reports': dict(sorted(((k, v) for k, v in self.reports.data.items() if v.get('r')), key=lambda kv: -kv[1]['at'])[:80]),
+                          'reporting': sorted(self.reports.asked | ({self.reports.busy} if self.reports.busy else set())),
+                          'events': list(self.events), 'pane_titles': self.cfg.get('pane_titles', True), 'me': ME_NAME, 'dirs': self._dirs,
+                          'launch': self.cfg.get('launch', DEFAULTS['launch']),
+                          'about': {'started': STARTED, 'app': APP, 'config': CONF, 'source': self.cfg.get('source'),
+                                    'listen': f'{self.cfg["host"]}:{self.cfg["port"]}', 'model': model_label(self.cfg, 'summary'),
+                                    'assist': model_label(self.cfg, 'assist'),
+                                    'summaries': len(self.sums.data)}}
+        if self.cfg.get('pane_titles', True):
+            self.retitle(sessions, zs)
+
+    @staticmethod
+    def window(kind, pid, loc, start, cwd, transcript, session):
+        """A window the hooks never saw (it opened before them): its conversation, if found, says what it does; busy
+        while that is being written. Still 'unknown': no mail reaches it."""
+        try:
+            at = max(os.path.getmtime(p) for p in (transcript, transcript + '-wal') if os.path.exists(p))
+        except (TypeError, ValueError):
+            at = None
+        now = time.time()
+        said = last_said(transcript, at)
+        where = f'{loc["session"].removeprefix("tmux:")}:{loc["pane"]}' if loc else f'pid {pid}'
+        return {'id': f'{kind}-window:{pid}', 'name': f'{kind.capitalize()} · {where}', 'kind': kind, 'pid': pid,
+                'state': 'working' if at and now - at < 20 else 'idle', 'since': at or start, 'at': now if at is None else at,
+                'cwd': cwd, 'loc': loc, 'unknown': True, 'transcript': transcript, 'session': session, 'said': said}
+
+    def retitle(self, sessions, zs):
+        """Each agent's pane carries its name and what it is doing. Zellij runs a plugin only in a session a terminal is
+        attached to; a pane two sessions share (one suspended under the other) shows the livelier one."""
+        best = {}
+        for s in sessions:
+            loc = s.get('loc')
+            if not loc or s['state'] in ('gone', 'ended') or s.get('unknown') or (loc['mux'] == 'zellij' and not (zs.get(loc['session']) or {}).get('clients')):
+                continue
+            key = f'{loc["session"]}:{loc["pane"]}'
+            rank = (ORDER_RANK.get(s['state'], 9), s['stale'], -(s['at'] or 0))
+            if key not in best or rank < best[key][0]:
+                best[key] = (rank, s)
+        changed = False
+        now = time.time()
+        for key, (_, s) in best.items():
+            loc = s['loc']
+            mark = {'working': '●', 'waiting': '◆', 'idle': '○'}.get(s['state'], '○')
+            what = (s.get('summary') or '')[:28]
+            title = f'{mark} {s["name"]}' + (f' · {what}' if what else '')
+            if self.titles.get(key) == title or now < self.failed.get(key, 0):
+                continue
+            if TMUX.title(loc, title) if loc['mux'] == 'tmux' else plugin(loc['session'], f'rename {loc["pane"]} {title}').returncode == 0:
+                self.titles[key] = title
+                changed = True
+            else:
+                self.failed[key] = now + 120  # (try again in a while, not every pass)
+        if changed:
+            A.put(os.path.join(CACHE, 'titles.json'), self.titles)
+
+    def loop(self):
+        while True:
+            try:
+                self.collect()
+            except Exception as e:
+                self.note(f'收集出错：{e!r}', False)
+            time.sleep(2)
+
+    # ---------- amail, with what the deck knows ----------
+
+    def publish(self, sessions):
+        """The deck's view for amail (amail status, waits): how each session stands, what it is on, its report."""
+        out = {}
+        for s in sessions:
+            if s.get('starting') or (s.get('unknown') and not s.get('summary')):
+                continue
+            st, label = standing(s)
+            loc = s.get('loc') or {}
+            out[s['name']] = {'name': s['name'], 'kind': s['kind'], 'state': st, 'label': label, 'title': s.get('title') or '',
+                              'summary': s.get('summary') or '', 'needs_you': s.get('needs_you') or '', 'since': s.get('since'), 'at': s.get('at'),
+                              'where': loc and f'{loc["session"].removeprefix("tmux:")} pane {loc["pane"]}', 'parent': s.get('parent') if s.get('parent_id') else None,
+                              'origin': s.get('origin')}
+        reps = {v['name']: {**v['r'], 'at': v['at']} for v in self.reports.data.values() if v.get('r') and v.get('name') in out}
+        A.put(A.path('deck.json'), {'at': time.time(), 'sessions': out, 'reports': reps})
+
+    def lock_issues(self, sessions, locks):
+        """Push locks whose holder has exited, or has not stirred for hours: the person may release them."""
+        by = {s['name']: s for s in sessions}
+        out = []
+        for l in locks:
+            s = by.get(l['holder'])
+            if not s or s['state'] in ('gone', 'ended'):
+                out.append({**l, 'why': f'{l["holder"]} 已经退出'})
+            elif s['state'] != 'working' and time.time() - (s.get('at') or 0) > 3 * 3600:
+                out.append({**l, 'why': f'{l["holder"]} {int((time.time() - s["at"]) // 3600)} 小时没动静'})
+        return out
+
+    def assist(self, q, history):
+        """The deck's assistant: a question about the sessions, answered from everything the deck knows (and, for the
+        sessions the question names, their latest conversation)."""
+        if not q:
+            return False, '先写问题'
+        now, all_ = time.time(), getattr(self, 'all', [])
+        live = [s for s in all_ if not s['hidden']]
+        dur = lambda t: '刚刚' if not t or now - t < 60 else f'{int((now - t) // 60)} 分钟前' if now - t < 3600 else f'{int((now - t) // 3600)} 小时前' if now - t < 86400 else f'{int((now - t) // 86400)} 天前'
+        def line(s):
+            st, label = standing(s)
+            g = (s.get('loc') or {}).get('session', '').removeprefix('tmux:') or ('子 agent' if s.get('parent_id') else '未托管')
+            kids = [c['name'] for c in live if c.get('parent_id') == s['id']]
+            return (f'- {s["name"]}（{s["kind"]} · {g} · {label} · {(s.get("cwd") or "?").replace(os.path.expanduser("~"), "~")} · {dur(s.get("at"))}）：'
+                    f'{s.get("title") or ""} — {s.get("summary") or s.get("said") or ""}' + (f'；要他：{s["needs_you"]}' if s.get('needs_you') else '')
+                    + (f'；由 {s["parent"]} 启动' if s.get('parent_id') else '') + (f'；子 agent：{"、".join(kids)}' if kids else '') + ('；一天以上没动静' if s.get('stale') else ''))
+        reps = []
+        for v in sorted(self.reports.data.values(), key=lambda v: -v.get('at', 0)):
+            r = v.get('r') or {}
+            if r and any(s['name'] == v.get('name') for s in live):
+                reps.append(f'- {v["name"]}：为了 {r.get("goal", "")}；现在 {r.get("now", "")}；接下来 {"；".join(r.get("next") or [])}'
+                            + (f'；产出 {"、".join(r.get("refs") or [])}' if r.get('refs') else ''))
+        decs = [f'- {d["name"]}（{"他定的" if d["by"] == "user" else "agent 定的"}，{dur(d["at"])}）：{d["what"]}' for d in self.sums.decisions[-25:]]
+        talk = [f'- {m["from"]} → {m["to"]}（{dur(m["at"])}）：{m["text"][:220]}' for m in self.talk.all()[:15]]
+        queue = [f'- 交给 {i.get("to") or i.get("group") or "先空的"}（{i.get("status")}）：{i.get("text", "")[:160]}' for i in self.queue if i.get('status') in ('waiting', 'held', 'checking', 'ready')]
+        locks = [f'- {l.get("branch")} of {os.path.basename(l.get("repo") or "")}：{l.get("holder")} 持有，{dur(l.get("since"))}' for l in self.state.get('locks') or []]
+        named = [s for s in live if s['name'].lower() in q.lower() or (s.get('title') and s['title'] in q)][:2]
+        detail = ''.join(f'\n会话 {s["name"]} 最近的对话：\n' + '\n'.join(recent(transcript_of(s), 5000)) + '\n' for s in named if transcript_of(s))
+        hist = '\n'.join(f'{"他" if h.get("who") == "user" else "你"}：{str(h.get("text") or "")[:600]}' for h in (history or [])[-6:] if isinstance(h, dict)) or '（这是第一个问题）'
+        prompt = ASSIST.format(now=time.strftime('%Y-%m-%d %H:%M'), sessions='\n'.join(map(line, live)) or '（没有会话）', reports='\n'.join(reps) or '（还没有）',
+                               decisions='\n'.join(decs) or '（还没有）', talk='\n'.join(talk) or '（没有）', queue='\n'.join(queue) or '（没有）',
+                               locks='\n'.join(locks) or '（没有）', detail=detail, history=hist, q=q[:2000])
+        try:
+            return True, {'answer': ask_model(prompt, self.cfg, 'assist').strip()}
+        except Exception as e:
+            return False, f'助手没答上来：{e}'[:300]
+
+    def recommend(self, text, group):
+        if not text:
+            return False, '先写要做的事'
+        live = [s for s in getattr(self, 'all', []) if not s.get('parent_id') and not s.get('unknown') and s['state'] not in ('gone', 'ended')
+                and (not group or (s.get('loc') or {}).get('session') == group)]
+        def line(s):
+            st, label = standing(s)
+            decs = [d['what'] for d in self.sums.decisions if d['sid'] == s['id']][-3:]
+            g = (s.get('loc') or {}).get('session', '').removeprefix('tmux:') or '未托管'
+            return (f'- {s["name"]}（{s["kind"]}，组 {g}，{label}，目录 {(s.get("cwd") or "?").replace(os.path.expanduser("~"), "~")}）：'
+                    f'{s.get("title") or ""} — {s.get("summary") or ""}' + (f'；定过：{"；".join(decs)}' if decs else ''))
+        scope = f'只在组「{group.removeprefix("tmux:")}」里挑。' if group else '尽量在同一个组里挑。'
+        try:
+            out = ask_model(RECOMMEND.format(scope=scope, text=text, sessions='\n'.join(map(line, live)) or '（这里还没有会话）'), self.cfg, 'assist')
+            r = json.loads(re.search(r'\{.*\}', out, re.S).group(0))
+        except Exception as e:
+            return False, f'助手没给出建议：{e}'[:200]
+        to = next((s for s in live if s['name'] == r.get('to')), None)
+        new = r.get('new') if isinstance(r.get('new'), dict) else None
+        if new:
+            new = {'kind': new.get('kind') if new.get('kind') in ('claude', 'codex', 'cursor') else 'claude', 'cwd': new.get('cwd') or (to or {}).get('cwd') or '~',
+                   'name': new.get('name') if NAME.fullmatch(str(new.get('name') or '')) else '', 'why': str(new.get('why') or '')[:200],
+                   'group': group or ((to or {}).get('loc') or {}).get('session') or next(iter(self.state['groups']), '')}
+        return True, {'to': to and {'name': to['name'], 'id': to['id'], 'title': to.get('title') or '', 'group': (to.get('loc') or {}).get('session')},
+                      'why': str(r.get('why') or '')[:200], 'new': new}
+
+    def notify(self, to, text, kind='question'):
+        """Mail from the deck itself, and the reader woken if it is idle."""
+        if A.send('sturnus', to, text, kind):
+            self.wake(to)
+
+    def wake(self, name):
+        """An idle session is told it has mail: a Codex thread by its queue, else a line typed into its pane (its hook
+        then hands it the mail). Never one at a prompt of the person's, or at work (its next step brings the mail)."""
+        s = next((x for x in getattr(self, 'all', []) if x['name'] == name and not x.get('unknown')), None)
+        if not s or s['state'] != 'idle':
+            return False
+        if s['kind'] == 'codex' and s.get('session'):
+            mails = A.take(name)
+            return not mails or A.wake_codex({'session': s['session']}, A.mail_text(name, mails))[0]
+        if s.get('loc') and not in_view(s['loc']):  # (someone at that pane may be typing: its next turn brings the mail)
+            return self.type_in(s, '[amail] 有新邮件', True)[0]
+        return False
+
+    def mind_loop(self):
+        self.prev, self.stopped, self.woken, self.checked, self.lock_seen = {}, {}, set(), {}, None
+        while True:
+            try:
+                self.mind()
+            except Exception as e:
+                self.note(f'amail 跟进出错：{e!r}', False)
+            time.sleep(4)
+
+    def mind(self):
+        now, ss = time.time(), {s['name']: s for s in getattr(self, 'all', [])}
+        for n, s in ss.items():  # (who has just stopped)
+            st = standing(s)[0]
+            if self.prev.get(n) == 'working' and st != 'working':
+                self.stopped[n] = now
+            self.prev[n] = st
+        for f in glob.glob(A.path('watches', '*.json')):
+            w = A.get(f)
+            if w:
+                self.watch(f, w, ss.get(w['on']), now)
+        for box in glob.glob(A.path('mail', '*', 'new')):  # (a question to an idle session wakes it)
+            name = os.path.basename(os.path.dirname(box))
+            for f in glob.glob(os.path.join(box, '*.json')):
+                m = A.get(f) or {}
+                if m.get('kind', 'fyi') != 'fyi' and m.get('id') not in self.woken and name != ME_NAME:
+                    self.woken.add(m.get('id'))
+                    self.wake(name)
+        for f in sorted(glob.glob(A.path('route', '*.json'))):  # (a note to all: to the sessions it concerns)
+            r = A.get(f)
+            os.remove(f)
+            if r:
+                for n in self.route(r, ss):
+                    A.send(r['from'], n, r['text'], r.get('kind'), routed=True)
+        locks = {os.path.basename(f): A.get(f) or {} for f in glob.glob(A.path('locks', '*.json'))}
+        for k, old in (self.lock_seen or {}).items():  # (a lock let go: those it turned away are told)
+            if old.get('waiters') and (k not in locks or locks[k].get('holder') != old.get('holder')):
+                for n in old['waiters']:
+                    self.notify(n, f'{old["branch"]} of {old["repo"]} is free now ({old["holder"]} let go of it)')
+        self.lock_seen = locks
+
+    def watch(self, f, w, t, now):
+        """One wait: told when its session stops (once the stop is in its summary), or once its condition holds."""
+        done = lambda text: (self.notify(w['by'], text), os.path.exists(f) and os.remove(f))
+        if now - w['at'] > 86400:
+            return done(f'stopped watching {w["on"]} after a day' + (f' ({w["until"]})' if w.get('until') else ''))
+        if not t:
+            if now - w['at'] > 3600:
+                done(f'{w["on"]} is nowhere to be seen; stopped watching it')
+            return
+        st, label = standing(t)
+        about = f' (you asked it: {w["about"]})' if w.get('about') else ''
+        if st in ('gone', 'ended'):
+            return done(f'{w["on"]} has exited{about}. Last: {t.get("summary") or t.get("said") or "-"}')
+        if w.get('about') and any(m.get('from') == w['on'] and m['at'] > w['at'] for m in self.mail_of(w['by'])):
+            return os.remove(f)  # (it answered: nothing more to say)
+        stop = self.stopped.get(w['on'], 0)
+        if st == 'working' or (w.get('about') and stop <= w['at']):
+            return  # (an asked one: told once it has worked on it and stopped)
+        if (t.get('summary_at') or 0) < stop and now - stop < 90:
+            return  # (stopped just now: its summary catches up first)
+        if not w.get('until'):
+            return done(f'{w["on"]} has stopped: {label}. {t.get("title") or ""} — {t.get("summary") or t.get("said") or ""}{about}')
+        key = (w['id'], t.get('summary_at'), st)
+        if self.checked.get(w['id'], (None, 0))[0] == key or now - self.checked.get(w['id'], (None, 0))[1] < 60:
+            return
+        self.checked[w['id']] = (key, now)
+        rep = (self.reports.data.get(t['id']) or {}).get('r') or {}
+        try:
+            out = ask_model(UNTIL.format(name=w['on'], until=w['until'], label=label, title=t.get('title') or '', summary=t.get('summary') or '',
+                                         report=f'它的报告：现在 {rep.get("now", "")}；做成了 {"；".join(rep.get("done") or [])}\n' if rep else '',
+                                         said=(t.get('said') or '')[:600]), self.cfg, 'assist')
+            r = json.loads(re.search(r'\{.*\}', out, re.S).group(0))
+        except Exception:
+            return
+        if r.get('met'):
+            done(f'{w["on"]}: {w["until"]} — yes: {r.get("why") or ""}')
+
+    @staticmethod
+    def mail_of(name):
+        return [A.get(f) or {} for box in ('new', 'cur') for f in glob.glob(A.path('mail', name, box, '*.json'))]
+
+    def route(self, r, ss):
+        live = [s for s in ss.values() if s['name'] != r['from'] and standing(s)[0] not in ('gone', 'ended', 'quiet') and not s.get('unknown')]
+        if len(live) <= 2:
+            return [s['name'] for s in live]
+        lines = '\n'.join(f'- {s["name"]}（{s["kind"]}，目录 {(s.get("cwd") or "?").replace(os.path.expanduser("~"), "~")}）：{s.get("title") or ""} — {s.get("summary") or ""}' for s in live)
+        try:
+            out = ask_model(ROUTE.format(frm=r['from'], text=r['text'], sessions=lines), self.cfg, 'assist')
+            names = set(json.loads(re.search(r'\{.*\}', out, re.S).group(0)).get('to') or [])
+            return [s['name'] for s in live if s['name'] in names]
+        except Exception:
+            return [s['name'] for s in live]  # (in doubt: everyone, as before)
+
+    def summarize_loop(self):
+        while True:
+            try:
+                for s in sorted(self.state['sessions'], key=lambda s: ({'working': 0, 'waiting': 1}.get(s['state'], 2), -(s['at'] or 0))):
+                    if s.get('unknown') and not s.get('transcript'):
+                        continue
+                    basis = self.sums.due(s, self.cfg)
+                    if basis and s['id'] not in self.reports.asked:
+                        self.sums.make(s, basis, self.cfg)
+                        break
+                else:  # (no summary due: a report, the asked-for ones first)
+                    live = [s for s in self.state['sessions'] if not (s.get('unknown') and not s.get('transcript'))]
+                    s = next((s for s in sorted(live, key=lambda s: (s['id'] not in self.reports.asked, -(s['at'] or 0))) if self.reports.due(s)), None)
+                    if s:
+                        self.reports.make(s, self.cfg, self.sums.decisions)
+            except Exception as e:
+                self.sums.error = repr(e)[:300]
+            time.sleep(4)
+
+    def find(self, sid):
+        return next((s for s in self.state['sessions'] if s['id'] == sid), None)
+
+    # actions
+    def act(self, what, body):
+        s = self.find(body.get('id')) if body.get('id') else None
+        if what == 'jump':
+            if not s:
+                return False, '找不到这个会话'
+            return go_to(s.get('loc'), body.get('via'))
+        if what == 'send':
+            to = s['name'] if s else body.get('to')
+            text = (body.get('text') or '').strip()
+            if not to or not text:
+                return False, '缺少收件人或内容'
+            if body.get('wake'):
+                threading.Thread(target=self._ask, args=(to, text), daemon=True).start()
+                return True, f'已发给 {to}，并在叫醒它'
+            sent = A.send(ME_NAME, to, text)
+            return bool(sent), f'已发给 {", ".join(sent)}' if sent else '没有发出'
+        if what == 'rename':
+            new = (body.get('name') or '').strip()
+            if not s or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,40}', new):
+                return False, '名字只能用字母、数字和 _ . -'
+            return self.rename(s, new)
+        if what == 'dirs':  # (the folders of this machine, for picking where a new session runs)
+            d = os.path.realpath(os.path.expanduser(str(body.get('path') or '~')))
+            if not os.path.isdir(d):
+                return False, f'没有这个目录：{d}'
+            try:
+                names = sorted((e.name for e in os.scandir(d) if not e.name.startswith('.') and e.is_dir()), key=str.lower)
+            except OSError as e:
+                return False, f'读不了 {d}：{e.strerror}'
+            h = os.path.expanduser('~')
+            return True, {'path': d, 'show': d.replace(h, '~', 1) if d == h or d.startswith(h + '/') else d, 'dirs': names[:500], 'more': max(0, len(names) - 500)}
+        if what == 'assistant':  # (a question to the deck's assistant)
+            return self.assist(str(body.get('q') or '').strip(), body.get('history') or [])
+        if what == 'recommend':  # (who should take a task: within a group, or a new session there)
+            return self.recommend(str(body.get('text') or '').strip(), str(body.get('group') or ''))
+        if what == 'stop':  # (a session another one started: it and the processes under it)
+            if not s or not s.get('parent_id') or not s.get('pid') or s['state'] in ('gone', 'ended'):
+                return False, '只能停止由别的会话启动、还在跑的子 agent'
+            kids = [int(p) for p in os.listdir('/proc') if p.isdigit() and any(a == s['pid'] for a, _ in A.ancestors(int(p))[1:])]
+            for pid in [s['pid']] + kids:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except OSError:
+                    pass
+            return True, f'停止了 {s["name"]}（{s["parent"]} 启动的）'
+        if what == 'unlock':  # (the person lets go of a push lock whose holder is gone; those it turned away are told)
+            key = str(body.get('key') or '')
+            f = A.path('locks', f'{key}.json')
+            if not re.fullmatch(r'[0-9a-f]{12}', key) or not os.path.exists(f):
+                return False, '这把锁已经不在了'
+            l = A.get(f) or {}
+            os.remove(f)
+            return True, f'释放了 {l.get("holder")} 在 {os.path.basename(l.get("repo") or "")} 上的 {l.get("branch")} 推送锁'
+        if what in ('mail_read', 'mail_reply'):  # (mail to the person: read, or answered, which wakes the writer)
+            mid = str(body.get('mid') or '')
+            f = next(iter(glob.glob(A.path('mail', ME_NAME, 'new', f'*-{mid}.json')))) if re.fullmatch(r'[0-9a-f]{12}', mid) else None
+            m = f and A.get(f)
+            if not m:
+                return False, '这封已经处理过了'
+            text = (body.get('text') or '').strip()
+            if what == 'mail_reply':
+                if not text:
+                    return False, '先写回复'
+                if not A.send(ME_NAME, m['from'], text, 'question'):
+                    return False, '发不出去'
+                self.wake(m['from'])
+            os.replace(f, A.path('mail', ME_NAME, 'cur', os.path.basename(f)))
+            return True, f'已回复 {m["from"]}' if what == 'mail_reply' else {}
+        if what == 'report':  # (a report now, before the next summaries)
+            if not s or not transcript_of(s):
+                return False, '读不到这个会话的对话，写不了报告'
+            self.reports.asked.add(s['id'])
+            return True, {}
+        if what == 'summarize':
+            if not s:
+                return False, '找不到这个会话'
+            self.sums.data.pop(s['id'], None)
+            return True, '马上重新总结'
+        if what == 'new':
+            return self.new_session(body)
+        if what == 'queue':
+            return self.queue_act(body)
+        if what == 'type':
+            return self.type_in(s, body.get('text') or '', bool(body.get('enter', True)))
+        if what == 'models':
+            try:
+                role, m, key = self.model_from(body)
+            except ValueError as e:
+                return False, str(e)
+            models = dict(self.cfg.get('models') or {})
+            models[role] = m
+            self.cfg['models'] = models
+            save_config({'models': models})
+            if key is not None:
+                put_secret(role, key)
+            return True, f'{"总结模型" if role == "summary" else "辅助模型"}已换成 {model_label(self.cfg, role)}'
+        if what == 'voice' and 'only_on' in body:  # (the switch: at once, the rest as it was)
+            v = {**voice_cfg(self.cfg), 'on': bool(body['only_on'])}
+            self.cfg['voice'] = v
+            save_config({'voice': v})
+            self.state['voice'] = self.voice_view()  # (the page reads it back at once)
+            return True, f'语音输入{"已开启：" + voice_label(v) if v["on"] else "已关闭"}'
+        if what in ('voice', 'voice_test'):
+            v = voice_cfg(self.cfg)
+            if body.get('provider') not in STT:
+                return False, '选一个语音服务'
+            model = str(body.get('model') or '').strip()[:80]
+            v.update(on=bool(body.get('on')), provider=body['provider'], model='' if model == STT_MODEL[body['provider']] else model,
+                     url=str(body.get('url') or '').strip(), lang=body.get('lang') if body.get('lang') in ('zh', 'en') else '')
+            if v['url'] and not re.match(r'^https?://', v['url']):
+                return False, '接口地址要以 http:// 或 https:// 开头'
+            key = body.get('key')
+            key = key if key and '…' not in key and key != '已设置' else None
+            if what == 'voice_test':
+                t = time.time()
+                try:
+                    transcribe(silence(), 'audio/wav', v, key if key is not None else voice_key(v['provider']))
+                except Exception as e:
+                    return False, f'{voice_label(v)} 没调通：{e}'[:300]
+                return True, f'{voice_label(v)} 调通了（{time.time() - t:.1f} 秒）'
+            self.cfg['voice'] = v
+            save_config({'voice': v})
+            if key is not None:
+                put_secret(f'voice:{v["provider"]}', key)
+            self.state['voice'] = self.voice_view()  # (the page reads it back at once)
+            return True, f'已保存：{voice_label(v)}' + ('' if v['on'] else '（语音输入还关着）')
+        if what == 'models_test':
+            try:
+                role, m, key = self.model_from(body)
+            except ValueError as e:
+                return False, str(e)
+            t = time.time()
+            try:
+                out = ask_model('只回复两个字：好的', self.cfg, role, m=m, key=key if key is not None else None)
+            except Exception as e:
+                return False, f'没调通：{e}'[:300]
+            return True, f'调通了（{time.time() - t:.1f} 秒）：{out.strip()[:40]}'
+        if what == 'draft':
+            if not s:
+                return False, '找不到这个会话'
+            path = transcript_of(s)
+            lines = recent(path, 5000) if path else []
+            need = s.get('needs_you') or s.get('waiting_for') or s.get('summary') or ''
+            try:
+                text = ask_model(DRAFT.format(name=s['name'], need=need, text='\n'.join(lines) or (s.get('said') or '')), self.cfg, 'assist')
+            except Exception as e:
+                return False, f'起草失败：{e}'[:300]
+            return True, {'draft': text.strip()[:600]}
+        if what == 'titles':
+            self.cfg['pane_titles'] = bool(body.get('on'))
+            save_config({'pane_titles': self.cfg['pane_titles']})
+            return True, '窗格标题：' + ('开' if self.cfg['pane_titles'] else '关')
+        return False, f'不认识的操作 {what}'
+
+    # ---------- the queue: things to hand a session once it is free, checked by the assistant first ----------
+    def qsave(self):
+        A.put(self.qfile, self.queue[-300:])
+
+    def queue_act(self, b):
+        what = b.get('do')
+        if what == 'add':
+            text = (b.get('text') or '').strip()
+            if not text:
+                return False, '写下要做的事'
+            to, group = (b.get('to') or '').strip(), (b.get('group') or '').strip()
+            item = {'id': os.urandom(5).hex(), 'text': text[:4000], 'to': to, 'group': group, 'mode': 'remind' if b.get('mode') == 'remind' else 'auto',
+                    'status': 'waiting', 'created': time.time(), 'note': ''}
+            self.queue.append(item)
+            self.qsave()
+            where = f'等 {to} 空闲' if to else f'等{group + " 组里" if group else ""}有会话空闲'
+            return True, f'排上了：{where}，' + ('到时先由助手确认再发' if item['mode'] == 'auto' else '到时提醒你')
+        item = next((q for q in self.queue if q['id'] == b.get('id')), None)
+        if not item:
+            return False, '找不到这件排队的事'
+        if what == 'delete':
+            self.queue.remove(item)
+        elif what == 'drop':
+            item.update(status='dropped', note=item.get('note') or '你取消了')
+        elif what == 'restore':
+            item.update(status='waiting', note='', checked=0)
+        elif what == 'edit':
+            item['text'] = (b.get('text') or item['text']).strip()[:4000]
+            if 'to' in b:
+                item['to'] = (b.get('to') or '').strip()
+        elif what == 'send':
+            s = self.find_name(b.get('to') or item.get('to') or item.get('ready_to'))
+            if not s:
+                return False, '先选一个要发给的会话'
+            ok, msg = self.deliver(s, item.get('text'))
+            if not ok:
+                return False, msg
+            item.update(status='sent', sent_to=s['name'], sent_at=time.time(), note='你手动发出')
+        else:
+            return False, '不认识的操作'
+        self.qsave()
+        return True, {'delete': '删掉了', 'drop': '不发了', 'restore': '重新排上了', 'edit': '改好了', 'send': f'发给了 {item.get("sent_to")}'}[what]
+
+    def find_name(self, name):
+        return next((x for x in self.state['sessions'] if x['name'] == name and not x.get('unknown')), None) if name else None
+
+    def deliver(self, s, text):
+        """Hand a session the text: into its terminal when it is in a pane, else into its amail box."""
+        if s.get('loc'):
+            ok, msg = self.type_in(s, text, True)
+            if ok:
+                return True, msg
+        sent = A.send(ME_NAME, s['name'], text)
+        return (True, f'放进了 {s["name"]} 的信箱') if sent else (False, '发不出去')
+
+    def free(self, s):
+        return s['state'] == 'idle' and not s.get('needs_you') and s.get('status') not in ('waiting_user', 'blocked') and not s.get('unknown') and not s.get('stale')
+
+    def queue_loop(self):
+        while True:
+            try:
+                self.queue_pass()
+            except Exception as e:
+                self.note(f'排队处理出错：{e!r}', False)
+            time.sleep(8)
+
+    def queue_pass(self):
+        now = time.time()
+        sessions = self.state['sessions']
+        for item in self.queue:
+            if item['status'] not in ('waiting', 'held'):
+                continue
+            if item['status'] == 'held' and now - item.get('checked', 0) < 600:
+                continue
+            if item['to']:
+                t = self.find_name(item['to'])
+                if not t:
+                    item.update(status='held', note=f'{item["to"]} 不在了：换一个会话，或删掉', checked=now)
+                    self.qsave()
+                    continue
+                cands = [t] if self.free(t) else []
+            else:
+                cands = [x for x in sessions if self.free(x) and (not item['group'] or (x.get('loc') or {}).get('session') == item['group'])]
+            if not cands:
+                continue
+            if item['mode'] == 'remind':
+                item.update(status='ready', note=f'{cands[0]["name"]} 空了，可以发了', ready_to=cands[0]['name'])
+                self.qsave()
+                continue
+            item['status'] = 'checking'
+            self.qsave()
+            decs = '\n'.join(f'- {d["what"]}（{d["name"]}）' for d in self.sums.decisions[-12:]) or '（没有）'
+            lines = '\n'.join(f'- {x["name"]} · 空闲 · {x.get("title") or ""} · {x.get("summary") or ""}' for x in cands[:8])
+            prompt = CHECK.format(when=time.strftime('%m-%d %H:%M'), queued=ago_text(item['created']), text=item['text'], candidates=lines, decisions=decs,
+                                  to_rule=f'只能是 {item["to"]}' if item['to'] else '从候选里挑最合适的一个')
+            try:
+                out = ask_model(prompt, self.cfg, 'assist')
+                m = re.search(r'\{.*\}', out, re.S)
+                r = json.loads(m.group(0)) if m else {}
+            except Exception as e:
+                item.update(status='waiting', note=f'助手没回上来，稍后再试：{e}'[:160], checked=now)
+                self.qsave()
+                continue
+            verdict, reason = r.get('verdict'), str(r.get('reason') or '')[:160]
+            item['checked'] = now
+            if verdict == 'drop':
+                item.update(status='dropped', note=f'助手觉得不用发了：{reason}')
+            elif verdict == 'send':
+                t = self.find_name(item['to'] or r.get('to'))
+                t = t if t in cands else cands[0]
+                text = str(r.get('text') or item['text']).strip() or item['text']
+                ok, msg = self.deliver(t, text)
+                item.update(status='sent' if ok else 'held', sent_to=t['name'] if ok else None, sent_at=now if ok else None,
+                            sent_text=text if ok else None, note=(f'助手确认后发出：{reason}' if ok else f'没发出去：{msg}')[:200])
+                if ok:
+                    self.note(f'排队的事发给了 {t["name"]}')
+            else:
+                item.update(status='held', note=f'助手建议先等：{reason}')
+            self.qsave()
+
+    def new_session(self, b):
+        """A new agent in a group (a Zellij or tmux session; made in the background when new), in its own tab or
+        window, at a folder."""
+        kind, group = b.get('kind'), (b.get('group') or '').strip()
+        mux = 'tmux' if group.startswith('tmux:') or b.get('mux') == 'tmux' else 'zellij'
+        group = group[5:] if group.startswith('tmux:') else group
+        name, prompt = (b.get('name') or '').strip(), (b.get('prompt') or '').strip()
+        cwd = os.path.realpath(os.path.expanduser((b.get('cwd') or '~').strip()))
+        if kind not in ('claude', 'codex', 'cursor', 'shell'):
+            return False, '选一个 agent，或终端'
+        if not NAME.fullmatch(group):
+            return False, '组名只能用字母、数字和 _ . -'
+        if name and not NAME.fullmatch(name):
+            return False, '名字只能用字母、数字和 _ . -'
+        if name and name in A.rows():
+            return False, f'{name} 已经有会话在用了'
+        if not os.path.isdir(cwd):
+            return False, f'目录不存在：{cwd}'
+        argv = [os.environ.get('SHELL') or '/bin/bash', '-l'] if kind == 'shell' else list(self.cfg.get('launch', DEFAULTS['launch']).get(kind) or DEFAULTS['launch'][kind])
+        if kind == 'claude' and name:
+            argv += ['--name', name]
+        if prompt and kind != 'shell':
+            argv.append(prompt)
+        marker = os.urandom(6).hex()
+        env = [f'STURNUS_NEW={marker}'] + ([f'AMAIL_NAME={name}'] if name else [])
+        tab = name or f'{"终端" if kind == "shell" else kind}·{os.path.basename(cwd) or "~"}'
+        if mux == 'tmux':
+            ok, made = TMUX.new(group, tab, cwd, env, argv)
+            if not ok:
+                return False, f'tmux 开不了：{made}'
+            return self.started(b, kind, name, tab, f'tmux:{group}', cwd, marker, made)
+        layout = f'''layout {{
+    tab name={kdl(tab)} cwd={kdl(cwd)} {{
+        pane size=1 borderless=true {{
+            plugin location="zellij:tab-bar"
+        }}
+        pane command="env" name={kdl(tab)} cwd={kdl(cwd)} {{
+            args {" ".join(kdl(a) for a in env + argv)}
+        }}
+        pane size=1 borderless=true {{
+            plugin location="zellij:status-bar"
+        }}
+    }}
+}}
+'''
+        os.makedirs(os.path.join(CACHE, 'layouts'), exist_ok=True)
+        f = os.path.join(CACHE, 'layouts', f'{marker}.kdl')
+        with open(f, 'w') as w:
+            w.write(layout)
+        made = ''
+        if group not in zellij_sessions():
+            r = run(['zellij', 'attach', '--create-background', group, 'options', '--show-startup-tips', 'false'], timeout=10)
+            for _ in range(20):
+                if group in zellij_sessions():
+                    break
+                time.sleep(.25)
+            else:
+                return False, f'建不了组 {group}：{(r.stderr or r.stdout).strip()[:160]}'
+            made = f'新建了组 {group}，'
+        r = zj(group, 'action', 'new-tab', '--layout', f, timeout=10)
+        if r.returncode != 0:
+            return False, f'开不了新标签页：{(r.stderr or r.stdout).strip()[:200]}'
+        return self.started(b, kind, name, tab, group, cwd, marker, made)
+
+    def started(self, b, kind, name, tab, group, cwd, marker, made):
+        if kind == 'shell':  # (not an agent: no card; the page opens it in its terminal once it runs)
+            for _ in range(24):
+                loc = marked(marker)
+                if loc:
+                    return True, {'msg': f'{made}在 {group.removeprefix("tmux:")} 里开了终端「{tab}」', 'term': {'group': loc['session'], 'pane': loc['pane']}}
+                time.sleep(.25)
+            return True, f'{made}在 {group.removeprefix("tmux:")} 里开了终端「{tab}」'
+        if kind == 'codex' and name:
+            self.pending[marker] = name  # (a Codex thread takes its name once it shows up)
+        self.launched[marker] = {'kind': kind, 'name': name or tab, 'group': group, 'cwd': cwd, 'at': time.time()}
+        if b.get('jump'):
+            threading.Thread(target=self._jump_when_up, args=(marker, tab), daemon=True).start()
+        return True, f'{made}在 {group.removeprefix("tmux:")} 里开了「{tab}」（{ {"claude": "Claude Code", "codex": "Codex", "cursor": "Cursor"}[kind]}，{cwd.replace(os.path.expanduser("~"), "~")}）'
+
+    def type_in(self, s, text, enter):
+        """Type into a session's pane as if at its keyboard (and press Enter)."""
+        if not s or not s.get('loc'):
+            return False, '这个会话不在 Zellij 或 tmux 里'
+        loc = s['loc']
+        if loc['mux'] == 'tmux':
+            return (True, f'已在 {s["name"]} 的终端里输入') if TMUX.type(loc, text, enter) else (False, '写不进它的 tmux 窗格')
+        if text:
+            r = plugin(loc['session'], f'type {loc["pane"]} {text}')
+            if r.returncode != 0 or 'ok' not in r.stdout:
+                if (self.state['groups'].get(loc['session']) or {}).get('clients'):
+                    ask_grant(loc['session'])
+                    return False, f'第一次在组 {loc["session"]} 里输入：Zellij 在你的终端里弹了一个授权框，按 y 同意后再发一次'
+                return False, f'写不进去：组 {loc["session"]} 要有终端连着'
+        if enter:
+            time.sleep(.15)  # (a TUI takes pasted text, then the key)
+            plugin(loc['session'], f'enter {loc["pane"]}')
+        return True, f'已在 {s["name"]} 的终端里输入'
+
+    def _jump_when_up(self, marker, tab):
+        for _ in range(40):
+            loc = marked(marker)
+            if loc:
+                ok, msg = go_to(loc)
+                self.note(f'「{tab}」：{msg}', ok)
+                return
+            time.sleep(.25)
+        self.note(f'「{tab}」还没起来，稍后在卡片上点跳转', False)
+
+    def voice_view(self):
+        v = voice_cfg(self.cfg)
+        mask = lambda k: (k[:3] + '…' + k[-4:]) if len(k) > 10 else ('已设置' if k else '')
+        return {**v, 'keys': {p: mask(voice_key(p)) for p in STT}, 'label': voice_label(v), 'defaults': STT_MODEL}
+
+    def models_view(self):
+        out = {}
+        for role in ('summary', 'assist'):
+            m = model_for(self.cfg, role)
+            k = secret(role)
+            out[role] = {'source': m['source'], 'model': m.get('model') or '', 'url': m.get('url') or '', 'key_env': m.get('key_env') or '',
+                         'key': (k[:3] + '…' + k[-4:]) if len(k) > 10 else ('已设置' if k else ''), 'label': model_label(self.cfg, role)}
+        return out
+
+    def model_from(self, b):
+        role = b.get('role')
+        if role not in ('summary', 'assist'):
+            raise ValueError('不认识的模型用途')
+        src = b.get('source')
+        if src not in SOURCES:
+            raise ValueError('选一个来源')
+        m = {'source': src, 'model': str(b.get('model') or '').strip()[:80]}
+        if src == 'api':
+            m['url'] = str(b.get('url') or '').strip()
+            if not re.match(r'^https?://', m['url']):
+                raise ValueError('接口地址要以 http:// 或 https:// 开头')
+            if not m['model']:
+                raise ValueError('填上模型名')
+            if b.get('key_env'):
+                m['key_env'] = str(b['key_env']).strip()
+        key = b.get('key')
+        key = key if key and '…' not in key and key != '已设置' else None  # (the masked one shown back is not a new key)
+        return role, m, key
+
+    def _ask(self, to, text):
+        try:
+            r = A.ask(ME_NAME, to, text)
+            self.note(f'问 {to}：{r}')
+        except Exception as e:
+            self.note(f'问 {to} 失败：{e!r}', False)
+
+    def rename(self, s, new):
+        if s['kind'] == 'claude':
+            return False, f'Claude 会话的名字由它自己定：在那个会话里输入 /rename {new}，这里和 amail 会跟着变'
+        if new in A.rows():
+            return False, f'{new} 已经有人用了'
+        if s['kind'] == 'codex' and s.get('session'):
+            ok, msg = codex_set_name(s['session'], new)
+            if not ok:
+                self.note(f'Codex 会话名没改成：{msg}', False)
+        r = run([sys.executable, os.path.join(APP, 'amail'), '--as', s['name'], 'rename', new])
+        if r.returncode != 0:
+            return False, (r.stderr or r.stdout).strip()[:200]
+        self.titles = {}
+        return True, f'{s["name"]} 改名为 {new}（amail、Zellij 窗格{"、Codex 会话" if s["kind"] == "codex" else ""}都已同步）'
+
+
+def codex_set_name(thread, name):
+    """Name a Codex thread through the shared app-server daemon (WebSocket on its control socket)."""
+    import base64, socket, struct
+    path = os.path.expanduser('~/.codex/app-server-control/app-server-control.sock')
+    try:
+        s = socket.socket(socket.AF_UNIX)
+        s.settimeout(10)
+        s.connect(path)
+        s.sendall(('GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n'
+                   f'Sec-WebSocket-Key: {base64.b64encode(os.urandom(16)).decode()}\r\nSec-WebSocket-Version: 13\r\n\r\n').encode())
+        buf = b''
+        while b'\r\n\r\n' not in buf:
+            buf += s.recv(4096)
+        rest = buf.split(b'\r\n\r\n', 1)[1]
+
+        def send(obj):
+            d = json.dumps(obj).encode()
+            mask = os.urandom(4)
+            n = len(d)
+            hdr = bytes([0x81]) + (bytes([0x80 | n]) if n < 126 else bytes([0xFE]) + struct.pack('>H', n))
+            s.sendall(hdr + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(d)))
+
+        def recv():
+            nonlocal rest
+            def take(n):
+                nonlocal rest
+                while len(rest) < n:
+                    rest += s.recv(65536)
+                d, rest = rest[:n], rest[n:]
+                return d
+            msg = b''
+            while True:
+                b0, b1 = take(2)
+                n = b1 & 0x7f
+                if n == 126:
+                    n = struct.unpack('>H', take(2))[0]
+                elif n == 127:
+                    n = struct.unpack('>Q', take(8))[0]
+                d = take(n)
+                if b0 & 0x0f in (8,):
+                    raise ConnectionError('closed')
+                if b0 & 0x0f in (9, 10):
+                    continue
+                msg += d
+                if b0 & 0x80:
+                    return json.loads(msg)
+
+        def call(i, method, params):
+            send({'jsonrpc': '2.0', 'id': i, 'method': method, 'params': params})
+            while True:
+                m = recv()
+                if m and m.get('id') == i:
+                    return m
+
+        call(1, 'initialize', {'clientInfo': {'name': 'sturnus', 'version': VERSION}})
+        send({'jsonrpc': '2.0', 'method': 'initialized'})
+        r = call(2, 'thread/name/set', {'threadId': thread, 'name': name})
+        s.close()
+        return 'error' not in r, str(r.get('error') or 'ok')
+    except Exception as e:
+        return False, repr(e)
+
+
+# ---------- the web server ----------
+
+DECK = None
+TYPES = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml',
+         '.woff2': 'font/woff2'}
+STATIC = re.compile(r'^((fonts|vendor)/)?[A-Za-z0-9][A-Za-z0-9._-]*$')
+OPEN = re.compile(r'^/(fonts/[A-Za-z0-9._-]+|login\.html|style\.css)$')  # (what the sign-in page itself needs)
+
+
+# ---------- access: a login token, then a session cookie per browser ----------
+
+ACCESS = os.path.join(os.path.dirname(CONF), 'access.json')  # (0600: the token and the signed-in browsers)
+DAY = 86400
+
+
+def write_private(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.write(fd, json.dumps(data).encode())
+    os.close(fd)
+
+
+def access_data(rotate=False):
+    d = A.get(ACCESS, {}) or {}
+    if rotate or not d.get('token'):
+        d = {'token': secrets.token_urlsafe(24), 'sessions': {}}  # (a new token signs every browser out)
+        write_private(ACCESS, d)
+    return d
+
+
+class Access:
+    """Every page and call needs the token once per browser; the browser then holds a session cookie for 30 days."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.fails = deque(maxlen=20)
+        self.d, self.mtime = access_data(), os.path.getmtime(ACCESS)
+
+    def fresh(self):  # (`sturnus token --rotate` writes the file under the running service)
+        m = os.path.getmtime(ACCESS) if os.path.exists(ACCESS) else 0
+        if m != self.mtime:
+            self.d, self.mtime = access_data(), os.path.getmtime(ACCESS)
+
+    def save(self):
+        write_private(ACCESS, self.d)
+        self.mtime = os.path.getmtime(ACCESS)
+
+    @staticmethod
+    def key(sid):
+        return hashlib.sha256(sid.encode()).hexdigest()  # (what is kept is a hash: the file holds no live cookie)
+
+    def check(self, sid):
+        with self.lock:
+            self.fresh()
+            s = sid and self.d['sessions'].get(self.key(sid))
+            return bool(s) and time.time() - s['at'] < 30 * DAY
+
+    def login(self, token, who):
+        now = time.time()
+        with self.lock:
+            self.fresh()
+            if sum(1 for t in self.fails if now - t < 600) >= 8:
+                return None, '试错太多次，10 分钟后再试'
+            if not hmac.compare_digest(token.encode(), self.d['token'].encode()):
+                self.fails.append(now)
+                return None, '令牌不对'
+            sid = secrets.token_urlsafe(32)
+            self.d['sessions'] = {k: v for k, v in self.d['sessions'].items() if now - v['at'] < 30 * DAY}
+            self.d['sessions'][self.key(sid)] = {'at': now, 'who': who}
+            self.save()
+            return sid, ''
+
+    def drop(self, key):
+        with self.lock:
+            self.fresh()
+            if self.d['sessions'].pop(key, None):
+                self.save()
+
+    def listing(self, mine):
+        with self.lock:
+            self.fresh()
+            return [{'key': k, 'who': v['who'], 'at': v['at'], 'me': k == mine} for k, v in
+                    sorted(self.d['sessions'].items(), key=lambda kv: -kv[1]['at'])]
+
+
+_tailnet = {'at': 0}
+
+
+def tailnet_self():
+    """This machine's tailnet name and its owner's login (looked up again every few minutes), or (None, None)."""
+    if time.time() - _tailnet['at'] > 300:
+        r = run(['tailscale', 'status', '--json'], timeout=5) if shutil.which('tailscale') else None
+        try:
+            d = json.loads(r.stdout)
+            me = d['Self']
+            _tailnet.update(name=me['DNSName'].rstrip('.').lower(), owner=d['User'][str(me['UserID'])]['LoginName'],
+                            ips=[x for x in me.get('TailscaleIPs') or [] if '.' in x])
+        except (AttributeError, ValueError, KeyError, TypeError):
+            _tailnet.update(name=None, owner=None, ips=[])
+        _tailnet['at'] = time.time()
+    return _tailnet.get('name'), _tailnet.get('owner')
+
+
+TAILNET = [ipaddress.ip_network('100.64.0.0/10'), ipaddress.ip_network('fd7a:115c:a1e0::/48')]
+_whois = {}
+
+
+def tailnet_login(ip):
+    """Whose device a tailnet address is (tailscale whois; looked up again every few minutes), or None."""
+    try:
+        if not any(ipaddress.ip_address(ip) in n for n in TAILNET):
+            return None
+    except ValueError:
+        return None
+    hit = _whois.get(ip)
+    if not hit or time.time() - hit[0] > 300:
+        r = run(['tailscale', 'whois', '--json', ip], timeout=5)
+        try:
+            d = json.loads(r.stdout)
+            hit = (time.time(), d['UserProfile']['LoginName'], (d.get('Node') or {}).get('ComputedName') or (d.get('Node') or {}).get('Name', '').split('.')[0])
+        except (ValueError, KeyError, TypeError):
+            hit = (time.time(), None, None)
+        _whois[ip] = hit
+    return hit[1:]
+
+
+def tailnet_urls(cfg):
+    name, _ = tailnet_self()
+    if not cfg.get('tailnet', True) or not name:
+        return ''
+    return '  ·  '.join([f'http://{name.split(".")[0]}:{cfg["port"]}'] + [f'http://{ip}:{cfg["port"]}' for ip in _tailnet.get('ips') or []])
+
+
+def bind_tailnet(port):
+    """Listen on this machine's Tailscale address too: only the tailnet reaches it; who comes in is checked per request.
+    ponytail: bound to the address at start (it only changes when the node is re-registered)."""
+    while True:
+        tailnet_self()
+        for ip in _tailnet.get('ips') or []:
+            try:
+                srv = ThreadingHTTPServer((ip, port), Handler)
+            except OSError:
+                continue  # (Tailscale not up yet)
+            print(f'sturnus also on http://{ip}:{port}', flush=True)
+            srv.serve_forever()
+        time.sleep(30)
+        _tailnet['at'] = 0
+
+
+WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
+
+
+def ws_read(rfile):
+    """One message from the browser as (opcode, bytes); None once it has gone."""
+    data, op = b'', 0
+    while True:
+        h = rfile.read(2)
+        if len(h) < 2:
+            return None
+        n = h[1] & 0x7F
+        if n == 126:
+            n = struct.unpack('>H', rfile.read(2))[0]
+        elif n == 127:
+            n = struct.unpack('>Q', rfile.read(8))[0]
+        mask = rfile.read(4) if h[1] & 0x80 else b''
+        b = rfile.read(n)
+        if mask and n:  # (a browser masks what it sends)
+            b = (int.from_bytes(b, 'big') ^ int.from_bytes((mask * (n // 4 + 1))[:n], 'big')).to_bytes(n, 'big')
+        code = h[0] & 0x0F
+        if code == 8:
+            return None
+        if code >= 8:  # (ping, pong: answered or let go, between the pieces of a message)
+            return code, b
+        op = op or code
+        data += b
+        if h[0] & 0x80:
+            return op, data
+
+
+def ws_send(sock, op, data):
+    n = len(data)
+    head = bytes([0x80 | op]) + (bytes([n]) if n < 126 else bytes([126]) + struct.pack('>H', n) if n < 65536 else bytes([127]) + struct.pack('>Q', n))
+    sock.sendall(head + data)
+
+
+def term_argv(loc):
+    """What the browser's terminal runs: its own client of the agent's group, brought to the agent's pane."""
+    if loc['mux'] == 'tmux':
+        sock, pane = loc['sock'], loc['pane']
+        name = f'{WEB_TMUX}{os.urandom(3).hex()}'
+        # (a session grouped with the agent's: the same windows, its own current one, gone once the browser leaves)
+        argv = ['tmux', '-S', sock, 'new-session', '-t', '=' + loc['session'][5:], '-s', name, ';', 'set-option', 'destroy-unattached', 'on']
+        if pane:
+            win = TMUX.tm(sock, 'display', '-p', '-t', pane, '#{window_index}').stdout.strip()
+            argv += [';', 'select-window', '-t', f'={name}:{win}', ';', 'select-pane', '-t', pane]
+        return argv
+    return ['zellij', 'attach', loc['session']]
+
+
+def term_bridge(rfile, conn, loc, cols, rows):
+    """The pseudo-terminal and the websocket, joined both ways; the browser sends keys as binary, its size as text."""
+    before = clients_of(loc['session']) if loc['mux'] == 'zellij' and loc.get('pane') else None
+    env = {k: v for k, v in os.environ.items() if not k.startswith(('TMUX', 'ZELLIJ'))}
+    env.update(TERM='xterm-256color', COLORTERM='truecolor', STURNUS_TERM='1')
+    argv = term_argv(loc)
+    pid, fd = pty.fork()
+    if pid == 0:
+        try:
+            os.execvpe(argv[0], argv, env)
+        finally:
+            os._exit(127)
+    resize = lambda c, r: fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', r, c, 0, 0))
+    resize(cols, rows)
+    if before is not None:  # (Zellij puts a new client where its first client stands: this one, alone, onto the pane)
+        threading.Thread(target=zellij_bring, args=(loc, before), daemon=True).start()
+    lock = threading.Lock()
+
+    def out():
+        try:
+            while True:
+                b = os.read(fd, 65536)
+                if not b:
+                    break
+                with lock:
+                    ws_send(conn, 2, b)
+        except OSError:
+            pass
+        try:
+            with lock:
+                ws_send(conn, 8, b'')
+            conn.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+    threading.Thread(target=out, daemon=True).start()
+    try:
+        while (m := ws_read(rfile)) is not None:
+            op, data = m
+            if op == 2:
+                os.write(fd, data)
+            elif op == 1:
+                c = json.loads(data)
+                resize(int(c['cols']), int(c['rows']))
+            elif op == 9:
+                with lock:
+                    ws_send(conn, 10, data)
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    finally:
+        try:
+            os.kill(pid, signal.SIGHUP)
+        except OSError:
+            pass
+        os.close(fd)
+        threading.Thread(target=os.waitpid, args=(pid, 0), daemon=True).start()
+
+
+def zellij_bring(loc, before):
+    for _ in range(40):
+        new = [c for c in clients_of(loc['session']) if c not in before]
+        if new:
+            plugin(loc['session'], f'focus {loc["pane"]}', client=max(new, key=int))
+            return
+        time.sleep(.15)
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def end_headers(self):
+        self.send_header('X-Frame-Options', 'SAMEORIGIN')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('Referrer-Policy', 'no-referrer')
+        super().end_headers()
+
+    def send_json(self, obj, code=200, cookie=None):
+        data = json.dumps(obj, ensure_ascii=False).encode()
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Cache-Control', 'no-store')
+        for c in [cookie] if isinstance(cookie, str) else cookie or []:
+            self.send_header('Set-Cookie', c)
+        self.end_headers()
+        self.wfile.write(data)
+
+    def cookie(self, name):
+        m = re.search(rf'(?:^|;\s*){name}=([^;]+)', self.headers.get('Cookie') or '')
+        return m.group(1) if m else ''
+
+    def who(self):
+        """'本机'; or, from the tailnet (straight to this machine's Tailscale address, or through tailscale serve), the
+        owner's own devices only; None for anyone else. A request must also name this machine (no DNS rebinding)."""
+        host = (self.headers.get('X-Forwarded-Host') or self.headers.get('Host') or '').rsplit(':', 1)[0].strip('[]').lower()
+        login, peer = self.headers.get('Tailscale-User-Login'), self.client_address[0]
+        name, owner = tailnet_self()
+        self.https = False
+        if peer in ('127.0.0.1', '::1'):
+            if host in ('127.0.0.1', 'localhost', '::1') and not login:
+                return '本机'
+            if name and host == name and owner and login == owner:  # (tailscale serve: it sets the login itself)
+                self.https = True
+                return f'{self.headers.get("X-Forwarded-For") or "tailnet"}（{owner}）'
+            return None
+        names = {name, (name or '').split('.')[0], *(_tailnet.get('ips') or [])} - {None, ''}
+        who = tailnet_login(peer)
+        if host in names and who and owner and who[0] == owner:  # (only the owner's own devices, not ones shared in)
+            return f'{who[1] or peer}（{peer}）'
+        return None
+
+    def gate(self):
+        """True when the request may go on; otherwise it has been answered."""
+        self.via = self.who()
+        if self.via is None:
+            self.send_json({'ok': False, 'msg': 'forbidden'}, 403)
+            return False
+        bare = self.path.split('?')[0]
+        if ACCESS_.check(self.cookie('deck')) or (self.command == 'GET' and OPEN.match(bare)) or (self.command == 'POST' and bare == '/api/login'):
+            return True
+        if self.command == 'GET' and bare in ('/', '/index.html'):
+            self.static('login.html')
+            return False
+        self.send_json({'ok': False, 'msg': '要先登录', 'login': True}, 401)
+        return False
+
+    def static(self, name):
+        f = os.path.join(APP, 'web', name)
+        if not STATIC.match(name) or not os.path.isfile(f):
+            self.send_response(404)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header('Content-Type', TYPES.get(os.path.splitext(f)[1], 'application/octet-stream'))
+        self.send_header('Cache-Control', 'max-age=31536000, immutable' if name.startswith('fonts/') else 'no-cache')
+        self.end_headers()
+        with open(f, 'rb') as h:
+            self.wfile.write(h.read())
+
+    def term(self):
+        """The agent's terminal in the browser: a websocket to a client of its group run in a pseudo-terminal."""
+        from urllib.parse import urlparse, parse_qs
+        q = parse_qs(urlparse(self.path).query)
+        arg = lambda k: (q.get(k) or [''])[0]
+        if arg('id'):
+            loc = (DECK.find(arg('id')) or {}).get('loc')
+        else:  # (a group, at a pane of it or wherever it stands)
+            g, z = arg('group'), DECK.state['groups'].get(arg('group'))
+            pane = arg('pane') if re.fullmatch(r'%\d+' if (z or {}).get('mux') == 'tmux' else r'\d+', arg('pane')) else None
+            loc = z and {'mux': z['mux'], 'session': g, 'pane': pane, 'sock': z.get('sock')}
+        host = (self.headers.get('X-Forwarded-Host') or self.headers.get('Host') or '').rsplit(':', 1)[0]
+        origin = urlparse(self.headers.get('Origin') or '').hostname or ''
+        if (self.headers.get('Upgrade') or '').lower() != 'websocket' or not self.headers.get('Sec-WebSocket-Key') or origin != host.strip('[]'):
+            return self.send_json({'ok': False, 'msg': 'forbidden'}, 403)
+        if not loc:
+            return self.send_json({'ok': False, 'msg': '不在 Zellij 或 tmux 里'}, 404)
+        accept = base64.b64encode(hashlib.sha1((self.headers['Sec-WebSocket-Key'] + WS_GUID).encode()).digest()).decode()
+        self.wfile.write(f'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n'.encode())
+        self.wfile.flush()
+        self.close_connection = True
+        size = lambda k, d: max(10, min(1000, int((q.get(k) or [d])[0]) if str((q.get(k) or [d])[0]).isdigit() else d))
+        term_bridge(self.rfile, self.connection, loc, size('cols', 120), size('rows', 36))
+
+    def do_GET(self):
+        if not self.gate():
+            return
+        if self.path.startswith('/api/term'):
+            return self.term()
+        if self.path.startswith('/api/state'):
+            with DECK.lock:
+                return self.send_json(DECK.state)
+        if self.path.startswith('/api/transcript'):
+            from urllib.parse import urlparse, parse_qs
+            sid = (parse_qs(urlparse(self.path).query).get('id') or [''])[0]
+            s = DECK.find(sid)
+            path = transcript_of(s) if s else None
+            return self.send_json({'items': transcript_items(path) if path else []})
+        bare = self.path.split('?')[0].split('#')[0]
+        self.static('index.html' if bare in ('/', '/index.html') else bare.lstrip('/'))
+
+    def do_POST(self):
+        if not self.gate():
+            return
+        # (only this page: a cross-site form cannot set this header)
+        if self.headers.get('X-Deck') != '1':
+            return self.send_json({'ok': False, 'msg': 'forbidden'}, 403)
+        if self.path.endswith('/api/stt'):  # (a recording, as it is: to text)
+            n = int(self.headers.get('Content-Length') or 0)
+            v = voice_cfg(DECK.cfg)
+            if not v['on']:
+                return self.send_json({'ok': False, 'msg': '语音输入没开：设置 → 语音输入'})
+            if not 0 < n <= 25 * 1024 * 1024:
+                return self.send_json({'ok': False, 'msg': '录音太长了（最多 25 MB）' if n else '没录到声音'})
+            audio = self.rfile.read(n)
+            try:
+                return self.send_json({'ok': True, 'via': voice_label(v), 'text': transcribe(audio, self.headers.get('Content-Type') or 'audio/webm', v, voice_key(v['provider'])).strip()})
+            except Exception as e:
+                return self.send_json({'ok': False, 'msg': f'没转成文字：{e}'[:300]})
+        try:
+            body = json.loads(self.rfile.read(int(self.headers.get('Content-Length') or 0)) or b'{}')
+        except ValueError:
+            body = {}
+        what = self.path.rsplit('/', 1)[-1]
+        secure = '; Secure' if self.https else ''  # (plain http on the tailnet is WireGuard's; a Secure cookie needs https)
+        if what == 'login':
+            sid, msg = ACCESS_.login(str(body.get('token') or '').strip(), self.via)
+            if not sid:
+                return self.send_json({'ok': False, 'msg': msg}, 401)
+            DECK.note(f'新登录：{self.via}', True)
+            return self.send_json({'ok': True}, cookie=f'deck={sid}; HttpOnly; SameSite=Strict; Path=/; Max-Age={30 * DAY}{secure}')
+        if what == 'access':  # (the signed-in browsers: list, sign one out, or this one)
+            mine = Access.key(self.cookie('deck'))
+            if body.get('do') == 'drop':
+                key = mine if body.get('key') == 'me' else str(body.get('key') or '')
+                ACCESS_.drop(key)
+                if key == mine:
+                    return self.send_json({'ok': True}, cookie=f'deck=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0{secure}')
+            return self.send_json({'ok': True, 'sessions': ACCESS_.listing(mine), 'local': f'http://127.0.0.1:{DECK.cfg["port"]}',
+                                   'tailnet': tailnet_urls(DECK.cfg)})
+        try:
+            ok, msg = DECK.act(what, body)
+        except Exception as e:
+            ok, msg = False, repr(e)
+        if isinstance(msg, dict):  # (an answer with data, not a line to show)
+            return self.send_json({'ok': ok, **msg})
+        DECK.note(msg, ok)
+        self.send_json({'ok': ok, 'msg': msg})
+
+
+def serve():
+    global DECK
+    os.makedirs(CACHE, exist_ok=True)
+    DECK = Deck()
+    try:
+        DECK.collect()
+    except Exception as e:  # (the loop keeps trying; the page says what went wrong)
+        DECK.note(f'收集出错：{e!r}', False)
+    threading.Thread(target=DECK.loop, daemon=True).start()
+    threading.Thread(target=DECK.summarize_loop, daemon=True).start()
+    threading.Thread(target=DECK.queue_loop, daemon=True).start()
+    threading.Thread(target=DECK.mind_loop, daemon=True).start()
+    cfg = DECK.cfg
+    global ACCESS_
+    ACCESS_ = Access()
+    srv = ThreadingHTTPServer((cfg['host'], int(cfg['port'])), Handler)
+    print(f'sturnus {VERSION} on http://{cfg["host"]}:{cfg["port"]}', flush=True)
+    if cfg.get('tailnet', True) and shutil.which('tailscale'):
+        threading.Thread(target=bind_tailnet, args=(int(cfg['port']),), daemon=True).start()
+    srv.serve_forever()
+
+
+# ---------- installing ----------
+
+def save_config(patch):
+    os.makedirs(os.path.dirname(CONF), exist_ok=True)
+    c = A.get(CONF, {}) or {}
+    c.update(patch)
+    A.put(CONF, c, 2)
+
+
+PLUGIN_GRANTS = ['ChangeApplicationState', 'ReadApplicationState', 'ReadCliPipes', 'WriteToStdin', 'StartWebServer']
+def grant_zellij():
+    """Zellij asks the person before a plugin may act; the deck's plugin gets its three grants once, by its path."""
+    f = os.path.expanduser('~/.cache/zellij/permissions.kdl')
+    os.makedirs(os.path.dirname(f), exist_ok=True)
+    s = open(f).read() if os.path.exists(f) else ''
+    s = re.sub(r'"' + re.escape(WASM) + r'" \{[^}]*\}\n?', '', s)
+    with open(f, 'w') as w:
+        w.write(s + f'"{WASM}" {{\n' + ''.join(f'    {p}\n' for p in PLUGIN_GRANTS) + '}\n')
+
+
+def ungrant_zellij(wasm=WASM):
+    f = os.path.expanduser('~/.cache/zellij/permissions.kdl')
+    if os.path.exists(f):
+        s = re.sub(r'"' + re.escape(wasm) + r'" \{[^}]*\}\n?', '', open(f).read())
+        with open(f, 'w') as w:
+            w.write(s)
+
+
+def systemctl(*a):
+    return run(['systemctl', '--user', *a], timeout=20)
+
+
+FILES = ['sturnus', 'amail', 'VERSION', 'README.md', 'web', 'zellij-jump.wasm']
+
+
+def move_into(old, new):
+    """What OLD holds goes into NEW (what NEW has already stays), then OLD goes."""
+    if not os.path.isdir(old):
+        return
+    if not os.path.isdir(new):
+        os.makedirs(new)
+        shutil.copymode(old, new)
+    for f in os.listdir(old):
+        if not os.path.lexists(os.path.join(new, f)):
+            shutil.move(os.path.join(old, f), os.path.join(new, f))
+    shutil.rmtree(old, ignore_errors=True)
+
+
+def adopt(service=True):
+    """The first install takes over an agentdeck one (this app's name before): its settings, sign-ins, keys and caches
+    move here, its service, its plugin's grant and its folder go. Run once this version's own links are in place."""
+    old = {k: os.path.expanduser(v) for k, v in (('share', '~/.local/share/agentdeck'), ('conf', '~/.config/agentdeck'),
+                                                 ('cache', '~/.cache/agentdeck'), ('unit', '~/.config/systemd/user/agentdeck.service'))}
+    if not any(os.path.lexists(p) for p in old.values()):
+        return ''
+    if service and os.path.exists(old['unit']):
+        systemctl('disable', '--now', 'agentdeck.service')  # (before this one's service takes the port)
+    if os.path.exists(old['unit']):
+        os.remove(old['unit'])
+        if service:
+            systemctl('daemon-reload')
+    move_into(old['conf'], os.path.dirname(CONF))
+    move_into(old['cache'], CACHE)
+    c = A.get(CONF, {}) or {}
+    if c.get('source') and not os.path.exists(os.path.join(c['source'], 'sturnus')):
+        c.pop('source')  # (it named the agentdeck folder; install sets this one's)
+        A.put(CONF, c, 2)
+    link = os.path.join(BIN, 'agentdeck')
+    if os.path.islink(link) and os.path.realpath(link).startswith(old['share']):
+        os.remove(link)
+    ungrant_zellij(os.path.join(old['share'], 'zellij-jump.wasm'))
+    shutil.rmtree(old['share'], ignore_errors=True)
+    return 'took over agentdeck: its settings, sign-ins and caches moved here; its service and folder removed'
+
+
+def install(src, service=True):
+    src = os.path.realpath(src)
+    ver = open(os.path.join(src, 'VERSION')).read().strip()
+    dest = os.path.join(SHARE, 'versions', ver)
+    if os.path.realpath(dest) != src:
+        shutil.rmtree(dest, ignore_errors=True)
+        os.makedirs(dest)
+        for f in FILES:
+            p = os.path.join(src, f)
+            if os.path.isdir(p):
+                shutil.copytree(p, os.path.join(dest, f))
+            elif os.path.exists(p):
+                shutil.copy2(p, os.path.join(dest, f))
+    # (the new version proves it can read this machine before it becomes the current one)
+    chk = run([sys.executable, os.path.join(dest, 'sturnus'), 'check'], timeout=120)
+    if chk.returncode != 0:
+        sys.exit(f'sturnus {ver} failed its check, the current version stays:\n{(chk.stderr or chk.stdout)[-1500:]}')
+    cur = os.path.join(SHARE, 'current')
+    tmp = cur + '.new'
+    if os.path.lexists(tmp):
+        os.remove(tmp)
+    os.symlink(dest, tmp)
+    os.replace(tmp, cur)
+    shutil.copy2(os.path.join(dest, 'zellij-jump.wasm'), WASM)
+    grant_zellij()
+    os.makedirs(BIN, exist_ok=True)
+    for name in ('sturnus', 'amail'):
+        link = os.path.join(BIN, name)
+        if os.path.lexists(link):
+            os.remove(link)
+        os.symlink(os.path.join(cur, name), link)
+    took = adopt(service)
+    c = A.get(CONF, {}) or {}
+    c.setdefault('source', src)
+    if not os.path.exists(CONF):
+        c.update({'host': DEFAULTS['host'], 'port': DEFAULTS['port']})
+    save_config(c)
+    hooks = run([sys.executable, os.path.join(cur, 'amail'), 'install'], timeout=90)
+    for repo in c.get('lock_repos', []):  # (the push lock's git hook, in the repos it guards)
+        if os.path.isdir(os.path.expanduser(repo)):
+            run([sys.executable, os.path.join(cur, 'amail'), 'install-git', os.path.expanduser(repo)])
+    if not service:
+        return '\n'.join(x for x in (f'sturnus {ver} installed (no service)', took, hooks.stdout.strip()) if x)
+    os.makedirs(os.path.dirname(UNIT), exist_ok=True)
+    with open(UNIT, 'w') as u:
+        u.write(f'''[Unit]
+Description=sturnus: the sessions on this machine, one page
+After=default.target
+
+[Service]
+ExecStart={sys.executable} {os.path.join(cur, 'sturnus')} serve
+Restart=on-failure
+RestartSec=3
+Environment=PATH={os.environ.get("PATH", "/usr/bin:/bin")}
+
+[Install]
+WantedBy=default.target
+''')
+    systemctl('daemon-reload')
+    systemctl('enable', 'sturnus.service')
+    systemctl('restart', 'sturnus.service')
+    access_data()
+    reach = tailnet_urls(config())
+    reach = f'\ntailnet (your own devices): {reach}' if reach else ''
+    for old in sorted(glob.glob(os.path.join(SHARE, 'versions', '*')), key=os.path.getmtime)[:-3]:  # (keep three to go back to)
+        if os.path.realpath(old) != os.path.realpath(dest):
+            shutil.rmtree(old, ignore_errors=True)
+    cfg = config()
+    return '\n'.join(x for x in (f'sturnus {ver} installed: http://{cfg["host"]}:{cfg["port"]}{reach}',
+                                 'sign in with the token from: sturnus token', took, hooks.stdout.strip()) if x)
+
+
+def uninstall(purge, service=True):
+    out = []
+    if service:
+        systemctl('disable', '--now', 'sturnus.service')
+    if os.path.exists(UNIT):
+        os.remove(UNIT)
+        if service:
+            systemctl('daemon-reload')
+    out.append('service removed')
+    amail = os.path.join(SHARE, 'current', 'amail')
+    if os.path.exists(amail):
+        out.append(run([sys.executable, amail, 'uninstall'], timeout=90).stdout.strip())
+        for hook in glob.glob(os.path.expanduser('~/projects/*/.git/hooks/pre-push')) + glob.glob(os.path.expanduser('~/projects/*/*/.git/hooks/pre-push')):
+            try:
+                if 'amail prepush' in open(hook).read() or 'amail: refuse a push' in open(hook).read():
+                    os.remove(hook)
+                    out.append(f'removed {hook}')
+            except OSError:
+                pass
+    ungrant_zellij()
+    for name in ('sturnus', 'amail'):
+        link = os.path.join(BIN, name)
+        if os.path.islink(link) and SHARE in os.path.realpath(link):
+            os.remove(link)
+    shutil.rmtree(SHARE, ignore_errors=True)
+    out.append(f'removed {SHARE}')
+    if purge:
+        for d in (os.path.dirname(CONF), CACHE, A.HOME):
+            shutil.rmtree(d, ignore_errors=True)
+        out.append('settings, caches and mail removed')
+    return '\n'.join(x for x in out if x)
+
+
+def newer(a, b):
+    return [int(x) for x in a.split('.')] > [int(x) for x in b.split('.')]
+
+
+def main(argv):
+    c = argv[0] if argv else 'help'
+    if c == 'serve':
+        serve()
+    elif c == 'install':
+        src = argv[argv.index('--from') + 1] if '--from' in argv else APP
+        print(install(src, '--no-service' not in argv))
+    elif c == 'upgrade':
+        src = (A.get(CONF, {}) or {}).get('source')
+        if not src or not os.path.exists(os.path.join(src, 'VERSION')):
+            sys.exit('sturnus: no source to upgrade from (sturnus install --from DIR)')
+        v = open(os.path.join(src, 'VERSION')).read().strip()
+        if not newer(v, VERSION) and '--force' not in argv:
+            print(f'sturnus {VERSION} is current (source {src} has {v}); --force to reinstall')
+            return
+        # (the new version installs itself: its own install steps, not this one's)
+        os.execv(sys.executable, [sys.executable, os.path.join(src, 'sturnus'), 'install', '--from', src])
+    elif c == 'uninstall':
+        print(uninstall('--purge' in argv, '--no-service' not in argv))
+    elif c == 'status':
+        cfg = config()
+        r = systemctl('is-active', 'sturnus.service')
+        print(f'sturnus {VERSION} ({APP})\nservice: {r.stdout.strip() or r.stderr.strip()}\nhttp://{cfg["host"]}:{cfg["port"]}')
+    elif c == 'open':
+        cfg = config()
+        url = f'http://{cfg["host"]}:{cfg["port"]}'
+        print(url)
+        run(['xdg-open', url])
+    elif c == 'token':  # (the sign-in token, for the person at this terminal; --rotate signs every browser out)
+        d = access_data('--rotate' in argv)
+        if '--rotate' in argv:
+            print('new token; every browser signed out')
+        print(d['token'])
+    elif c == 'version':
+        print(VERSION)
+    elif c == 'check':
+        d = Deck()
+        d.cfg['pane_titles'] = False  # (a check names no panes)
+        d.collect()
+        d.launched['0' * 12] = {'kind': 'claude', 'name': 'check', 'group': 'check', 'cwd': '/', 'at': time.time()}
+        d.collect()
+        print(f'ok: {len(d.state["sessions"])} sessions, {len(d.state["groups"])} groups, {len(d.state["talk"])} messages')
+    else:
+        print(__doc__)
+
+
+if __name__ == '__main__':
+    main(sys.argv[1:])

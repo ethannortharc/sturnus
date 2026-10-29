@@ -1,0 +1,1000 @@
+#!/usr/bin/env python3
+"""amail - mail and a status board for the Claude Code, Codex and Cursor sessions on this machine.
+
+  amail send TO TEXT... [--fyi|--question|--block]
+                              mail TO (a name, "user" for the person, or "all": sturnus passes it on to the sessions
+                              it concerns). A note (fyi, the default) arrives when TO next stops or starts a turn; a
+                              question (the default when TEXT asks one) or a block also mid-work, and wakes TO when idle
+  amail ask NAME TEXT...      a question; you are told when NAME next stops, unless it answers first. An idle Cursor
+                              session answers at once from a copy of its chat (its own chat is not touched)
+  amail wait NAME [--until TEXT]   be told (mail, and woken when idle) when NAME stops, or once TEXT holds by its
+                              progress (sturnus judges); returns at once
+  amail wait [--timeout S]    wait here for mail: exit 0 with it, or 2 after S seconds (default 900)
+  amail inbox [--peek]        my unread mail (--peek leaves it unread)
+  amail status [NAME]         who is doing what: state, task, progress (sturnus's view when it runs); NAME: its report
+  amail lock [REPO] [--branch B] [--note T] / unlock [REPO] [--force] / locks
+                              a push lock on REPO's branch (default main) that the git pre-push hook honours
+  amail whoami / amail rename NEW     my name on the board (a Codex window's default is codex-<end of its id>)
+  amail install / uninstall   hooks into (out of) Claude Code, Codex and Cursor
+  amail install-git REPO / uninstall-git REPO     the pre-push hook of the push lock
+  amail hook claude|codex|cursor   (run by those hooks; the event on stdin)
+  amail selftest
+
+Who I am: --as NAME, else $AMAIL_NAME, else the session this runs in (a Claude session's own name, codex-..., cursor-...).
+Mail lives in $AMAIL_HOME (default /tmp/amail-<uid>: writable from Codex's and Cursor's sandboxes).
+"""
+import hashlib, json, os, re, shutil, sqlite3, subprocess, sys, time, uuid
+
+HOME = os.environ.get('AMAIL_HOME') or f'/tmp/amail-{os.getuid()}'
+CLAUDE_SESSIONS = os.path.expanduser('~/.claude/sessions')
+CURSOR_CHATS = os.path.expanduser('~/.cursor/chats')
+ME = os.path.realpath(__file__)
+# (hooks and the git hook name this stable path: an upgrade moves ME, and Codex trusts a hook by its command)
+STABLE = os.path.expanduser('~/.local/bin/amail')
+
+
+# ---------- files ----------
+
+def path(*p):
+    d = os.path.join(HOME, *p[:-1]) if len(p) > 1 else HOME
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    return os.path.join(HOME, *p)
+
+
+def put(file, obj, indent=None):
+    tmp = f'{file}.{os.getpid()}.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(obj, f, ensure_ascii=False, indent=indent)
+    os.replace(tmp, file)
+
+
+def get(file, default=None):
+    try:
+        with open(file) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
+
+
+def alive(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def ancestors(pid=None):
+    """(pid, command name) of each ancestor, nearest first."""
+    pid = pid or os.getppid()
+    out = []
+    while pid and pid > 1 and len(out) < 30:
+        try:
+            with open(f'/proc/{pid}/stat') as f:
+                s = f.read()
+            name, ppid = s[s.index('(') + 1:s.rindex(')')], int(s[s.rindex(')') + 2:].split()[1])
+        except (OSError, ValueError):
+            break
+        out.append((pid, name))
+        pid = ppid
+    return out
+
+
+# ---------- who is who ----------
+
+def claude_sessions():
+    """The live Claude Code sessions, from Claude Code's own registry."""
+    out = []
+    try:
+        names = os.listdir(CLAUDE_SESSIONS)
+    except OSError:
+        return out
+    for n in names:
+        if n.endswith('.json') and n[:-5].isdigit():
+            s = get(os.path.join(CLAUDE_SESSIONS, n))
+            # (interactive ones only: a `claude -p` run — a summary, a script — is not a session anyone talks to)
+            if s and s.get('name') and alive(s.get('pid')) and s.get('kind', 'interactive') == 'interactive':
+                out.append(s)
+    return out
+
+
+def board():
+    d = path('board', 'x')
+    out = {}
+    for n in os.listdir(os.path.dirname(d)):
+        if n.endswith('.json'):
+            e = get(os.path.join(os.path.dirname(d), n))
+            if e and e.get('name'):
+                out[e['name']] = e
+    return out
+
+
+def name_of_session(kind, session):
+    if not session:
+        return None
+    if kind == 'claude':
+        for s in claude_sessions():
+            if s.get('sessionId') == session:
+                return s['name']
+    for e in board().values():
+        if e.get('session') == session:
+            return e['name']
+    return None
+
+
+def default_name(kind, session):
+    return f'{kind}-{session[-6:] if kind == "codex" else session[:6]}'  # (a Codex id starts with its time)
+
+
+def whoami(argv_as=None):
+    if argv_as:
+        return argv_as
+    if os.environ.get('AMAIL_NAME'):
+        return os.environ['AMAIL_NAME']
+    t = os.environ.get('CODEX_THREAD_ID')
+    if t:
+        return name_of_session('codex', t) or default_name('codex', t)
+    c = os.environ.get('CURSOR_CONVERSATION_ID') or os.environ.get('CURSOR_AGENT_CHAT_ID')
+    if c:
+        return name_of_session('cursor', c) or default_name('cursor', c)
+    by_pid = {str(s.get('pid')): s['name'] for s in claude_sessions()}
+    for pid, _ in ancestors():
+        if str(pid) in by_pid:
+            return by_pid[str(pid)]
+    for e in board().values():  # (a Cursor shell: its agent's pid, as its hook saw it)
+        if e.get('kind') == 'cursor' and e.get('pid') and any(p == e['pid'] for p, _ in ancestors()):
+            return e['name']
+    return None
+
+
+# ---------- mail ----------
+
+KINDS = ('fyi', 'question', 'block')
+
+
+def kind_of(text, kind=None):
+    return kind if kind in KINDS else 'question' if re.search(r'[?？]\s*$|[?？]\s', text) else 'fyi'
+
+
+def deck():
+    """sturnus's view of the sessions (what each is doing and how it stands), when it runs: else None."""
+    d = get(path('deck.json'))
+    return d if d and time.time() - d.get('at', 0) < 30 else None
+
+
+def send(frm, to, text, kind=None, routed=False):
+    kind = kind_of(text, kind)
+    if to == 'all' and not routed and deck():  # (sturnus passes it on to the sessions it concerns)
+        put(path('route', f'{time.time():.6f}-{uuid.uuid4().hex[:8]}.json'), {'from': frm, 'text': text, 'kind': kind, 'at': time.time()})
+        return ['(the sessions it concerns, by sturnus)']
+    names = everyone() if to == 'all' else [to]
+    sent = []
+    for n in names:
+        if n == frm:
+            continue
+        m = {'id': uuid.uuid4().hex[:12], 'from': frm, 'to': n, 'text': text, 'at': time.time(), 'all': to == 'all' or routed, 'kind': kind}
+        put(path('mail', n, 'new', f'{time.time():.6f}-{m["id"]}.json'), m)
+        sent.append(n)
+    return sent
+
+
+def everyone():
+    return sorted(set(board()) | {s['name'] for s in claude_sessions()})
+
+
+def take(name, peek=False, urgent=False):
+    """My unread mail, oldest first; taken (marked read) unless peek; urgent: questions and blocks only (notes wait for
+    a stop). Two hooks at once: each takes what it renamed."""
+    d = os.path.dirname(path('mail', name, 'new', 'x'))
+    out = []
+    for f in sorted(os.listdir(d)):
+        if not f.endswith('.json'):
+            continue
+        src = os.path.join(d, f)
+        m = get(src)
+        if not m or (urgent and m.get('kind', 'fyi') == 'fyi'):
+            continue
+        if not peek:
+            try:
+                os.replace(src, path('mail', name, 'cur', f))
+            except OSError:
+                continue
+        out.append(m)
+    return out
+
+
+def hhmm(t):
+    return time.strftime('%H:%M', time.localtime(t))
+
+
+def mail_text(me, mails):
+    lines = [f'[amail] {len(mails)} new message{"s" if len(mails) > 1 else ""} for you ({me}):']
+    for m in mails:
+        tag = {'question': ' [question]', 'block': ' [blocking you]'}.get(m.get('kind'), '')
+        lines.append(f'- from {m["from"]} at {hhmm(m["at"])}{" (to all)" if m.get("all") else ""}{tag}: {m["text"]}')
+    lines.append(f'Reply with: amail --as {me} send <name> "..."  (who is doing what: amail status)')
+    return '\n'.join(lines)
+
+
+# ---------- the board ----------
+
+def ago(t):
+    s = max(0, int(time.time() - t))
+    return f'{s}s' if s < 90 else f'{s // 60}m' if s < 5400 else f'{s // 3600}h{s % 3600 // 60:02d}m'
+
+
+def rows():
+    b = board()
+    for s in claude_sessions():  # (Claude Code keeps its own: busy / idle, always current)
+        e = b.setdefault(s['name'], {'name': s['name'], 'kind': 'claude', 'session': s.get('sessionId')})
+        # (Claude Code's own word: idle; busy or shell (running a command) is work; a prompt waiting on the person, waiting)
+        st = {'idle': 'idle', 'waiting': 'waiting', 'permission': 'waiting'}.get(s.get('status'), 'working')
+        if e.get('state') != st:
+            e['state'], e['since'] = st, (s.get('statusUpdatedAt') or 0) / 1000
+        e.update(cwd=e.get('cwd') or s.get('cwd'), pid=s.get('pid'), at=max(e.get('at') or 0, (s.get('updatedAt') or 0) / 1000))
+    live = {s['name'] for s in claude_sessions()}
+    for e in b.values():
+        child = e.get('parent') and e.get('pid')  # (one session started by another: alive while its process is)
+        if child and not alive(e['pid']) and e.get('state') != 'ended':
+            e['state'] = 'gone'
+        elif e.get('kind') == 'claude' and e['name'] not in live and e.get('state') != 'ended' and not child:
+            e['state'] = 'gone'
+        elif e.get('kind') == 'cursor' and e.get('pid') and not alive(e['pid']) and e.get('state') != 'ended':
+            e['state'] = 'gone'
+        e['unread'] = len([f for f in os.listdir(os.path.dirname(path('mail', e['name'], 'new', 'x'))) if f.endswith('.json')])
+    return b
+
+
+def deck_status(d, only=None):
+    ss = d.get('sessions') or {}
+    if only:
+        e = ss.get(only)
+        if not e:
+            return None
+        out = [f'{only} ({e.get("kind")}): {e.get("label")} for {ago(e.get("since") or 0)}, last stir {ago(e.get("at") or 0)} ago'
+               + (f' · {e["where"]}' if e.get('where') else '') + (f' · started by {e["parent"]}' if e.get('parent') else '')
+               + (f' · started from: {e["origin"]}' if e.get('origin') else '')]
+        out += [f'  child: {c["name"]} ({c.get("kind")}) {c.get("label")} — {c.get("title") or c.get("summary") or ""}' for c in ss.values() if c.get('parent') == only]
+        for k, v in (('task', e.get('title')), ('progress', e.get('summary')), ('needs the person', e.get('needs_you'))):
+            if v:
+                out.append(f'  {k}: {v}')
+        r = (d.get('reports') or {}).get(only)
+        if r:
+            out.append(f'  report ({ago(r.get("at") or 0)} ago): {r.get("goal") or ""}')
+            out += [f'    done: {x}' for x in r.get('done') or []]
+            out += [f'    decided ({"the person" if x.get("by") == "user" else "agent"}): {x.get("what")}' for x in r.get('decisions') or []]
+            if r.get('now'):
+                out.append(f'    now: {r["now"]}')
+            out += [f'    next: {x}' for x in r.get('next') or []]
+            out += [f'    ref: {x}' for x in r.get('refs') or []]
+        return '\n'.join(out)
+    order = {'waiting': 0, 'blocked': 1, 'review': 2, 'working': 3, 'idle': 4}
+    line = lambda e, pre='': (f'{pre + e["name"]:<22} {e.get("kind", "?"):<6} {e.get("label", ""):<14} {ago(e.get("since") or 0):>6}  {e.get("title") or ""}'
+                              + (f' — {e["summary"]}' if e.get('summary') else '') + (f'  [started from: {e["origin"]}]' if e.get('origin') else ''))
+    live = sorted((e for e in ss.values() if e.get('state') in order and not e.get('parent')), key=lambda e: (order[e['state']], e['name']))
+    out = []
+    for e in live:
+        out.append(line(e))
+        out += [line(c, '  ↳ ') for c in ss.values() if c.get('parent') == e['name']]
+    quiet = sorted(e['name'] for e in ss.values() if e.get('state') == 'quiet')
+    if quiet:
+        out.append(f'(no stir for a day: {", ".join(quiet)})')
+    return '\n'.join(out) + '\n(sturnus\'s view; amail status NAME for one in full)'
+
+
+def status_text(only=None):
+    d = deck()
+    if d:
+        t = deck_status(d, only)
+        if t:
+            return t
+    b = rows()
+    out = []
+    for e in sorted(b.values(), key=lambda e: ({'working': 0, 'idle': 1}.get(e.get('state'), 2), e['name'])):
+        if only and e['name'] != only:
+            continue
+        if not only and e.get('state') in ('gone', 'ended') and time.time() - (e.get('at') or 0) > 6 * 3600:
+            continue
+        st = e.get('state') or '?'
+        line = f'{e["name"]:<22} {e.get("kind", "?"):<6} {st:<7} {ago(e.get("since") or e.get("at") or 0):>6}'
+        if st == 'working' and e.get('tool'):
+            line += f'  in {e["tool"]} {ago(e.get("tool_at") or 0)}'
+        elif e.get('at'):
+            line += f'  last seen {ago(e["at"])} ago'
+        if e.get('unread'):
+            line += f'  [{e["unread"]} unread]'
+        if e.get('cwd'):
+            line += f'  {e["cwd"].replace(os.path.expanduser("~"), "~")}'
+        out.append(line)
+        if e.get('said'):
+            out.append(f'{"":<22} said: {" ".join(e["said"].split())[:200]}')
+    return '\n'.join(out) or '(nobody on the board yet)'
+
+
+# ---------- hooks ----------
+
+EVENTS = {  # each tool's hook event -> what it means here
+    'SessionStart': 'start', 'sessionStart': 'start',
+    'UserPromptSubmit': 'prompt', 'beforeSubmitPrompt': 'prompt',
+    'PreToolUse': 'pre', 'preToolUse': 'pre',
+    'PostToolUse': 'post', 'postToolUse': 'post', 'PostToolUseFailure': 'post', 'postToolUseFailure': 'post',
+    'afterAgentResponse': 'said',
+    'PermissionRequest': 'ask', 'Notification': 'ask',
+    'Stop': 'stop', 'stop': 'stop',
+    'SessionEnd': 'end', 'sessionEnd': 'end',
+}
+
+
+def last_said(p):
+    t = p.get('last_assistant_message') or p.get('text')
+    if t:
+        return t
+    tp = p.get('transcript_path')
+    if not tp:
+        return None
+    try:  # the transcript's last assistant text (Claude Code / Codex jsonl), from its tail
+        with open(tp, 'rb') as f:
+            f.seek(max(0, os.path.getsize(tp) - 200000))
+            lines = f.read().decode('utf-8', 'replace').splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        m = d.get('message') if isinstance(d.get('message'), dict) else d.get('payload') if isinstance(d.get('payload'), dict) else d
+        if m.get('role') != 'assistant':
+            continue
+        c = m.get('content')
+        texts = [c] if isinstance(c, str) else [x.get('text') for x in c or [] if isinstance(x, dict) and x.get('type') in ('text', 'output_text')]
+        texts = [x for x in texts if x]
+        if texts:
+            return texts[-1]
+    return None
+
+
+def parent_of(pid, me):
+    """The session that started this one (a Claude Code running `codex exec` for a review, say): the nearest process
+    above it that is another session's."""
+    if not pid:
+        return None
+    by_pid = {str(e['pid']): n for n, e in board().items() if e.get('pid') and n != me}
+    by_pid.update({str(s['pid']): s['name'] for s in claude_sessions() if s['name'] != me})
+    for p, comm in ancestors(pid)[1:]:
+        if str(p) in by_pid:
+            return {'pid': p, 'name': by_pid[str(p)]}
+        if is_agent(p, comm):  # (an agent the board does not know, a window opened before the hooks: by its process)
+            return {'pid': p, 'name': None}
+    return None
+
+
+def is_agent(pid, comm):
+    try:
+        with open(f'/proc/{pid}/cmdline', 'rb') as f:
+            args = [x.decode('utf-8', 'replace') for x in f.read().split(b'\0') if x]
+    except OSError:
+        return False
+    return comm in ('claude', 'codex') and not any('app-server' in x for x in args) or (
+        bool(args) and args[0].endswith(('/agent', 'cursor-agent')) and 'worker' not in args)
+
+
+def agent_pid(kind):
+    want = {'claude': ('claude',), 'codex': ('codex',), 'cursor': ('cursor-agent', 'agent', 'node')}[kind]
+    for pid, name in ancestors():
+        if name in want:
+            return pid
+    return None
+
+
+def hook(kind):
+    try:
+        p = json.loads(sys.stdin.read() or '{}')
+    except ValueError:
+        p = {}
+    if os.environ.get('AMAIL_SKIP'):
+        return  # (amail's own side runs: a Cursor chat's copy answering a question)
+    if kind == 'claude' and 'cursor_version' in p:
+        return  # (Cursor runs Claude Code's hooks too; its own amail hook speaks for it)
+    ev = EVENTS.get(p.get('hook_event_name', ''))
+    out = None
+    try:
+        if os.environ.get('AMAIL_DEBUG'):
+            put(path('debug', f'{kind}-{p.get("hook_event_name")}.json'), p)
+        out = on_event(kind, ev, p)
+    except Exception as e:  # (a hook never stands in the agent's way)
+        try:
+            with open(path('hook-errors.log'), 'a') as f:
+                f.write(f'{time.ctime()} {kind} {p.get("hook_event_name")}: {e!r}\n')
+        except OSError:
+            pass
+    if out:
+        print(json.dumps(out))
+    elif kind == 'cursor':
+        print(json.dumps({'continue': True} if ev == 'prompt' else {}))
+
+
+def on_event(kind, ev, p):
+    if not ev:
+        return None
+    session = p.get('session_id') or p.get('conversation_id') or ''
+    if kind == 'cursor':
+        session = p.get('conversation_id') or session
+    if not session:
+        return None
+    me = os.environ.get('AMAIL_NAME') or name_of_session(kind, session) or default_name(kind, session)
+    f = path('board', f'{me}.json')
+    e = get(f, {}) or {}
+    now = time.time()
+    e.update(name=me, kind=kind, session=session, at=now)
+    e['cwd'] = p.get('cwd') or (p.get('workspace_roots') or [None])[0] or e.get('cwd')
+    e['pid'] = agent_pid(kind) or e.get('pid')
+    if 'parent' not in e:  # (once, at its first event)
+        e['parent'] = parent_of(e['pid'], me)
+    if kind != 'codex' and os.environ.get('TMUX_PANE') and os.environ.get('TMUX'):  # (the innermost multiplexer: tmux run in a Zellij pane is tmux's)
+        e['tmux'] = {'sock': os.environ['TMUX'].split(',')[0], 'pane': os.environ['TMUX_PANE']}
+        e.pop('zellij', None)
+    elif kind != 'codex' and os.environ.get('ZELLIJ_PANE_ID'):  # (a Codex hook runs in its daemon: its Zellij env is not the window's)
+        e['zellij'] = {'session': os.environ.get('ZELLIJ_SESSION_NAME'), 'pane': os.environ['ZELLIJ_PANE_ID']}
+        e.pop('tmux', None)
+    if p.get('transcript_path'):
+        e['transcript'] = p['transcript_path']
+    if p.get('hook_event_name') == 'Notification' and 'permission' not in (p.get('message') or '').lower():
+        put(f, e)
+        return None  # (only a permission prompt waits on the person; "waiting for your input" is just idle)
+    state = {'start': 'idle', 'prompt': 'working', 'pre': 'working', 'post': 'working', 'stop': 'idle', 'end': 'ended', 'ask': 'waiting'}.get(ev)
+    if ev == 'ask':
+        e['waiting_for'] = (p.get('message') or p.get('tool_name') or '')[:200]
+    if state and e.get('state') != state:
+        e['state'], e['since'] = state, now
+    if ev == 'pre':
+        e['tool'], e['tool_at'] = p.get('tool_name') or '?', now
+    if ev in ('pre', 'post', 'prompt', 'stop'):
+        e.pop('waiting_for', None)
+    if ev in ('stop', 'said'):
+        s = last_said(p)
+        if s:
+            e['said'] = '\n'.join(' '.join(l.split()) for l in s.strip().splitlines())[:1500]  # (its lines kept: it is Markdown)
+    put(f, e)
+    if ev in ('pre', 'said', 'end', 'ask'):
+        return None  # (never answer a permission request: that is the person's)
+    if ev == 'prompt' and kind == 'cursor':
+        return None  # (Cursor cannot add context here: its mail comes after a tool, or when it stops)
+    mails = take(me, urgent=ev == 'post')
+    intro = ''
+    if ev == 'start':
+        intro = (f'[amail] You are "{me}" on amail, the mailbox shared by the Claude Code, Codex and Cursor sessions on this '
+                 f'machine; mail to you shows up here. Send: amail --as {me} send <name|all> "text". Who is doing what: '
+                 f'amail status (NAME: its report). To be told when another session stops or gets somewhere: amail wait NAME '
+                 f'[--until "what"]. Those waiting on you are told when you stop; no DONE notes needed. The person: send user.')
+    if not mails and not intro:
+        return None
+    text = '\n'.join(x for x in [intro, mails and mail_text(me, mails)] if x)
+    if ev == 'stop':
+        if not mails:
+            return None
+        return {'followup_message': text} if kind == 'cursor' else {'decision': 'block', 'reason': text}
+    if kind == 'cursor':
+        return {'additional_context': text}
+    return {'hookSpecificOutput': {'hookEventName': p.get('hook_event_name'), 'additionalContext': text}}
+
+
+# ---------- waking ----------
+
+def wake_codex(e, text):
+    r = subprocess.run(['codex', 'queue', '--thread', e['session'], '--message', text], capture_output=True, text=True, timeout=60)
+    return r.returncode == 0, (r.stdout or r.stderr).strip()
+
+
+def cursor_chat_dir(chat):
+    try:
+        for ws in os.listdir(CURSOR_CHATS):
+            d = os.path.join(CURSOR_CHATS, ws, chat)
+            if os.path.isdir(d):
+                return d
+    except OSError:
+        pass
+    return None
+
+
+def ask_cursor_copy(e, question):
+    """Ask a copy of a Cursor session's chat, read-only: the session's own chat is never written (a second writer on an
+    open chat loses turns). ponytail: relies on Cursor's chat store layout (meta key '0' holds the agentId, hex JSON);
+    when that changes this answers None and the mail still waits in its inbox."""
+    src = cursor_chat_dir(e['session'])
+    if not src:
+        return None
+    new = str(uuid.uuid4())
+    dst = os.path.join(os.path.dirname(src), new)
+    try:
+        shutil.copytree(src, dst)
+        c = sqlite3.connect(os.path.join(dst, 'store.db'))
+        m = json.loads(bytes.fromhex(c.execute("select value from meta where key='0'").fetchone()[0]))
+        m['agentId'] = new
+        c.execute("update meta set value=? where key='0'", (json.dumps(m, separators=(',', ':')).encode().hex(),))
+        c.commit()
+        c.close()
+        r = subprocess.run(['cursor-agent', '--resume', new, '-p', '--trust', '--mode', 'ask', '--output-format', 'text',
+                            f'(A side question from amail, answered from your chat so far; do not run anything.) {question}'],
+                           capture_output=True, text=True, timeout=240, cwd=e.get('cwd') or None, env={**os.environ, 'AMAIL_SKIP': '1'})
+        return r.stdout.strip() or None
+    except Exception:
+        return None
+    finally:
+        shutil.rmtree(dst, ignore_errors=True)
+
+
+def watch(me, on, until=None, about=None):
+    """Be told when ON stops, or once UNTIL holds by its progress (sturnus judges and wakes me)."""
+    w = {'id': uuid.uuid4().hex[:10], 'by': me, 'on': on, 'until': until, 'about': about, 'at': time.time()}
+    put(path('watches', f'{w["id"]}.json'), w)
+    return w
+
+
+def ask(me, to, text):
+    b = rows()
+    e = b.get(to)
+    sent = send(me, to, text, 'question')
+    if sent and deck():
+        watch(me, to, about=text[:200])  # (told when it stops, unless it answers first)
+    if not sent:
+        return 'nothing sent'
+    if not e:
+        return f'mailed {to} (not on the board yet: it reads mail when its hooks first run)'
+    st = e.get('state')
+    if e.get('kind') == 'codex' and st != 'working':
+        mails = take(to)
+        ok, msg = wake_codex(e, mail_text(to, mails))
+        if ok:
+            return f'{to} was {st}: queued in its Codex session (it answers by amail when that session runs; `amail wait` here)'
+        return f'mailed {to}; waking it failed ({msg[:200]}), so it reads the mail when it next works'
+    if e.get('kind') == 'cursor' and st != 'working':
+        a = ask_cursor_copy(e, text)
+        if a:
+            return f'{to} is {st}; answered from a copy of its chat (the mail also waits for it):\n{a}'
+        return f'mailed {to} ({st}); it reads the mail when it next works'
+    if deck():
+        return f'mailed {to} ({st}); sturnus wakes it when idle, and tells you when it stops (unless it answers first)'
+    if e.get('kind') == 'claude' and st != 'working':
+        return f'mailed {to} ({st}); a Claude session reads amail when it next works - from a Claude session, SendMessage wakes it'
+    return f'mailed {to} ({st}): it sees the mail at its next step'
+
+
+# ---------- the push lock ----------
+
+def repo_key(repo):
+    common = subprocess.run(['git', '-C', repo, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+                            capture_output=True, text=True).stdout.strip()
+    if not common:
+        sys.exit(f'amail: {repo} is not a git repository')
+    return hashlib.sha1(os.path.realpath(common).encode()).hexdigest()[:12], os.path.realpath(common)
+
+
+def lock(me, repo, branch, note, force=False):
+    key, common = repo_key(repo)
+    f = path('locks', f'{key}.json')
+    cur = get(f)
+    if cur and cur['holder'] != me and not force:
+        sys.exit(f'amail: {cur["branch"]} of {cur["repo"]} is locked by {cur["holder"]} since {hhmm(cur["since"])} ({cur.get("note") or "no note"})')
+    put(f, {'repo': os.path.dirname(common) if common.endswith('/.git') else common, 'common': common, 'branch': branch,
+            'holder': me, 'since': time.time(), 'note': note})
+    return f'locked {branch} for {me}'
+
+
+def unlock(me, repo, force=False):
+    key, _ = repo_key(repo)
+    f = path('locks', f'{key}.json')
+    cur = get(f)
+    if not cur:
+        return 'not locked'
+    if cur['holder'] != me and not force:
+        sys.exit(f'amail: held by {cur["holder"]}; unlock --force to break it')
+    os.remove(f)
+    return f'unlocked {cur["branch"]}'
+
+
+def prepush():
+    """git pre-push: refuse a push to a locked branch by anyone but its holder. Any doubt: let it through."""
+    try:
+        common = os.path.realpath(subprocess.run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+                                                 capture_output=True, text=True).stdout.strip())
+        cur = get(os.path.join(HOME, 'locks', f'{hashlib.sha1(common.encode()).hexdigest()[:12]}.json'))
+        if not cur:
+            return 0
+        refs = [l.split()[2] for l in sys.stdin.read().splitlines() if len(l.split()) == 4]
+        if f'refs/heads/{cur["branch"]}' not in refs:
+            return 0
+        me = whoami()
+        if me == cur['holder']:
+            return 0
+        if not me:
+            print(f'amail: note: {cur["branch"]} is locked by {cur["holder"]} ({cur.get("note") or "no note"}); letting a push by an unknown session through', file=sys.stderr)
+            return 0
+        f = os.path.join(HOME, 'locks', f'{hashlib.sha1(common.encode()).hexdigest()[:12]}.json')
+        if me not in cur.setdefault('waiters', []):
+            cur['waiters'].append(me)  # (told when it is released)
+            put(f, cur)
+        print(f'amail: {cur["branch"]} is locked by {cur["holder"]} since {hhmm(cur["since"])} ({cur.get("note") or "no note"}). '
+              f'You will get mail when it is released; or ask it: amail ask {cur["holder"]} "..."', file=sys.stderr)
+        return 1
+    except Exception:
+        return 0
+
+
+# ---------- installing ----------
+
+def cmd(kind):
+    return f'{sys.executable} {STABLE} hook {kind}'
+
+
+def install():
+    done = []
+    has = lambda d: os.path.isdir(os.path.expanduser(d))  # (a tool not on this machine gets no hooks)
+    for f in ('~/.claude/settings.json', '~/.codex/hooks.json', '~/.cursor/hooks.json'):
+        f = os.path.expanduser(f)
+        if os.path.exists(f) and get(f) is None:  # (never write over a file we cannot read)
+            sys.exit(f'amail: {f} is not valid JSON; fix it first, nothing was changed')
+    # Claude Code
+    f = os.path.expanduser('~/.claude/settings.json')
+    s = get(f, {}) if has('~/.claude') else None
+    if s is None:
+        done.append('Claude Code: not here')
+    else:
+        install_claude(f, s)
+        done.append('Claude Code: ~/.claude/settings.json')
+    if has('~/.codex'):
+        install_codex()
+        done.append(f'Codex: ~/.codex/hooks.json ({trust_codex()})')
+    else:
+        done.append('Codex: not here')
+    if has('~/.cursor'):
+        install_cursor()
+        done.append('Cursor: ~/.cursor/hooks.json')
+    else:
+        done.append('Cursor: not here')
+    return '\n'.join(done)
+
+
+def install_claude(f, s):
+    if not os.path.exists(f + '.amail-bak') and os.path.exists(f):
+        shutil.copy2(f, f + '.amail-bak')
+    hooks = s.setdefault('hooks', {})
+    for ev, matcher in [('SessionStart', None), ('UserPromptSubmit', None), ('PreToolUse', '*'), ('PostToolUse', '*'), ('PermissionRequest', '*'), ('Notification', None), ('Stop', None), ('SessionEnd', None)]:
+        groups = hooks.setdefault(ev, [])
+        if not any('hook claude' in h.get('command', '') and 'amail' in h.get('command', '') for g in groups for h in g.get('hooks', [])):
+            g = {'hooks': [{'type': 'command', 'command': cmd('claude'), 'timeout': 10}]}
+            if matcher:
+                g['matcher'] = matcher
+            groups.append(g)
+    put(f, s, 2)
+
+
+def install_codex():
+    f = os.path.expanduser('~/.codex/hooks.json')
+    s = get(f, {}) or {}
+    if not os.path.exists(f + '.amail-bak') and os.path.exists(f):
+        shutil.copy2(f, f + '.amail-bak')
+    hooks = s.setdefault('hooks', {})
+    for ev in ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'PermissionRequest', 'Stop', 'SessionEnd']:
+        groups = hooks.setdefault(ev, [])
+        if not any('hook codex' in h.get('command', '') and 'amail' in h.get('command', '') for g in groups for h in g.get('hooks', [])):
+            groups.append({'hooks': [{'type': 'command', 'command': cmd('codex'), 'timeout': 10}]})
+    put(f, s, 2)
+
+
+def install_cursor():
+    f = os.path.expanduser('~/.cursor/hooks.json')
+    s = get(f, {}) or {}
+    if not os.path.exists(f + '.amail-bak') and os.path.exists(f):
+        shutil.copy2(f, f + '.amail-bak')
+    s.setdefault('version', 1)
+    hooks = s.setdefault('hooks', {})
+    for ev in ['sessionStart', 'beforeSubmitPrompt', 'preToolUse', 'postToolUse', 'postToolUseFailure', 'afterAgentResponse', 'stop', 'sessionEnd']:
+        groups = hooks.setdefault(ev, [])
+        if not any('hook cursor' in g.get('command', '') and 'amail' in g.get('command', '') for g in groups):
+            groups.append({'command': cmd('cursor'), 'timeout': 10})
+    put(f, s, 2)
+
+
+def trust_codex():
+    """Codex runs a new hook only once it is trusted: trust amail's own (and only those), as its Review hooks screen does."""
+    reqs = [{'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {'clientInfo': {'name': 'amail', 'version': '1'}}},
+            {'jsonrpc': '2.0', 'method': 'initialized'},
+            {'jsonrpc': '2.0', 'id': 2, 'method': 'hooks/list', 'params': {'cwds': [os.path.expanduser('~')]}}]
+    p = subprocess.Popen(['codex', 'app-server'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    try:
+        for r in reqs:
+            p.stdin.write(json.dumps(r) + '\n')
+        p.stdin.flush()
+        mine = None
+        for line in p.stdout:
+            try:
+                m = json.loads(line)
+            except ValueError:
+                continue
+            if m.get('id') == 2:
+                mine = {h['key']: h['currentHash'] for e in m.get('result', {}).get('data', []) for h in e['hooks']
+                        if 'amail' in (h.get('command') or '') and h.get('trustStatus') in ('untrusted', 'modified')}
+                if not mine:
+                    return 'its hooks trusted'
+                p.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': 3, 'method': 'config/batchWrite', 'params': {
+                    'edits': [{'keyPath': 'hooks.state', 'mergeStrategy': 'upsert', 'value': {k: {'trusted_hash': h} for k, h in mine.items()}}]}}) + '\n')
+                p.stdin.flush()
+            elif m.get('id') == 3:
+                return f'trusted its {len(mine)} hooks' if 'result' in m else f'trust them in a Codex window: {m.get("error")}'
+        return 'trust them in a Codex window (/hooks)'
+    except Exception as e:
+        return f'trust them in a Codex window (/hooks): {e!r}'
+    finally:
+        p.kill()
+
+
+def codex_hook_keys():
+    """amail's Codex hooks as Codex lists them: {key: (trust status, current hash)}."""
+    reqs = [{'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {'clientInfo': {'name': 'amail', 'version': '1'}}},
+            {'jsonrpc': '2.0', 'method': 'initialized'},
+            {'jsonrpc': '2.0', 'id': 2, 'method': 'hooks/list', 'params': {'cwds': [os.path.expanduser('~')]}}]
+    try:
+        p = subprocess.Popen(['codex', 'app-server'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    except OSError:
+        return {}
+    try:
+        p.stdin.write(''.join(json.dumps(r) + '\n' for r in reqs))
+        p.stdin.flush()
+        for line in p.stdout:
+            try:
+                m = json.loads(line)
+            except ValueError:
+                continue
+            if m.get('id') == 2:
+                return {h['key']: (h.get('trustStatus'), h.get('currentHash')) for e in m.get('result', {}).get('data', []) for h in e['hooks']
+                        if 'amail' in (h.get('command') or '') and 'hook codex' in (h.get('command') or '')}
+        return {}
+    finally:
+        p.kill()
+
+
+def uninstall():
+    """Take amail's hooks out of Claude Code, Codex and Cursor (and Codex's trust of them); nothing else is touched."""
+    done = []
+    mine = lambda c: 'amail' in (c or '') and ' hook ' in (c or '')
+    f = os.path.expanduser('~/.claude/settings.json')
+    s = get(f)
+    if s and s.get('hooks'):
+        for ev in list(s['hooks']):
+            s['hooks'][ev] = [g for g in s['hooks'][ev] if not any(mine(h.get('command')) for h in g.get('hooks', []))]
+            if not s['hooks'][ev]:
+                del s['hooks'][ev]
+        put(f, s, 2)
+        done.append('Claude Code hooks removed')
+    f = os.path.expanduser('~/.codex/hooks.json')
+    s = get(f)
+    if s and s.get('hooks'):
+        keys = codex_hook_keys()
+        for ev in list(s['hooks']):
+            s['hooks'][ev] = [g for g in s['hooks'][ev] if not any(mine(h.get('command')) for h in g.get('hooks', []))]
+            if not s['hooks'][ev]:
+                del s['hooks'][ev]
+        put(f, s, 2)
+        cf = os.path.expanduser('~/.codex/config.toml')
+        if keys and os.path.exists(cf):
+            t = open(cf).read()
+            for k in keys:
+                t = re.sub(r'\n*\[hooks\.state\."' + re.escape(k) + r'"\]\ntrusted_hash = "[^"]*"\n', '\n', t)
+            with open(cf, 'w') as w:
+                w.write(t)
+        done.append(f'Codex hooks removed (and {len(keys)} trust entries)')
+    f = os.path.expanduser('~/.cursor/hooks.json')
+    s = get(f)
+    if s and s.get('hooks'):
+        for ev in list(s['hooks']):
+            s['hooks'][ev] = [g for g in s['hooks'][ev] if not mine(g.get('command'))]
+            if not s['hooks'][ev]:
+                del s['hooks'][ev]
+        put(f, s, 2)
+        done.append('Cursor hooks removed')
+    return '\n'.join(done) or 'no hooks found'
+
+
+def uninstall_git(repo):
+    _, common = repo_key(repo)
+    f = os.path.join(common, 'hooks', 'pre-push')
+    if os.path.exists(f) and 'amail' in open(f).read():
+        os.remove(f)
+        return f'removed {f}'
+    return f'no amail pre-push in {repo}'
+
+
+GIT_HOOK = '''#!/bin/sh
+# amail: refuse a push to a branch another session holds the lock on (amail lock). Without amail: no-op.
+[ -e "{me}" ] || exit 0
+exec "{py}" "{me}" prepush "$@"
+'''
+
+
+def install_git(repo):
+    _, common = repo_key(repo)
+    f = os.path.join(common, 'hooks', 'pre-push')
+    if os.path.exists(f) and 'amail' not in open(f).read():
+        sys.exit(f'amail: {f} exists and is not amail\'s; not replacing it')
+    hooks_path = subprocess.run(['git', '-C', repo, 'config', '--get', 'core.hooksPath'], capture_output=True, text=True).stdout.strip()
+    if hooks_path:
+        sys.exit(f'amail: {repo} uses core.hooksPath={hooks_path}; add "amail prepush" to its pre-push yourself')
+    os.makedirs(os.path.dirname(f), exist_ok=True)
+    with open(f, 'w') as h:
+        h.write(GIT_HOOK.format(me=STABLE, py=sys.executable))
+    os.chmod(f, 0o755)
+    return f'installed {f}'
+
+
+# ---------- the check ----------
+
+def selftest():
+    import tempfile
+    global HOME
+    old = HOME
+    HOME = tempfile.mkdtemp(prefix='amail-t')
+    try:
+        os.environ.pop('AMAIL_NAME', None)
+        def ev(kind, name, **p):
+            p.setdefault('session_id', 'sess-' + kind + '-0123456789')
+            p['hook_event_name'] = name
+            return on_event(kind, EVENTS[name], p)
+        assert 'You are "codex-456789"' in ev('codex', 'SessionStart')['hookSpecificOutput']['additionalContext']
+        ev('codex', 'PreToolUse', tool_name='Bash')
+        assert board()['codex-456789']['state'] == 'working'
+        assert send('lead', 'codex-456789', 'status?') == ['codex-456789']
+        out = ev('codex', 'PostToolUse')
+        assert 'from lead' in out['hookSpecificOutput']['additionalContext'] and 'status?' in out['hookSpecificOutput']['additionalContext']
+        assert ev('codex', 'PostToolUse') is None  # (delivered once)
+        send('lead', 'codex-456789', 'one more')
+        stop = ev('codex', 'Stop', last_assistant_message='Merged abc123.')
+        assert stop['decision'] == 'block' and 'one more' in stop['reason']
+        assert ev('codex', 'Stop') is None and board()['codex-456789']['state'] == 'idle' and board()['codex-456789']['said'] == 'Merged abc123.'
+        ev('cursor', 'sessionStart', conversation_id='abcdef12-0000')
+        send('lead', 'cursor-abcdef', 'hi')
+        assert ev('cursor', 'beforeSubmitPrompt', conversation_id='abcdef12-0000') is None
+        assert 'hi' in ev('cursor', 'stop', conversation_id='abcdef12-0000')['followup_message']
+        assert set(send('lead', 'all', 'hold main')) >= {'codex-456789', 'cursor-abcdef'}
+        assert len(take('codex-456789', peek=True)) == 1 and len(take('codex-456789')) == 1 and not take('codex-456789')
+        assert 'codex-456789' in status_text()
+        repo = tempfile.mkdtemp(prefix='amail-r')
+        subprocess.run(['git', 'init', '-q', repo], check=True)
+        lock('lead', repo, 'main', 'releasing')
+        try:
+            lock('other', repo, 'main', '')
+            assert False, 'a second holder'
+        except SystemExit:
+            pass
+        os.environ['AMAIL_NAME'] = 'other'
+        cwd = os.getcwd()
+        os.chdir(repo)
+        sys.stdin = open(os.devnull)
+        import io
+        sys.stdin = io.StringIO('refs/heads/main 1111 refs/heads/main 2222\n')
+        assert prepush() == 1
+        sys.stdin = io.StringIO('refs/heads/x 1111 refs/heads/feature 2222\n')
+        assert prepush() == 0
+        os.environ['AMAIL_NAME'] = 'lead'
+        sys.stdin = io.StringIO('refs/heads/main 1111 refs/heads/main 2222\n')
+        assert prepush() == 0
+        os.chdir(cwd)
+        assert unlock('lead', repo) == 'unlocked main'
+        shutil.rmtree(repo)
+        return 'selftest ok'
+    finally:
+        os.environ.pop('AMAIL_NAME', None)
+        shutil.rmtree(HOME, ignore_errors=True)
+        HOME = old
+
+
+# ---------- the command line ----------
+
+def main(argv):
+    as_ = None
+    if len(argv) >= 2 and argv[0] == '--as':
+        as_, argv = argv[1], argv[2:]
+    if not argv or argv[0] in ('-h', '--help', 'help'):
+        print(__doc__)
+        return 0
+    c, a = argv[0], argv[1:]
+    if c == 'hook':
+        hook(a[0] if a else 'claude')
+        return 0
+    if c == 'prepush':
+        return prepush()
+    if c == 'selftest':
+        print(selftest())
+        return 0
+    if c == 'status':
+        print(status_text(a[0] if a else None))
+        return 0
+    if c == 'locks':
+        d = os.path.dirname(path('locks', 'x'))
+        ls = [get(os.path.join(d, f)) for f in os.listdir(d) if f.endswith('.json')]
+        print('\n'.join(f'{l["repo"]} {l["branch"]}: {l["holder"]} since {hhmm(l["since"])} ({l.get("note") or ""})' for l in ls if l) or 'no locks')
+        return 0
+    if c == 'install':
+        print(install())
+        return 0
+    if c == 'install-git':
+        print(install_git(a[0] if a else '.'))
+        return 0
+    if c == 'uninstall':
+        print(uninstall())
+        return 0
+    if c == 'uninstall-git':
+        print(uninstall_git(a[0] if a else '.'))
+        return 0
+    me = whoami(as_)
+    if c == 'whoami':
+        print(me or '(unknown: pass --as NAME or set AMAIL_NAME)')
+        return 0 if me else 1
+    if not me:
+        sys.exit('amail: who are you? pass --as NAME (your name is in your session start note) or set AMAIL_NAME')
+    if c == 'rename':
+        if not a or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,40}', a[0]):
+            sys.exit('usage: amail rename NEW (letters, digits, _ . -)')
+        new = a[0]
+        if new in rows() and new != me:
+            sys.exit(f'amail: {new} is taken')
+        e = get(path('board', f'{me}.json'))
+        if not e:
+            sys.exit(f'amail: {me} is not on the board yet')
+        e['name'] = new
+        put(path('board', f'{new}.json'), e)
+        os.remove(path('board', f'{me}.json'))
+        for box in ('new', 'cur'):  # (its mail moves with it)
+            src = os.path.dirname(path('mail', me, box, 'x'))
+            for f in os.listdir(src):
+                os.replace(os.path.join(src, f), path('mail', new, box, f))
+        print(f'{me} is now {new}')
+        return 0
+    if c in ('send', 'ask'):
+        if len(a) < 2:
+            sys.exit(f'usage: amail {c} TO TEXT...')
+        kind = next((k for k in KINDS if f'--{k}' in a), None)
+        words = [x for x in a[1:] if x not in tuple(f'--{k}' for k in KINDS)]
+        if c == 'ask':
+            print(ask(me, a[0], ' '.join(words)))
+        else:
+            sent = send(me, a[0], ' '.join(words), kind)
+            print(f'sent to {", ".join(sent)}' if sent else 'nobody to send to')
+        return 0
+    if c == 'inbox':
+        mails = take(me, peek='--peek' in a)
+        print(mail_text(me, mails) if mails else 'no new mail')
+        return 0
+    if c == 'wait' and a and not a[0].startswith('--'):
+        until = a[a.index('--until') + 1] if '--until' in a and a.index('--until') + 1 < len(a) else None
+        if a[0] not in rows() and a[0] not in ((deck() or {}).get('sessions') or {}):
+            sys.exit(f'amail: no session called {a[0]} (amail status)')
+        watch(me, a[0], until)
+        if not deck():
+            return print(f'noted, but sturnus is not running, so nobody checks it; `amail wait` (no name) waits here for mail') or 0
+        print(f'watching {a[0]}: you get mail{" (and are woken when idle)"} when {"this holds: " + until if until else "it stops"}')
+        return 0
+    if c == 'wait':
+        t = 900
+        if '--timeout' in a:
+            t = float(a[a.index('--timeout') + 1])
+        end = time.time() + t
+        while time.time() < end:
+            mails = take(me)
+            if mails:
+                print(mail_text(me, mails))
+                return 0
+            time.sleep(2)
+        print(f'[amail] no mail for {me} in {int(t)}s. The board:\n{status_text()}')
+        return 2
+    if c in ('lock', 'unlock'):
+        repo = next((x for i, x in enumerate(a) if not x.startswith('--') and (i == 0 or a[i - 1] not in ('--branch', '--note'))), '.')
+        branch = a[a.index('--branch') + 1] if '--branch' in a else 'main'
+        note = a[a.index('--note') + 1] if '--note' in a else ''
+        print(lock(me, repo, branch, note, '--force' in a) if c == 'lock' else unlock(me, repo, '--force' in a))
+        return 0
+    sys.exit(f'amail: unknown command {c} (amail help)')
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))
