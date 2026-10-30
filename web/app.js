@@ -507,7 +507,9 @@ Object.assign(EN, {
 "这个地址不是 https，浏览器不让网页用麦克风：本机用 http://127.0.0.1:7788，或给 tailnet 开 https。": "This address is not https, so the browser won’t let the page use the microphone: use http://127.0.0.1:7788 on this machine, or turn on https for the tailnet.",
 "接入方式": "Connection",
 "服务": "Service",
-"https://api.openai.com/v1（也可以是 Groq 等兼容的）": "https://api.openai.com/v1 (or a compatible one such as Groq)",
+"https://api.openai.com/v1（也可以是 Groq、本机 omlx 等兼容的）": "https://api.openai.com/v1 (or a compatible one such as Groq, or omlx on this machine)",
+"key 只存在本机（权限 600）；自己的服务没设 key 就空着": "the key stays on this machine (mode 600); leave it empty for a server of your own that has none",
+"已换上 {m}，再点测试": "{m} is in: test again",
 "{p} 的 key，只存在本机（权限 600）": "{p} key, stays on this machine (mode 600)",
 "自动（中英混说）": "Auto (mixed Chinese and English)",
 "语音输入（{l}）：点一下开始，再点一下停": "Voice input ({l}): click to start, click again to stop",
@@ -1862,16 +1864,16 @@ const VS = { soniox: 'Soniox', elevenlabs: 'ElevenLabs', assemblyai: 'AssemblyAI
 const VMODEL = { soniox: 'stt-async-v3', elevenlabs: 'scribe_v1', assemblyai: 'universal', openai: 'gpt-4o-mini-transcribe' };
 let VE = null;  // (the voice form being edited)
 function voicePane() {
-  const sv = S.voice || {}, keys = sv.keys || {};
+  const sv = S.voice || {}, keys = sv.keys || {}, keyed = keys[sv.provider] || (sv.provider === 'openai' && sv.url);  // (a server of one's own, such as omlx, may want no key)
   const v = VE || (VE = { provider: sv.provider || 'openai', model: sv.model || (sv.defaults || VMODEL)[sv.provider || 'openai'], url: sv.url || '', lang: sv.lang || '', key: keys[sv.provider] || '' });
   return `<h3>${t('语音输入')}</h3><p class="lead">${t('开启后，写字的地方会多一个麦克风：点一下开始说，再点一下停，转出来的文字放到光标处。录音只转给你选的服务。')}</p>
-    <div class="v-now"><span class="dot ${sv.on && keys[sv.provider] ? 'working' : ''}"></span>${t('现在用的：')}<b>${esc(mlabel(sv.label))}</b>${keys[sv.provider] ? '' : ` · <em>${t('还没填 key')}</em>`}${sv.on ? '' : ` · ${t('关着')}`}</div>
+    <div class="v-now"><span class="dot ${sv.on && keyed ? 'working' : ''}"></span>${t('现在用的：')}<b>${esc(mlabel(sv.label))}</b>${keyed ? '' : ` · <em>${t('还没填 key')}</em>`}${sv.on ? '' : ` · ${t('关着')}`}</div>
     <div class="opt"><div><h4>${t('开启语音输入')}</h4><p>${window.isSecureContext ? t('这个页面可以用麦克风。') : t('这个地址不是 https，浏览器不让网页用麦克风：本机用 http://127.0.0.1:7788，或给 tailnet 开 https。')}</p></div><label class="switch"><input type="checkbox" id="vOn" ${sv.on ? 'checked' : ''}></label></div>
     <div class="mblock"><h4>${t('接入方式')}</h4>
       <div class="f-row"><label>${t('服务')}</label><div class="seg">${Object.entries(VS).map(([k, l]) => `<button type="button" data-vs="${k}" class="${v.provider === k ? 'on' : ''}">${t(l)}${k === sv.provider ? ' ·' : ''}</button>`).join('')}</div></div>
       <div class="f-row"><label>${t('模型')}</label><input class="field" id="vModel" value="${esc(v.model || '')}" placeholder="${esc((sv.defaults || VMODEL)[v.provider] || '')}"></div>
-      ${v.provider === 'openai' ? `<div class="f-row"><label>${t('接口地址')}</label><input class="field" id="vUrl" value="${esc(v.url || '')}" placeholder="${t('https://api.openai.com/v1（也可以是 Groq 等兼容的）')}"></div>` : ''}
-      <div class="f-row"><label>API Key</label><input class="field" id="vKey" type="password" value="${esc(v.key || '')}" placeholder="${t('{p} 的 key，只存在本机（权限 600）', { p: esc(t(VS[v.provider])) })}"></div>
+      ${v.provider === 'openai' ? `<div class="f-row"><label>${t('接口地址')}</label><input class="field" id="vUrl" value="${esc(v.url || '')}" placeholder="${t('https://api.openai.com/v1（也可以是 Groq、本机 omlx 等兼容的）')}"></div>` : ''}
+      <div class="f-row"><label>API Key</label><input class="field" id="vKey" type="password" value="${esc(v.key || '')}" placeholder="${v.provider === 'openai' ? t('key 只存在本机（权限 600）；自己的服务没设 key 就空着') : t('{p} 的 key，只存在本机（权限 600）', { p: esc(t(VS[v.provider])) })}"></div>
       <div class="f-row"><label>${t('语言')}</label><div class="seg">${[['', t('自动（中英混说）')], ['zh', '中文'], ['en', 'English']].map(([k, l]) => `<button type="button" data-vl="${k}" class="${(v.lang || '') === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
       <div class="f-row"><label></label><div class="inline"><button class="btn" data-vact="voice_test">${t('测试')}</button><button class="btn primary" data-vact="voice">${t('保存并使用')}</button></div></div>
       <div class="result" id="vRes"></div></div>`;
@@ -2003,8 +2005,10 @@ document.addEventListener('click', async e => {
     const j = await api(el.dataset.vact, body).catch(e => ({ ok: false, msg: e.message }));
     if (j.ok && el.dataset.vact === 'voice') { VE = null; await load(); drawSettings(); }
     const r2 = $('#vRes'); r2.className = 'result ' + (j.ok ? 'ok' : 'bad'); r2.textContent = j.msg;
+    if (j.models) r2.insertAdjacentHTML('beforeend', `<div class="v-models">${j.models.map(m => `<button type="button" class="chip" data-vm="${esc(m)}">${esc(m)}</button>`).join('')}</div>`);
     return;
   }
+  if ((el = q('[data-vm]'))) { readVoice(); VE.model = el.dataset.vm; drawSettings(); $('#vRes').textContent = t('已换上 {m}，再点测试', { m: el.dataset.vm }); return; }
   if ((el = q('[data-rec]'))) { takeRec(el.dataset.rec); return; }
   if ((el = q('[data-stop]'))) { if (confirm(t('停止这个子 agent？它和它启动的进程都会被结束。'))) post('stop', { id: el.dataset.stop }); return; }
   if ((el = q('[data-mreply]'))) { const f = document.querySelector(`.m-reply[data-mid="${CSS.escape(el.dataset.mreply)}"]`); if (f) { f.hidden = !f.hidden; if (!f.hidden) f.querySelector('input').focus(); } return; }

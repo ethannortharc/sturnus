@@ -865,16 +865,26 @@ def uuid4hex():
     return os.urandom(12).hex()
 
 
+SPEECH = re.compile(r'asr|whisper|transcri|parakeet|sensevoice|paraformer|stt', re.I)  # (a model id that turns speech into text)
+
+
+def voice_models(v, key):
+    """The speech-to-text models an OpenAI-compatible endpoint serves (all of them when none looks like one)."""
+    url = (v.get('url') or 'https://api.openai.com/v1').rstrip('/') + '/models'
+    ids = [m['id'] for m in http_json(url, headers={'Authorization': f'Bearer {key}'} if key else {}, timeout=10).get('data') or [] if m.get('id')]
+    return [m for m in ids if SPEECH.search(m)] or ids
+
+
 def transcribe(audio, ctype, v, key):
     """Speech to text by the chosen service: Soniox, ElevenLabs, AssemblyAI, or any OpenAI-compatible endpoint."""
     p, lang = v['provider'], v.get('lang') or ''
     model = v.get('model') or STT_MODEL[p]
-    if not key:
+    if not key and not (p == 'openai' and v.get('url')):  # (a server of one's own, such as omlx, may want none)
         raise RuntimeError(tx('还没填 API key', 'No API key yet'))
     if p == 'openai':
         body, ct = multipart([('model', model)] + ([('language', lang)] if lang else []), audio, ctype)
         url = (v.get('url') or 'https://api.openai.com/v1').rstrip('/') + '/audio/transcriptions'
-        return http_json(url, body, {'Authorization': f'Bearer {key}', 'Content-Type': ct}).get('text', '')
+        return http_json(url, body, {**({'Authorization': f'Bearer {key}'} if key else {}), 'Content-Type': ct}).get('text', '')
     if p == 'elevenlabs':
         body, ct = multipart([('model_id', model)] + ([('language_code', lang)] if lang else []), audio, ctype)
         return http_json('https://api.elevenlabs.io/v1/speech-to-text', body, {'xi-api-key': key, 'Content-Type': ct}).get('text', '')
@@ -2424,10 +2434,17 @@ class Deck:
             key = body.get('key')
             key = key if key and '…' not in key and key not in ('已设置', 'set') else None
             if what == 'voice_test':
-                t = time.time()
+                t, k = time.time(), key if key is not None else voice_key(v['provider'])
                 try:
-                    transcribe(silence(), 'audio/wav', v, key if key is not None else voice_key(v['provider']))
+                    transcribe(silence(), 'audio/wav', v, k)
                 except Exception as e:
+                    if v['provider'] == 'openai':  # (the model a compatible server lacks: the ones it has, to pick from)
+                        try:
+                            ids, model = voice_models(v, k), v['model'] or STT_MODEL['openai']
+                        except Exception:
+                            ids = None
+                        if ids and model not in ids:
+                            return False, {'msg': tx(f'这个接口没有模型 {model}。它有下面这些，点一个换上，再测试：', f'This endpoint has no model {model}. It has the ones below: pick one, then test again:'), 'models': ids[:30]}
                     return False, tx(f'{voice_label(v)} 没调通：{e}', f'{voice_label(v)} did not work: {e}')[:300]
                 return True, tx(f'{voice_label(v)} 调通了（{time.time() - t:.1f} 秒）', f'{voice_label(v)} works ({time.time() - t:.1f} s)')
             self.cfg['voice'] = v
