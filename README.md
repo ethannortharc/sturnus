@@ -33,7 +33,7 @@ The inline GIF is an 18-second preview at 2× speed; the full video plays at nor
 
 The workspace dashboard puts requests for a decision, blocked work, and results ready for review first. Below that, work items show branch progress and uncommitted files; session cards explain what each agent is doing.
 
-The left rail switches workspaces. The adjacent column follows your current workspace and groups its sessions by state. Sub-agents appear under their parent session, with their own activity and conversation records.
+The left rail switches workspaces. The adjacent column follows your current workspace and lists its sessions in one list: those working while waiting on you first, then working, then waiting on you, then idle, each state in a fixed order so working sessions keep their places. A filter above it shows one state. Sub-agents appear under their parent session, with their own activity and conversation records.
 
 ### 2. Follow the work, even after a session ends
 

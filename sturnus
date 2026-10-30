@@ -468,11 +468,20 @@ def agent_model(kind):
 
 
 def first_time(path):
-    """When a conversation file begins: its first line's timestamp, or None."""
+    """When a conversation file begins: the first timestamp in its first lines, or None. (Claude Code may open one with
+    lines that carry none.)"""
     try:
         with open(path, 'rb') as f:
-            ts = json.loads(f.readline(400000)).get('timestamp')
-        return time.mktime(time.strptime(ts[:19], '%Y-%m-%dT%H:%M:%S')) - time.timezone if ts else None
+            for _ in range(20):
+                line = f.readline(400000)
+                if not line:
+                    return None
+                try:
+                    ts = json.loads(line).get('timestamp')
+                    if ts:
+                        return time.mktime(time.strptime(ts[:19], '%Y-%m-%dT%H:%M:%S')) - time.timezone
+                except Exception:
+                    continue
     except Exception:
         return None
 
@@ -1704,7 +1713,15 @@ class Deck:
         self.projects = Projects(self.cfg)
         self.chan_at, self.chan_seen, self.woke, self.boards_at = {}, {}, {}, {}  # (calling sessions in: how far each channel was read, the posts looked at, when each was woken; the page's view of the channels)
         self.names = {}  # (a session's id -> its name: a Claude session renamed takes its channel places along)
+        self.born_at = {}  # (a session's id -> when it began: found once, so the column's order holds still)
         self.lock = threading.Lock()
+
+    def began(self, s, born):
+        """When a session began: its conversation's first timestamp, else its process's start, else when this deck first saw it."""
+        if s['id'] not in self.born_at:
+            p = transcript_of(s)
+            self.born_at[s['id']] = (p and first_time(p)) or born.get(s.get('pid')) or time.time()
+        return self.born_at[s['id']]
 
     def note(self, text, ok=True):
         self.events.appendleft({'at': time.time(), 'text': text, 'ok': ok})
@@ -1811,6 +1828,8 @@ class Deck:
             if s.get('window_pid'):
                 by_pid.setdefault(s['window_pid'], s)
         born = {p['pid']: p['start'] for p in ps}
+        for s in sessions:
+            s['born'] = self.began(s, born)
         def starter(s):  # (who started a headless run: the live session in the pane it was started from, started before it)
             if not s.get('from'):
                 return None

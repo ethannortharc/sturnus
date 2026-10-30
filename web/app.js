@@ -748,6 +748,12 @@ const muxTag = k => (k !== '~none' && muxOf(k) === 'tmux' ? '<span class="mux">t
 const webOk = s => !!s.loc;  // (the terminal in the page: Zellij or tmux)
 const big = n => (n > 999 ? '999+' : n);  // (a count on a badge: a busy channel holds thousands)
 const ORDER = s => ({ waiting: 0, asking: 1, blocked: 2, review: 3, working: 4, idle: 5, ended: 6, gone: 7 }[standing(s)[0]] ?? 9);
+// the column's one list: working and waiting on you first, then working, then waiting on you, then idle; in one state the
+// oldest first, so the list holds still while they work. A filter shows one state; on a long list the idle ones fold.
+const SIDE_RANK = { asking: 0, working: 1, waiting: 2, blocked: 2, review: 3, idle: 4 };
+const sideOrder = (a, b) => (SIDE_RANK[standing(a)[0]] ?? 9) - (SIDE_RANK[standing(b)[0]] ?? 9) || (a.born || 0) - (b.born || 0) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+const SIDE_SHOW = { all: () => true, need: st => ['asking', 'waiting', 'blocked', 'review'].includes(st), working: st => ['asking', 'working'].includes(st), idle: st => st === 'idle' };
+let sideShow = SIDE_SHOW[store.get('deck.sideShow', 'all')] ? store.get('deck.sideShow', 'all') : 'all';
 const isToday = t => new Date(t * 1000).toDateString() === new Date().toDateString();
 
 // ---------- the rail and the column beside it ----------
@@ -818,7 +824,7 @@ function drawRail() {
 }
 function drawSide() {
   const sp = space(), cur = route.name === 'session' ? S.sessions.find(x => x.id === route.id) : null, tops = roots(S.sessions);
-  draw('side', [sp, route, [...quietOpen], S.sessions.map(s => [s.id, s.title, s.state, s.status, s.needs_you && 1, (s.asks || []).length, asking(s), s.stale, s.kind, s.project, s.workspace, s.branch, (s.subs || []).map(a => [a.id, a.state, a.task])]), Math.floor(Date.now() / 60000), (S.workspaces || []).map(w => [w.key, w.live, w.projects.length]),
+  draw('side', [sp, route, [...quietOpen], S.sessions.map(s => [s.id, s.title, s.state, s.status, s.needs_you && 1, (s.asks || []).length, asking(s), s.stale, s.kind, s.project, s.workspace, s.branch, s.born, (s.subs || []).map(a => [a.id, a.state, a.task])]), sideShow, Math.floor(Date.now() / 60000), (S.workspaces || []).map(w => [w.key, w.live, w.projects.length]),
     Object.values(S.boards || {}).map(b => [b.key, b.unread]), Object.entries(S.groups || {}).map(([g, z]) => [g, z.clients.length, z.agents]), (S.queue || []).map(i => i.status), railTab, [...quietOpen],
     Object.values(S.projects || {}).map(p => [p.key, p.facts && p.facts.at]), (S.workspaces || []).map(w => w.groups)], () => {
     const head = (x, sub, extra = '') => `<div class="sp-head"><b>${t(x)}</b>${sub ? `<span>${t(sub)}</span>` : ''}${extra}</div>`;
@@ -830,15 +836,16 @@ function drawSide() {
       const r = a => `<div class="side-sub${route.sub === a.id ? ' on' : ''}" data-go="${esc(s.id)}" data-tab="sub/${esc(a.id)}" title="${subWho(a)} · ${subLabel(a)}"><i class="${a.state}"></i><b>${esc(a.task || a.type)}</b><span>${esc(a.type)}</span></div>`;
       return `<div class="side-subs">${on.map(r).join('')}${done.length ? `<div class="side-sub more" data-quiet="${esc(k)}">${chev(open)}${tt(`已结束的子 agent ${done.length} 个`, `${done.length} ended sub-agent${done.length > 1 ? 's' : ''}`)}</div>${open ? done.map(r).join('') : ''}` : ''}</div>`;
     };
-    const byState = (list, k, pre) => {
-      const act = list.filter(s => !s.stale && !['gone', 'ended'].includes(s.state)), quiet = list.filter(s => s.stale), qOpen = quietOpen.has(k);
-      const groups = [['等你', act.filter(s => ['waiting', 'asking', 'blocked', 'review'].includes(standing(s)[0]))], ['工作中', act.filter(s => standing(s)[0] === 'working')], ['空闲', act.filter(s => standing(s)[0] === 'idle')]];
-      return groups.filter(([, l]) => l.length).map(([x, l]) => {
-        const gk = `${k}:${x}`, open = quietOpen.has(gk), shown = open || l.length <= 12 ? l : l.filter((s, i) => i < 10 || (cur && cur.id === s.id));
-        return `<div class="side-gh"><span>${t(x)} · ${l.length}</span></div>${shown.map(s => row(s, pre && pre(s)) + subLines(s)).join('')}`
-          + (l.length > 12 ? `<div class="side-quiet" data-quiet="${esc(gk)}">${chev(open)}${open ? tt('收起', 'Fold') : tt(`还有 ${l.length - shown.length} 个`, `${l.length - shown.length} more`)}</div>` : '');
-      }).join('')
-        + (quiet.length ? `<div class="side-quiet" data-quiet="${esc(k)}">${chev(qOpen)}${t('一天以上没动静 {n} 个', { n: quiet.length })}</div>${qOpen ? quiet.map(s => row(s, pre && pre(s))).join('') : ''}` : '')
+    const byState = (list, k, pre) => {  // (one list in SIDE_RANK order, the filter's state only; the quiet for a day folded)
+      const act = list.filter(s => !s.stale && !['gone', 'ended'].includes(s.state)).sort(sideOrder), quiet = list.filter(s => s.stale), qOpen = quietOpen.has(k);
+      const n = f => act.filter(s => SIDE_SHOW[f](standing(s)[0])).length, shown = act.filter(s => SIDE_SHOW[sideShow](standing(s)[0]));
+      const idle = sideShow === 'all' && act.length > 15 ? shown.filter(s => standing(s)[0] === 'idle' && !(cur && cur.id === s.id)) : [], ik = k + ':idle', iOpen = quietOpen.has(ik);
+      const tabs = [['all', '全部'], ['need', '等你'], ['working', '工作中'], ['idle', '空闲']].filter(([f]) => f === 'all' || f === sideShow || n(f));
+      return (act.length ? `<div class="side-tabs" role="group" aria-label="${tt('只看某种状态的会话', 'Show sessions in one state')}">${tabs.map(([f, x]) => `<button type="button" data-side-show="${f}" class="${f === sideShow ? 'on' : ''}" aria-pressed="${f === sideShow}">${t(x)}${f === 'all' ? '' : `<b>${n(f)}</b>`}</button>`).join('')}</div>` : '')
+        + shown.filter(s => !idle.includes(s)).map(s => row(s, pre && pre(s)) + subLines(s)).join('')
+        + (idle.length ? `<div class="side-quiet" data-quiet="${esc(ik)}">${chev(iOpen)}${tt(`空闲 ${idle.length} 个`, `${idle.length} idle`)}</div>${iOpen ? idle.map(s => row(s, pre && pre(s)) + subLines(s)).join('') : ''}` : '')
+        + (act.length && !shown.length ? `<div class="side-empty">${tt('现在没有这种状态的会话', 'No session in this state now')}</div>` : '')
+        + (quiet.length && ['all', 'idle'].includes(sideShow) ? `<div class="side-quiet" data-quiet="${esc(k)}">${chev(qOpen)}${t('一天以上没动静 {n} 个', { n: quiet.length })}</div>${qOpen ? quiet.map(s => row(s, pre && pre(s))).join('') : ''}` : '')
         + (!act.length && !quiet.length ? `<div class="side-empty">${t('现在没有会话')}</div>` : '');
     };
     let html = '';
@@ -2016,6 +2023,7 @@ document.addEventListener('click', async e => {
   if ((el = q('[data-ask-done]'))) { post('ask_done', { ask: el.dataset.askDone }); return; }
   if ((el = q('[data-unlock]'))) { if (confirm(t('释放这把推送锁？在等它的会话会收到通知。'))) post('unlock', { key: el.dataset.unlock }); return; }
   if ((el = q('[data-quiet]'))) { toggle(quietOpen, 'deck.quietOpen', el.dataset.quiet); return; }
+  if ((el = q('[data-side-show]'))) { sideShow = el.dataset.sideShow; store.set('deck.sideShow', sideShow); drawSide(); return; }
   if ((el = q('[data-report]'))) { e.stopPropagation(); el.disabled = true; el.textContent = t('正在写…'); post('report', { id: el.dataset.report }); return; }
   if ((el = q('[data-acc]'))) { const key = el.dataset.acc; await api('access', { do: 'drop', key }); if (key === 'me') location.reload(); else drawAccess(); return; }
   if ((el = q('[data-work-lang]'))) { await post('work_lang', { lang: el.dataset.workLang }); drawSettings(); return; }
