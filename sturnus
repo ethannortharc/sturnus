@@ -1789,19 +1789,26 @@ class Deck:
             sub = next((x for x in a[1:] if not x.startswith('-')), None)
             if sub in CODEX_NOT_TUI or any('app-server' in x for x in a):
                 continue
-            loc = place_of(p['pid'])
-            tid = a[a.index('resume') + 1] if 'resume' in a and a.index('resume') + 1 < len(a) else None
-            tuis.append({'pid': p['pid'], 'loc': loc, 'cwd': cwd_of(p['pid']), 'thread': tid, 'marker': env_of(p['pid'], 'STURNUS_NEW'), 'start': p['start']})
+            loc, cwd = place_of(p['pid']), cwd_of(p['pid'])
+            d = next((a[i + 1] for i, x in enumerate(a[:-1]) if x in ('-C', '--cd')), None) or next((x[5:] for x in a if x.startswith('--cd=')), None)
+            if d and cwd:  # (codex -C <folder>: the thread's folder, not the shell's)
+                cwd = os.path.normpath(os.path.join(cwd, os.path.expanduser(d)))
+            resume = 'resume' in a
+            tid = a[a.index('resume') + 1] if resume and a.index('resume') + 1 < len(a) and not a[a.index('resume') + 1].startswith('-') else None
+            tuis.append({'pid': p['pid'], 'loc': loc, 'cwd': cwd, 'thread': tid, 'resume': resume, 'marker': env_of(p['pid'], 'STURNUS_NEW'), 'start': p['start']})
         codex = [s for s in sessions if s['kind'] == 'codex' and s['state'] not in ('gone', 'ended')]
+        # (a window shows a thread that has stirred since it opened; one opened with `codex resume` and no id, an older one
+        # too: the person picks it there. A new window has none until its first message: Codex registers a thread then)
+        may_show = lambda t, s: s['cwd'] == t['cwd'] and (t['resume'] and not t['thread'] or (s['at'] or 0) >= t['start'] - 5)
+        shown = set()
         for t in sorted(tuis, key=lambda t: -t['start']):  # (the newest window first: a thread begun since it opened is its)
             hit = next((s for s in codex if t['thread'] and s['session'] == t['thread']), None)
             if not hit and t['loc']:  # (a window outside any multiplexer is known by its resume id only)
-                # (by its folder: one that has stirred since the window opened; an older one there is another window's, or
-                # its window has closed. A new window has none until its first message: Codex registers a thread then)
-                same = [s for s in codex if s['cwd'] == t['cwd'] and not s.get('loc') and not s.get('parent') and (s['at'] or 0) >= t['start'] - 5]
+                same = [s for s in codex if may_show(t, s) and not s.get('loc') and not s.get('parent')]
                 hit = max(same, key=lambda s: (self.began(s, born) >= t['start'] - 5, s['at']), default=None)
             if hit:
                 hit['loc'], hit['window_pid'] = t['loc'], t['pid']
+                shown.add(t['pid'])
                 want = self.pending.get(t['marker'])
                 if want and hit['name'] != want:
                     ok, _ = self.rename(hit, want)
@@ -1810,6 +1817,11 @@ class Deck:
             else:  # (a live window whose session the hooks have not named yet: it is there all the same)
                 th = codex_launch_thread(t['start'], t['cwd']) or (None, None)
                 sessions.append(self.window('codex', t['pid'], t['loc'], t['start'], t['cwd'], *th))
+        for s in codex:  # (a thread of a Codex window that no window shows now: quit, closed, or /new; Codex says nothing then)
+            if s.get('window_pid') or s.get('parent') or s.get('from') or codex_meta(transcript_of(s) or '').get('originator') != 'codex-tui':
+                continue
+            if not any(t['pid'] not in shown and may_show(t, s) for t in tuis):
+                s['state'] = 'gone'
         # Cursor windows: the CLI runs as node (its comm "MainThread"), one per pane; matched to its hooks' session by pane
         seen_panes = set()
         for p in ps:

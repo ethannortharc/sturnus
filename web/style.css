@@ -378,8 +378,8 @@ code { font: 12px var(--font-mono); background: var(--panel-2); border: 1px soli
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .001s !important; animation-iteration-count: 1 !important; transition: none !important; } }
 
 /* ---------- shell: a sidebar of the groups and their agents, like a desktop app ---------- */
-.shell { --side-w: clamp(272px, 20vw, 360px); display: grid; grid-template-columns: 62px var(--side-w) minmax(0, 1fr); min-height: 0; padding-right: 10px; }  /* (the column grows with the screen; dragging its edge sets it) */
-.side { --bg: var(--chrome); overflow-y: auto; padding: 14px 10px 30px 6px; }  /* (--bg: the ring around a mark's status dot) */
+.shell { --side-w: 248px; display: grid; grid-template-columns: 62px var(--side-w) minmax(0, 1fr); min-height: 0; padding-right: 10px; }  /* (dragging the column's edge sets its width) */
+.side { --bg: var(--chrome); overflow-y: auto; padding: 14px 10px 30px 8px; }  /* (--bg: the ring around a mark's status dot) */
 .nav-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; color: var(--ink-2); font-size: 13.5px; font-weight: 550; cursor: pointer; }
 .nav-item:hover { background: color-mix(in srgb, var(--ink) 5%, transparent); }
 .nav-item.on { background: var(--panel); color: var(--ink); box-shadow: 0 1px 2px rgba(0, 0, 0, .06), 0 0 0 1px var(--hair-2); }
@@ -746,7 +746,7 @@ code { font: 12px var(--font-mono); background: var(--panel-2); border: 1px soli
 .crumbs span svg { width: 12px; height: 12px; margin-right: 3px; }
 
 /* ---------- the rail: the global places and the workspaces; the column beside it follows it ---------- */
-.rail { --bg: var(--chrome); display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px 0 14px; overflow-y: auto; }
+.rail { --bg: var(--chrome); border-right: 1px solid var(--hair); display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px 0 14px; overflow-y: auto; }
 .rail hr { width: 24px; border: 0; border-top: 1px solid var(--hair); margin: 2px 0; flex: none; }
 .rail .push { flex: 1; min-height: 8px; }
 .tile { position: relative; flex: none; width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; font-weight: 700; font-size: 15px; color: #fff; transition: border-radius .15s, transform .15s; }
