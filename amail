@@ -1001,6 +1001,8 @@ def on_event(kind, ev, p):
     f = path('board', f'{me}.json')
     e = get(f, {}) or {}
     now = time.time()
+    if not e.get('home'):  # (the folder it was opened in: Cursor's workspace, else the folder of its first event)
+        e['home'] = (p.get('workspace_roots') or [None])[0] or (None if e else p.get('cwd'))
     e.update(name=me, kind=kind, session=session, at=now)
     e['cwd'] = p.get('cwd') or (p.get('workspace_roots') or [None])[0] or e.get('cwd')
     e['pid'] = agent_pid(kind) or e.get('pid')

@@ -96,7 +96,7 @@ You can also install from a [release archive](https://github.com/ethannortharc/s
 | **Session** | A Claude Code, Codex, or Cursor conversation |
 | **Channel** | Shared discussion for a project or workspace |
 
-For sessions started at a workspace root, Sturnus uses the files they work on to infer the project. You can override that assignment on the session page.
+A session belongs to the workspace and project of the folder it was started in, even when it later works in other folders; its work item follows the worktree it works in. For sessions started at a workspace root, Sturnus infers the project from the files they work on in that workspace. A session started outside any workspace goes with the session that started it, or with the other sessions in its group. You can override the assignment on the session page.
 
 ## Move quickly
 

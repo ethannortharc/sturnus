@@ -366,6 +366,10 @@ Object.assign(EN, {
 "按它的目录": "by its folder",
 "按它改的文件": "by the files it changes",
 "它在工作区顶层": "it works at the workspace top",
+"按它打开时的目录": "by the folder it was opened in",
+"按启动它的会话": "by the session that started it",
+"按它所在的组": "by its group",
+"打开于": "Opened in",
 "看不出": "can’t tell",
 "{a}：{b}": "{a}: {b}",
 "没有项目": "no project",
@@ -1337,7 +1341,7 @@ function drawOverview(s, k) {
   const decs = (S.decisions || []).filter(d => d.sid === s.id), st = storyOf(s);
   const typing = document.activeElement && ['rText', 'rName'].includes(document.activeElement.id);
   if (typing && sig.ov) return drawSay(s);
-  draw('ov', [s.id, s.summary, s.needs_you, s.waiting_for, a, asksSig(s), s.said, s.loc, s.cwd, s.session, decs.length, st && [st.at, st.left, st.busy, st.asked], (S.storying || []).includes(s.id), s.summary_at && Math.floor(s.summary_at / 30), tick(), kidsOf(s).map(c => [c.id, c.state, c.status, c.summary]), (s.subs || []).map(x => [x.id, x.state, x.at]),
+  draw('ov', [s.id, s.summary, s.needs_you, s.waiting_for, a, asksSig(s), s.said, s.loc, s.cwd, s.home, s.session, decs.length, st && [st.at, st.left, st.busy, st.asked], (S.storying || []).includes(s.id), s.summary_at && Math.floor(s.summary_at / 30), tick(), kidsOf(s).map(c => [c.id, c.state, c.status, c.summary]), (s.subs || []).map(x => [x.id, x.state, x.at]),
     s.project, s.workspace, s.attrib, s.work, s.branch, Object.keys(S.projects || {}).length], () => {
     const keep = $('#rText') ? $('#rText').value : '';
     $('#tabBody').innerHTML = `<div class="s-body"><div class="s-grid"><div>
@@ -1355,7 +1359,7 @@ function drawOverview(s, k) {
       <div class="panel"><h4>${t('在哪里')}</h4><dl class="kv">${parentOf(s) ? `<dt>${t('启动者')}</dt><dd><a data-go="${esc(parentOf(s).id)}">${esc(parentOf(s).name)}</a></dd>` : s.origin ? `<dt>${t('启动方式')}</dt><dd>${esc(originT(s.origin))}</dd>` : ''}
         <dt>${tt('项目', 'Project')}</dt><dd>${projSelect(s)}</dd><dt>${tt('工作项', 'Work item')}</dt><dd>${s.work ? esc(home(s.work)) + (s.branch ? ` (${esc(s.branch)})` : '') : '—'}</dd>
         <dt>${t('组')}</dt><dd>${s.loc ? esc(groupName(s.loc.session)) + (s.loc.mux === 'tmux' ? ' (tmux)' : '') : groupName('~none')}</dd><dt>${t('窗格')}</dt><dd>${s.loc ? esc(s.loc.pane) : '—'}</dd>
-        <dt>${t('目录')}</dt><dd>${esc(home(s.cwd) || '—')}</dd><dt>${t('会话 ID')}</dt><dd>${esc(s.session || '—')}</dd>${s.loc ? `<dt>${t('命令行')}</dt><dd>${esc(attachCmd(s.loc.session))}</dd>` : ''}</dl></div>
+        ${s.home && s.home !== s.cwd ? `<dt>${t('打开于')}</dt><dd>${esc(home(s.home))}</dd>` : ''}<dt>${t('目录')}</dt><dd>${esc(home(s.cwd) || '—')}</dd><dt>${t('会话 ID')}</dt><dd>${esc(s.session || '—')}</dd>${s.loc ? `<dt>${t('命令行')}</dt><dd>${esc(attachCmd(s.loc.session))}</dd>` : ''}</dl></div>
       <div class="panel"><h4>${t('名字')}</h4>${s.kind === 'claude' ? `<div class="hint">${t('Claude 会话的名字由它自己定：在那个会话里输入 {c}，这里、amail 和窗格标题会跟着变。', { c: `<code>/rename ${t('新名字')}</code>` })}</div>`
         : `<div class="inline"><input class="field" id="rName" placeholder="${t('新名字（字母、数字、_ . -）')}"><button class="btn" data-act="rename">${t('改名')}</button></div>`}</div>
     </div></div></div>`;
@@ -1405,7 +1409,7 @@ function sayRow(s) {
 // which project it counts as: as found (its folder, the files it works on), or the person's word
 function projSelect(s) {
   const w = wsOf(s.workspace), keys = w ? w.projects : Object.keys(S.projects || {});
-  const found = { cwd: t('按它的目录'), files: t('按它改的文件'), workspace: t('它在工作区顶层'), manual: '', '': t('看不出') }[s.attrib || ''] ?? '';
+  const found = { cwd: t('按它的目录'), home: t('按它打开时的目录'), parent: t('按启动它的会话'), group: t('按它所在的组'), files: t('按它改的文件'), workspace: t('它在工作区顶层'), manual: '', '': t('看不出') }[s.attrib || ''] ?? '';
   const cur = s.attrib === 'manual' ? (s.project || (s.workspace ? 'w:' + s.workspace : '')) : '';
   return `<select class="sel" data-attrib="${esc(s.id)}"><option value="">${s.attrib === 'manual' ? t('改回自动判断') : t('{a}：{b}', { a: found, b: s.project ? esc(projOf(s.project).name) : t('没有项目') })}</option>
     ${keys.map(k => `<option value="${esc(k)}"${cur === k ? ' selected' : ''}>${esc(projOf(k).name)}</option>`).join('')}${w ? `<option value="w:${esc(w.key)}"${cur === 'w:' + w.key ? ' selected' : ''}>${t('工作区本身')}</option>` : ''}</select>`;
