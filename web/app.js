@@ -186,6 +186,7 @@ Object.assign(EN, {
 "它停在终端里的一个选择上，进终端回答": "It is stopped at a choice in its terminal: answer it there",
 "写信给你": "Wrote to you",
 "已处理": "Handled",
+"拖动调整宽度，双击恢复": "Drag to set the width; double-click to reset",
 "{n} 件": "{n}",
 "现在没有等你确认的事。它要你确认的事会一直列在这里，直到你点「已处理」，或者它之后的总结看出你已经回应了。": "Nothing waits on you now. What it asks you to confirm stays here until you mark it handled, or a later summary sees that you have answered.",
 "工作区": "Workspaces",
@@ -796,9 +797,27 @@ function applyFold() {
   app.classList.toggle('side-off', sideOff);
   const h = $('#sideHandle');
   if (h) { h.title = t(sideOff ? '展开旁边那栏（⌘B）' : '收起旁边那栏（⌘B）'); h.setAttribute('aria-label', h.title); h.innerHTML = sideOff ? I.chev : I.chev.replace('<svg', '<svg style="transform:scaleX(-1)"'); }
+  const edge = $('.side-edge');
+  if (edge) edge.title = sideOff ? '' : t('拖动调整宽度，双击恢复');
   fitTerm();
 }
 function setSide(off) { sideOff = off; store.set('deck.sideOff', off); applyFold(); }
+// (its width: drag its edge; a double click there goes back to the width that follows the screen)
+const sideW = w => Math.round(Math.min(Math.max(w, 220), Math.max(220, Math.min(520, innerWidth * .45))));
+function applySideW() { const w = store.get('deck.sideW', 0), sh = $('.shell'); if (sh) sh.style.setProperty('--side-w', w ? `${sideW(w)}px` : ''); }
+function dragSide(e) {
+  const edge = e.currentTarget, app = $('.app');
+  if (sideOff || e.button !== 0 || e.target.closest('#sideHandle')) return;
+  e.preventDefault();
+  edge.setPointerCapture(e.pointerId);
+  edge.classList.add('drag'); app.classList.add('resizing');
+  const r = $('#side').getBoundingClientRect(), off = e.clientX - r.right;
+  const move = ev => { store.set('deck.sideW', sideW(ev.clientX - off - r.left)); applySideW(); };
+  const up = () => { edge.removeEventListener('pointermove', move); edge.classList.remove('drag'); app.classList.remove('resizing'); fitTerm(); };
+  edge.addEventListener('pointermove', move);
+  edge.addEventListener('pointerup', up, { once: true });
+  edge.addEventListener('pointercancel', up, { once: true });
+}
 function drawRail() {
   const sp = space(), ws = S.workspaces || [], on = railWs(), rest = ws.length - on.length;
   const loose = roots(S.sessions).filter(s => !s.workspace && live(s)).length;
@@ -1590,7 +1609,7 @@ async function drawTerm(s) {
   term.focus();
 }
 function fitTerm() { const b = $('.s-body.full'); if (b) { const top = b.getBoundingClientRect().top; b.style.height = `calc(100vh - ${top}px - 30px)`; } }
-window.addEventListener('resize', fitTerm);
+window.addEventListener('resize', () => { applySideW(); fitTerm(); });
 
 function drawMsgs(s) {
   const thread = (S.talk || []).filter(m => m.from === s.name || m.to === s.name);
@@ -2096,6 +2115,9 @@ route = parseRoute();
 applyLang();
 applyTheme();
 applyFold();
+applySideW();
+$('.side-edge').addEventListener('pointerdown', dragSide);
+$('.side-edge').addEventListener('dblclick', e => { if (!e.target.closest('#sideHandle')) { store.set('deck.sideW', 0); applySideW(); fitTerm(); } });
 applyWsColor(); applySkin();
 // (a session's or project's head stays at the top while its page scrolls, folded to one line)
 document.addEventListener('scroll', e => {

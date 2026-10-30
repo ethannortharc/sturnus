@@ -1016,9 +1016,28 @@ PROMPT = '''你在为一位开发者的「会话总览」写状态。下面是�
 还在等用户的事（编号：内容）：
 {held}
 
+用户已经点了「已处理」的事（不要再写进 needs_you，除非片段里在那之后又重新问起）：
+{done}
+
 片段：
 {text}
 '''
+def ask_key(t):
+    return re.sub(r'\W+', '', t or '').lower()
+
+
+def alike(a, b):
+    """Two wordings of the same thing asked of the person."""
+    return difflib.SequenceMatcher(None, ask_key(a), ask_key(b)).ratio() > .75
+
+
+def asked_in(a, text):
+    """Whether an ask's question is still there in an excerpt of the conversation: its quoted words; without any, it was
+    ticked off within the last few hours."""
+    q = ask_key(a.get('quote'))[:60]
+    return q in ask_key(text) if q else time.time() - (a.get('done') or 0) < 6 * 3600
+
+
 NONE = re.compile(r'^(无需|不需要|暂无|没有需要|无$|无。|none|n/?a|nothing|no action)', re.I)
 
 
@@ -1060,9 +1079,11 @@ class Summaries:
             lines = [f'助手: {s["said"]}']
         if not lines:
             return
-        held = self.open_asks(s['id'])
-        prompt = PROMPT.format(kind=s['kind'], name=s['name'], cwd=s.get('cwd') or '?', text='\n'.join(lines),
-                               held='\n'.join(f'{i}：{a["what"]}' for i, a in enumerate(held, 1)) or '（没有）')
+        held, text = self.open_asks(s['id']), '\n'.join(lines)
+        done = [a for a in self.asks if a['sid'] == s['id'] and a.get('by') == 'user'][-5:]
+        prompt = PROMPT.format(kind=s['kind'], name=s['name'], cwd=s.get('cwd') or '?', text=text,
+                               held='\n'.join(f'{i}：{a["what"]}' for i, a in enumerate(held, 1)) or '（没有）',
+                               done='\n'.join(f'- {a["what"]}' for a in done) or '（没有）')
         self.busy = s['id']
         try:
             out = ask_model(prompt, cfg, 'summary')
@@ -1070,16 +1091,18 @@ class Summaries:
             if not m:  # (a model that wandered off, say into a tool call: the last summary stays)
                 raise ValueError(tx(f'不是 JSON：{out.strip()[:80]}', f'Not JSON: {out.strip()[:80]}'))
             r = json.loads(m.group(0))
-            need = str(r.get('needs_you') or '').strip()
+            need, status = str(r.get('needs_you') or '').strip(), r.get('status') or ''
             if NONE.match(need):
                 need = ''  # (a model that says "nothing needed" in words)
-            self.data[s['id']] = {'title': str(r.get('title') or '')[:24], 'summary': str(r.get('summary') or '')[:120],
-                                  'status': r.get('status') or '', 'needs_you': need[:200], 'at': time.time(), 'basis': basis}
+            with self.alock:  # (the person's ticks change the asks and this summary too)
+                if not self.note_asks(s, need[:200], str(r.get('ask_quote') or ''), r.get('resolved'), held, text):
+                    need, status = '', '' if status == 'waiting_user' else status  # (what the person ticked off, read again)
+                self.data[s['id']] = {'title': str(r.get('title') or '')[:24], 'summary': str(r.get('summary') or '')[:120],
+                                      'status': status, 'needs_you': need[:200], 'at': time.time(), 'basis': basis}
+                os.makedirs(CACHE, exist_ok=True)
+                A.put(self.file, self.data)
             self.note_decisions(s, r.get('decisions') or [])
-            self.note_asks(s, need[:200], str(r.get('ask_quote') or ''), r.get('resolved'), held)
             self.error = ''
-            os.makedirs(CACHE, exist_ok=True)
-            A.put(self.file, self.data)
         except Exception as e:
             self.error = f'{type(e).__name__}: {e}'[:300]
             self.data.setdefault(s['id'], {})['at'] = time.time()  # (do not hammer a failing model)
@@ -1089,28 +1112,29 @@ class Summaries:
     def open_asks(self, sid):
         return [a for a in self.asks if a['sid'] == sid and not a.get('done')]
 
-    def note_asks(self, s, need, quote, resolved, held):
+    def note_asks(self, s, need, quote, resolved, held, text):
         """Keep each thing a session asks of the person until the person has answered it (as a later summary sees) or
-        ticks it off: a session that works on scrolls its question out of the excerpt the summaries read."""
-        with self.alock:
-            self._note_asks(s, need, quote, resolved, held)
-
-    def _note_asks(self, s, need, quote, resolved, held):
-        now, changed = time.time(), False
+        ticks it off: a session that works on scrolls its question out of the excerpt the summaries read. False when
+        the need is one the person ticked off whose question is still there in the excerpt: no new ask. (Under alock.)"""
+        now, changed, stands = time.time(), False, True
         for i in resolved if isinstance(resolved, list) else []:
             i = int(i) if str(i).strip().isdigit() else 0
             if 1 <= i <= len(held) and not held[i - 1].get('done'):
                 held[i - 1].update(done=now, by='seen')
                 changed = True
-        key = lambda t: re.sub(r'\W+', '', t).lower()
-        same = next((a for a in held if not a.get('done') and difflib.SequenceMatcher(None, key(a['what']), key(need)).ratio() > .75), None) if need else None
+        same = next((a for a in held if not a.get('done') and alike(a['what'], need)), None) if need else None
+        seen = not same and need and next((a for a in self.asks if a['sid'] == s['id'] and a.get('by') == 'user' and a.get('done')
+                                           and asked_in(a, text) and (alike(a['what'], need) or quote and alike(a.get('quote'), quote))), None)
         if same and quote and not same.get('quote'):
             same['quote'], changed = quote.strip()[:400], True
+        elif seen:
+            stands = False
         elif need and not same:
             self.asks.append({'id': secrets.token_hex(6), 'sid': s['id'], 'name': s['name'], 'what': need, 'quote': quote.strip()[:400], 'at': now})
             changed = True
         if changed:
             self.save_asks()
+        return stands
 
     def ask_done(self, aid):
         with self.alock:
@@ -1120,6 +1144,10 @@ class Summaries:
             a.update(done=time.time(), by='user')
             self.save_asks()
         return True, {}
+
+    def ticked(self, sid, since):
+        """What the person ticked off of a session's asks since a time (its last summary's)."""
+        return [a for a in self.asks if a['sid'] == sid and a.get('by') == 'user' and (a.get('done') or 0) > since]
 
     def save_asks(self):
         now = time.time()
@@ -1728,6 +1756,7 @@ class Deck:
 
     def collect(self):
         ps = procs()
+        born = {p['pid']: p['start'] for p in ps}
         raw = A.board()
         rows = A.rows()
         reg = {s['name']: s for s in A.claude_sessions()}
@@ -1764,11 +1793,13 @@ class Deck:
             tid = a[a.index('resume') + 1] if 'resume' in a and a.index('resume') + 1 < len(a) else None
             tuis.append({'pid': p['pid'], 'loc': loc, 'cwd': cwd_of(p['pid']), 'thread': tid, 'marker': env_of(p['pid'], 'STURNUS_NEW'), 'start': p['start']})
         codex = [s for s in sessions if s['kind'] == 'codex' and s['state'] not in ('gone', 'ended')]
-        for t in tuis:
+        for t in sorted(tuis, key=lambda t: -t['start']):  # (the newest window first: a thread begun since it opened is its)
             hit = next((s for s in codex if t['thread'] and s['session'] == t['thread']), None)
             if not hit and t['loc']:  # (a window outside any multiplexer is known by its resume id only)
-                same = [s for s in codex if s['cwd'] == t['cwd'] and not s.get('loc') and not s.get('parent')]
-                hit = max(same, key=lambda s: s['at'], default=None)
+                # (by its folder: one that has stirred since the window opened; an older one there is another window's, or
+                # its window has closed. A new window has none until its first message: Codex registers a thread then)
+                same = [s for s in codex if s['cwd'] == t['cwd'] and not s.get('loc') and not s.get('parent') and (s['at'] or 0) >= t['start'] - 5]
+                hit = max(same, key=lambda s: (self.began(s, born) >= t['start'] - 5, s['at']), default=None)
             if hit:
                 hit['loc'], hit['window_pid'] = t['loc'], t['pid']
                 want = self.pending.get(t['marker'])
@@ -1810,10 +1841,14 @@ class Deck:
                 continue
             slow = now - l['at'] > 8
             sessions = [x for x in sessions if not (x.get('unknown') and x.get('loc') == loc)]
-            sessions.append({'id': f'new:{marker}', 'name': l['name'], 'kind': l['kind'], 'state': 'waiting' if slow else 'working',
-                             'since': l['at'], 'at': now, 'cwd': l['cwd'], 'loc': loc, 'unknown': True, 'starting': True,
-                             'summary': tx('刚开起来，还没登记成会话', 'Just started, not registered as a session yet') if slow else tx('正在启动…', 'Starting…'),
-                             'needs_you': tx('去它的窗格看一眼：多半在等你确认（比如是否信任这个目录）', 'Take a look at its pane: it is probably waiting for you to confirm (for example, whether to trust this folder)') if slow else ''})
+            card = {'id': f'new:{marker}', 'name': l['name'], 'kind': l['kind'], 'state': 'waiting' if slow else 'working',
+                    'since': l['at'], 'at': now, 'cwd': l['cwd'], 'loc': loc, 'unknown': True, 'starting': True,
+                    'summary': tx('刚开起来，还没登记成会话', 'Just started, not registered as a session yet') if slow else tx('正在启动…', 'Starting…'),
+                    'needs_you': tx('去它的窗格看一眼：多半在等你确认（比如是否信任这个目录）', 'Take a look at its pane: it is probably waiting for you to confirm (for example, whether to trust this folder)') if slow else ''}
+            if slow and l['kind'] == 'codex' and any(t['marker'] == marker for t in tuis):  # (its window is up: Codex registers a thread at its first message)
+                card.update(state='idle', needs_you='', summary=tx('开好了，等你说第一句话（Codex 收到第一句话才登记成会话；窗格里若在问是否信任这个目录，先在那里回答）',
+                                                                   'Ready for your first message (Codex registers a session at its first message; if its pane asks whether to trust this folder, answer there first)'))
+            sessions.append(card)
         for s in sessions:
             self.projects.attribute(s)
             if s['kind'] == 'claude' and s['state'] not in ('gone', 'ended'):
@@ -1827,7 +1862,6 @@ class Deck:
         for s in sessions:
             if s.get('window_pid'):
                 by_pid.setdefault(s['window_pid'], s)
-        born = {p['pid']: p['start'] for p in ps}
         for s in sessions:
             s['born'] = self.began(s, born)
         def starter(s):  # (who started a headless run: the live session in the pane it was started from, started before it)
@@ -1847,6 +1881,12 @@ class Deck:
             s['summary'], s['status'], s['needs_you'], s['summary_at'] = sm.get('summary'), sm.get('status'), need, sm.get('at')
             s['title'] = sm.get('title') or ''
             s['asks'] = [{k: a.get(k) for k in ('id', 'what', 'quote', 'at')} for a in self.sums.open_asks(s['id'])]
+            ticked = (need or s['status'] == 'waiting_user') and self.sums.ticked(s['id'], sm.get('at') or 0)
+            if ticked:  # (ticked off since its last summary: that waits on the person no more for it, nor at all with none left open)
+                if need and (not s['asks'] or any(alike(a['what'], need) for a in ticked)):
+                    s['needs_you'] = ''
+                if s['status'] == 'waiting_user' and not s['asks']:
+                    s['status'] = ''
             if s['state'] == 'idle' and s['status'] == 'waiting_user' and sm.get('at', 0) >= s['at'] - 5:
                 s['state'] = 'waiting'  # (it stopped on a question to the person)
             s['stale'] = s['state'] != 'working' and now - (s['at'] or s['since'] or 0) > 24 * 3600  # (a day without a stir: out of the way, still there to open)
