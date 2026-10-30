@@ -12,7 +12,7 @@ is (its Zellij session and pane), what they say to each other. Jump to one, writ
   sturnus uninstall [--purge]      take everything out again (--purge: its settings and caches too)
   sturnus status | open | serve | version
 """
-import base64, difflib, fcntl, functools, ipaddress, glob, hashlib, hmac, importlib.machinery, importlib.util, json, os, plistlib, pty, re, secrets, shutil, signal, socket, sqlite3, struct, subprocess, sys, termios, threading, time, urllib.error, urllib.request
+import base64, calendar, difflib, fcntl, functools, ipaddress, glob, hashlib, hmac, importlib.machinery, importlib.util, json, os, plistlib, pty, re, secrets, shutil, signal, socket, sqlite3, struct, subprocess, sys, termios, threading, time, urllib.error, urllib.request
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -1241,12 +1241,13 @@ class Reports:
             return False
         return not cur or (self.moved(path) > cur['basis'] + 1 and time.time() - cur['at'] > 1800)
 
-    def make(self, s, cfg, decisions):
+    def make(self, s, cfg, decisions, story=None):
         self.asked.discard(s['id'])
         path = transcript_of(s)
         if not path:
             return
-        known = [f'- {d["what"]}（{"开发者" if d["by"] == "user" else "agent"}）' for d in decisions if d['sid'] == s['id']][-12:]
+        known = [f'- {x["topic"]}：{x["now"]}（{"开发者" if x["by"] == "user" else "agent"}）' for x in (story or {}).get('topics') or []][:12] \
+            or [f'- {d["what"]}（{"开发者" if d["by"] == "user" else "agent"}）' for d in decisions if d['sid'] == s['id']][-12:]
         prompt = REPORT.format(kind=s['kind'], name=s['name'], cwd=s.get('cwd') or '?', known='\n'.join(known) or '（无）',
                                opening='\n'.join(opening(path)) or '（读不到）', log='\n'.join(recent(path, 16000)))
         self.busy = s['id']
@@ -1269,6 +1270,252 @@ class Reports:
             self.data.setdefault(s['id'], {'r': None, 'basis': 0, 'name': s['name'], 'kind': s['kind']})['at'] = time.time()
         finally:
             self.busy = None
+
+
+def stamp(ts):
+    """An ISO time from a conversation file (UTC), as seconds."""
+    try:
+        return calendar.timegm(time.strptime(str(ts)[:19], '%Y-%m-%dT%H:%M:%S'))
+    except (TypeError, ValueError):
+        return None
+
+
+def talk_of(d):
+    """One line of a conversation file as (who, text, at): the person's words ('user', or 'mid' for what they sent while
+    the agent worked) or the agent's ('assistant'); None for tools, their results and the harness."""
+    at = stamp(d.get('timestamp'))
+    if d.get('type') == 'attachment':  # (Claude Code: words the person sent mid-turn)
+        a = d.get('attachment') or {}
+        return ('mid', a['prompt'].strip(), at) if a.get('type') == 'queued_command' and isinstance(a.get('prompt'), str) and a['prompt'].strip() else None
+    if d.get('type') in ('user', 'assistant') and isinstance(d.get('message'), dict):  # Claude Code
+        if d.get('isMeta') or d.get('isCompactSummary'):
+            return None
+        m = d['message']
+        c = m.get('content')
+        if m.get('role') == 'user' and isinstance(c, list) and any(isinstance(x, dict) and x.get('type') == 'tool_result' for x in c):
+            return None
+        who, (t, _) = m.get('role'), text_of(c)
+    elif d.get('type') == 'response_item' and isinstance(d.get('payload'), dict):  # Codex
+        q = d['payload']
+        if q.get('type') != 'message' or q.get('role') not in ('user', 'assistant'):
+            return None
+        who, (t, _) = q['role'], text_of(q.get('content'))
+    elif d.get('role') in ('user', 'assistant'):  # Cursor
+        d = cursor_message(d)
+        who, (t, _) = d['role'], text_of(d.get('content'))
+    else:
+        return None
+    t = (t or '').strip()
+    if not t or who == 'user' and t.startswith(('<', '# AGENTS.md', '[Request interrupted', 'This session is being continued')):
+        return None
+    return who, t, at
+
+
+def cut_into(segs, item):
+    """Add a line to a conversation cut at the person's words: each piece {at, ask: [their words], reply: the agent's
+    last words in it}. Words sent mid-turn stay with the turn they came into."""
+    who, t, at = item
+    if who in ('user', 'mid'):
+        last = segs[-1] if segs else None
+        if last and (who == 'mid' or not last['reply']) and len(last['ask']) < 8:
+            last['ask'].append(t[:600])
+        else:
+            segs.append({'at': at, 'ask': [t[:600]], 'reply': ''})
+    elif segs:
+        segs[-1]['reply'] = t[:2400]
+
+
+class Cuts:
+    """Conversations cut at the person's words, each file read on from where it was last read (one can be 100 MB)."""
+
+    def __init__(self):
+        self.seen = {}  # path -> {off, rest, segs}
+
+    def of(self, path):
+        if path.endswith('/store.db'):  # (a Cursor chat store: small, read whole)
+            segs = []
+            for d in cursor_messages(path):
+                x = talk_of(d)
+                if x:
+                    cut_into(segs, x)
+            return segs
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            return []
+        st = self.seen.get(path)
+        if not st or size < st['off']:
+            st = self.seen[path] = {'off': 0, 'rest': b'', 'segs': []}
+        with open(path, 'rb') as f:
+            f.seek(st['off'])
+            while True:
+                data = f.read(8 << 20)
+                if not data:
+                    break
+                st['off'] += len(data)
+                lines = (st['rest'] + data).split(b'\n')
+                st['rest'] = lines.pop()  # (a line still being written)
+                for line in lines:
+                    if b'"text"' not in line and b'queued_command' not in line and b'"content"' not in line:
+                        continue  # (no words in it: progress, metadata)
+                    try:
+                        d = json.loads(line)
+                    except ValueError:
+                        continue
+                    x = isinstance(d, dict) and talk_of(d)
+                    if x:
+                        cut_into(st['segs'], x)
+        return st['segs']
+
+
+def turn_at(turns, n):
+    """When the turn a topic points at began (none once that turn is read anew)."""
+    return turns[n - 1]['at'] if isinstance(n, int) and 0 < n <= len(turns) else None
+
+
+TURNS = """你在给一位开发者整理一个 AI 编码会话的时间线（{kind}，名字 {name}，目录 {cwd}）。下面是按他的每次要求切开的几段：每段有他说的话（「中途」是 agent 干活时他补充的），和 agent 在这一段最后说的话。
+每段输出一条。只写对话里确实有的；具体（版本、文件、功能、分支名）；短句：
+- ask：他要的是什么，一句话，不超过 30 个汉字（概括，不照抄；几件事就用分号隔开）
+- done：这一段做成了的事，0 到 3 条，每条不超过 30 个汉字；发布、合并、推送、测试也写在这里
+- decided：这一段真正拍板的取舍，0 到 3 条，每条 {{"what": "定了什么，不超过 30 个汉字", "by": "user 或 agent", "why": "为什么，一句话；看不出就空字符串"}}。他同意、选择、否决的写 user；agent 自己做的、影响后面的取舍写 agent。普通步骤不算。
+- out：产出，版本号、提交号、链接、文件名，0 到 3 条，原样照抄
+只输出 JSON：{{"turns": [{{"n": 段号, "ask": "...", "done": [], "decided": [], "out": []}}]}}
+
+{segs}"""
+
+TOPICS = """下面是一个 AI 编码会话里拍板过的事（按先后，段号越大越新），和之前整理好的主题。把它们整理成按主题归并的决定记录：
+- 讲同一件事的合成一个主题；后来的改了或推翻了前面的，以后来的为准，前面的说法按先后放进 was。
+- 每个主题：topic（主题名，不超过 10 个汉字）、now（现在算数的结论，一句话，不超过 40 个汉字）、by（定下 now 的一方：user 或 agent）、n（定下 now 的段号）、why（为什么，一句话；没有就空字符串）、was（被改掉的旧说法，可以是空列表）。
+- 最多 {cap} 个主题，影响最大的在前；只是步骤的、不再重要的丢掉。
+只输出 JSON：{{"topics": [...]}}
+
+之前整理好的主题：
+{topics}
+
+新拍板的事（段号｜谁定的｜内容｜为什么）：
+{decs}"""
+
+
+class Stories:
+    """Each session's story: a timeline cut at the person's words (what they asked, what got done, what was settled, what
+    came out), and what was settled merged by topic, the latest word on each (what it replaced kept under it). Built by
+    the summary model a few pieces at a time, when a turn has ended."""
+
+    def __init__(self):
+        self.file = os.path.join(CACHE, 'stories.json')
+        self.data = A.get(self.file, {}) or {}
+        self.cuts = Cuts()
+        self.asked, self.busy, self.error, self.tried, self.failed = set(), None, '', {}, {}
+
+    @staticmethod
+    def key(seg):
+        return hashlib.sha1(json.dumps([seg['at'], seg['ask'], seg['reply']], ensure_ascii=False).encode()).hexdigest()[:12]
+
+    def todo(self, s):
+        """The pieces of its conversation the story does not have yet (or has an older reading of); None without one."""
+        path = transcript_of(s)
+        if not path:
+            return None
+        segs = self.cuts.of(path)
+        if s['state'] == 'working' and s['id'] not in self.asked:
+            segs = segs[:-1]  # (the turn under way: read once it ends)
+        turns = (self.data.get(s['id']) or {}).get('turns') or []
+        i = next((i for i, t in enumerate(turns) if i >= len(segs) or t['k'] != self.key(segs[i])), len(turns))
+        return segs, i
+
+    def due(self, s):
+        if s.get('starting') or (s['id'] not in self.asked and (s.get('stale') or s['state'] in ('gone', 'ended'))):
+            return False
+        if s['id'] not in self.asked and time.time() - self.tried.get(s['id'], 0) < 60:
+            return False  # (at most a run a minute for one session: a failing model is not hammered)
+        t = self.todo(s)
+        if not t:
+            self.asked.discard(s['id'])  # (nothing to read: no conversation file)
+            return False
+        cur = self.data.get(s['id']) or {}
+        return t[1] < len(t[0]) or (cur.get('merged') or 0) < len(cur.get('turns') or []) or s['id'] in self.asked
+
+    def make(self, s, cfg):
+        sid = s['id']
+        self.tried[sid] = time.time()
+        t = self.todo(s)
+        self.asked.discard(sid)
+        if not t:
+            return
+        segs, i = t
+        cur = self.data.get(sid) or {}
+        turns, topics, merged = list((cur.get('turns') or [])[:i]), cur.get('topics') or [], min(cur.get('merged') or 0, i)
+        self.busy = sid
+        try:
+            for _ in range(3):  # (a few batches a run: a long conversation is caught up over several runs)
+                batch, size = [], 0
+                for n in range(len(turns), len(segs)):
+                    g = segs[n]
+                    text = f'【第 {n + 1} 段】\n' + '\n'.join(f'{"他说" if j == 0 else "中途"}：{a[:600]}' for j, a in enumerate(g['ask'][:4])) + f'\nagent 最后说：{g["reply"][:1500] or "（还没有）"}'
+                    if batch and (size + len(text) > 14000 or len(batch) == 10):
+                        break
+                    batch.append((n, text))
+                    size += len(text)
+                if not batch:
+                    break
+                got, at = {}, (sid, batch[0][0])
+                try:
+                    out = ask_model(TURNS.format(kind=s['kind'], name=s['name'], cwd=s.get('cwd') or '?', segs='\n\n'.join(x for _, x in batch)), cfg, 'summary')
+                    for r in json.loads(re.search(r'\{.*\}', out, re.S).group(0)).get('turns') or []:
+                        if isinstance(r, dict) and str(r.get('n')).isdigit():
+                            got[int(r['n'])] = r
+                except Exception:
+                    self.failed[at] = self.failed.get(at, 0) + 1
+                    if self.failed[at] < 3:
+                        raise
+                    self.error = ''  # (the third time on the same turns: they go in with your words alone, and it moves on)
+                for n, _ in batch:
+                    r, g = got.get(n + 1) or {}, segs[n]
+                    lst = lambda k, w: [one_line(x, w) for x in (r.get(k) or []) if isinstance(x, str) and one_line(x, w)][:3]
+                    turns.append({'k': self.key(g), 'at': g['at'], 'words': one_line(g['ask'][0], 300), 'more': len(g['ask']) - 1,
+                                  'ask': one_line(r.get('ask'), 80) or one_line(g['ask'][0], 80), 'done': lst('done', 120), 'out': lst('out', 200),
+                                  'decided': [{'what': one_line(d.get('what'), 100), 'by': 'user' if d.get('by') == 'user' else 'agent', 'why': one_line(d.get('why'), 120)}
+                                              for d in (r.get('decided') or []) if isinstance(d, dict) and one_line(d.get('what'), 100)][:3]})
+                self.data[sid] = {**cur, 'name': s['name'], 'turns': turns, 'topics': topics, 'merged': merged, 'at': time.time(), 'left': len(segs) - len(turns)}
+            decs = [(n, d) for n, t in enumerate(turns[merged:], merged + 1) for d in t['decided']]
+            while decs:  # (merged by topic, sixty at a time over what is there)
+                part, decs = decs[:60], decs[60:]
+                out = ask_model(TOPICS.format(cap=24, topics=json.dumps(topics, ensure_ascii=False) if topics else '（还没有）',
+                                              decs='\n'.join(f'{n}｜{"他" if d["by"] == "user" else "agent"}｜{d["what"]}｜{d["why"]}' for n, d in part)), cfg, 'summary')
+                got = json.loads(re.search(r'\{.*\}', out, re.S).group(0)).get('topics') or []
+                topics = [{'topic': one_line(x.get('topic'), 24), 'now': one_line(x.get('now'), 120), 'by': 'user' if x.get('by') == 'user' else 'agent',
+                           'n': int(x['n']) if str(x.get('n')).isdigit() and 0 < int(x['n']) <= len(turns) else None, 'why': one_line(x.get('why'), 140),
+                           'was': [one_line(w, 120) for w in (x.get('was') or []) if isinstance(w, str) and one_line(w, 120)][:6]}
+                          for x in got if isinstance(x, dict) and one_line(x.get('now'), 120)][:24]
+                merged = part[-1][0]
+            self.data[sid] = {**cur, 'name': s['name'], 'turns': turns, 'topics': topics, 'merged': len(turns), 'at': time.time(), 'left': len(segs) - len(turns)}
+            self.error = ''
+        except Exception as e:
+            self.error = f'{type(e).__name__}: {e}'[:300]
+            if turns:  # (what got read before the failure stays)
+                self.data[sid] = {**cur, 'name': s['name'], 'turns': turns, 'topics': topics, 'merged': merged, 'at': time.time(), 'left': len(segs) - len(turns)}
+        finally:
+            self.busy = None
+            week = time.time() - 7 * DAY
+            self.data = {k: v for k, v in self.data.items() if v.get('at', 0) > week}
+            os.makedirs(CACHE, exist_ok=True)
+            A.put(self.file, self.data)
+
+    def view(self, sid):
+        cur = self.data.get(sid) or {}
+        turns = cur.get('turns') or []
+        return {'turns': [{k: t.get(k) for k in ('at', 'words', 'more', 'ask', 'done', 'decided', 'out')} for t in turns],
+                'topics': [{**x, 'at': turn_at(turns, x.get('n'))} for x in cur.get('topics') or []],
+                'at': cur.get('at'), 'left': cur.get('left', 0), 'busy': self.busy == sid, 'asked': sid in self.asked}
+
+    def latest(self, n=150):
+        """The latest word on each topic, across the sessions: for the project pages and the workspace feeds."""
+        out = []
+        for sid, cur in self.data.items():
+            turns = cur.get('turns') or []
+            out += [{'sid': sid, 'name': cur.get('name'), 'topic': x['topic'], 'what': x['now'], 'by': x['by'],
+                     'at': turn_at(turns, x.get('n')) or cur.get('at')} for x in cur.get('topics') or []]
+        return sorted(out, key=lambda x: -(x['at'] or 0))[:n]
 
 
 STARTED = time.time()
@@ -1727,6 +1974,7 @@ class Deck:
         self.cfg = config()
         self.sums = Summaries()
         self.reports = Reports()
+        self.stories = Stories()
         self.origins = {}  # (pid -> how it was started: the process tree above it does not change)
         self.talk = Talk()
         self.state = {'sessions': [], 'talk': [], 'groups': {}, 'locks': [], 'at': 0}
@@ -1948,6 +2196,9 @@ class Deck:
                           'inbox': A.take(ME_NAME, peek=True), 'lock_issues': self.lock_issues(sessions, locks),
                           'reports': dict(sorted(((k, v) for k, v in self.reports.data.items() if v.get('r')), key=lambda kv: -kv[1]['at'])[:80]),
                           'reporting': sorted(self.reports.asked | ({self.reports.busy} if self.reports.busy else set())),
+                          'topics': self.stories.latest(),
+                          'stories': {k: [len(v.get('topics') or []), v.get('at'), v.get('left', 0), len(v.get('turns') or [])] for k, v in self.stories.data.items()},
+                          'storying': sorted(self.stories.asked | ({self.stories.busy} if self.stories.busy else set())),
                           'events': list(self.events), 'pane_titles': self.cfg.get('pane_titles', True), 'me': ME_NAME, 'dirs': self._dirs,
                           'launch': self.cfg.get('launch', DEFAULTS['launch']), 'work_lang': self.cfg.get('work_lang') or 'zh',
                           'about': {'started': STARTED, 'app': APP, 'config': CONF, 'source': self.cfg.get('source'),
@@ -2339,18 +2590,28 @@ class Deck:
     def summarize_loop(self):
         while True:
             try:
-                for s in sorted(self.state['sessions'], key=lambda s: ({'working': 0, 'waiting': 1}.get(s['state'], 2), -(s['at'] or 0))):
-                    if s.get('unknown') and not s.get('transcript'):
-                        continue
+                live = [s for s in self.state['sessions'] if not (s.get('unknown') and not s.get('transcript'))]
+                asked = next((s for s in live if s['id'] in self.reports.asked), None)
+                if asked:  # (what the person asked for first: a report, then a story)
+                    self.reports.make(asked, self.cfg, self.sums.decisions, self.stories.data.get(asked['id']))
+                    continue
+                asked = next((s for s in live if s['id'] in self.stories.asked and self.stories.due(s)), None)
+                if asked:
+                    self.stories.make(asked, self.cfg)
+                    continue
+                for s in sorted(live, key=lambda s: ({'working': 0, 'waiting': 1}.get(s['state'], 2), -(s['at'] or 0))):
                     basis = self.sums.due(s, self.cfg)
-                    if basis and s['id'] not in self.reports.asked:
+                    if basis:
                         self.sums.make(s, basis, self.cfg)
                         break
-                else:  # (no summary due: a report, the asked-for ones first)
-                    live = [s for s in self.state['sessions'] if not (s.get('unknown') and not s.get('transcript'))]
-                    s = next((s for s in sorted(live, key=lambda s: (s['id'] not in self.reports.asked, -(s['at'] or 0))) if self.reports.due(s)), None)
+                else:  # (no summary due: a report, else a story)
+                    s = next((s for s in sorted(live, key=lambda s: -(s['at'] or 0)) if self.reports.due(s)), None)
                     if s:
-                        self.reports.make(s, self.cfg, self.sums.decisions)
+                        self.reports.make(s, self.cfg, self.sums.decisions, self.stories.data.get(s['id']))
+                    else:
+                        s = next((s for s in sorted(live, key=lambda s: -(s['at'] or 0)) if self.stories.due(s)), None)
+                        if s:
+                            self.stories.make(s, self.cfg)
             except Exception as e:
                 self.sums.error = repr(e)[:300]
             time.sleep(4)
@@ -2463,6 +2724,7 @@ class Deck:
             if not s or not transcript_of(s):
                 return False, tx('读不到这个会话的对话，写不了报告', 'Can’t read this session’s conversation, so no report')
             self.reports.asked.add(s['id'])
+            self.stories.asked.add(s['id'])
             return True, {}
         if what == 'summarize':
             if not s:
@@ -3406,6 +3668,12 @@ class Handler(BaseHTTPRequestHandler):
             ts, tp = A.topics(key), A.topic_get(key, topic)
             return self.send_json({'meta': meta, 'posts': A.topic_posts(key, tp) if tp else A.posts(key, limit=400),
                                    'topics': [{**t, 'n': A.topic_n(key, t)} for t in ts], 'members': [m for m in A.members(key) if m != ME_NAME]})
+        if self.path.startswith('/api/story'):  # (a session's timeline and decisions by topic; asked for when it has none yet)
+            from urllib.parse import urlparse, parse_qs
+            sid = (parse_qs(urlparse(self.path).query).get('id') or [''])[0]
+            if sid not in DECK.stories.data and DECK.find(sid):
+                DECK.stories.asked.add(sid)
+            return self.send_json(DECK.stories.view(sid))
         if self.path.startswith('/api/transcript'):
             from urllib.parse import urlparse, parse_qs
             q = parse_qs(urlparse(self.path).query)

@@ -186,6 +186,25 @@ Object.assign(EN, {
 "它停在终端里的一个选择上，进终端回答": "It is stopped at a choice in its terminal: answer it there",
 "写信给你": "Wrote to you",
 "已处理": "Handled",
+"今天": "Today",
+"昨天": "Yesterday",
+"在时间线里看": "See it in the timeline",
+"改过 {n} 次": "Changed {n} times",
+"正在整理…": "Sorting…",
+"{n} 个主题": "{n} topics",
+"全部 {n} 个，和时间线": "All {n}, and the timeline",
+"看时间线": "See the timeline",
+"还没按主题整理好，先列最近记下的。整理好后，同一件事只留现在算数的结论。": "Not sorted by topic yet, so here are the latest noted. Once sorted, each matter keeps only the word that stands now.",
+"正在读它的对话，把拍板的事按主题整理。": "Reading its conversation to sort what was settled by topic.",
+"还没有记下决定。会话里拍板的事会按主题整理在这里。": "No decisions noted yet. What is settled in the session is sorted here by topic.",
+"时间线": "Timeline",
+"正在整理，还有 {n} 段": "Sorting, {n} turns to go",
+"{n} 段 · 按你说的话分段": "{n} turns · one per thing you said",
+"正在读它的对话，按你的每次要求分段整理；长的对话要几分钟。": "Reading its conversation, one turn per thing you asked; a long one takes a few minutes.",
+"还没有时间线。": "No timeline yet.",
+"+{n} 条补充": "+{n} added",
+"只看最近 30 段": "Only the latest 30",
+"还有更早的 {n} 段": "{n} earlier turns",
 "拖动调整宽度，双击恢复": "Drag to set the width; double-click to reset",
 "{n} 件": "{n}",
 "现在没有等你确认的事。它要你确认的事会一直列在这里，直到你点「已处理」，或者它之后的总结看出你已经回应了。": "Nothing waits on you now. What it asks you to confirm stays here until you mark it handled, or a later summary sees that you have answered.",
@@ -1033,7 +1052,7 @@ function projGrid(keys) {
 function wsFeed(w) {
   const ids = new Set(S.sessions.filter(s => s.workspace === w.key).map(s => s.id)), items = [];
   for (const k of [w.key, ...w.projects]) { const b = boardOf(k); if (b && b.last) items.push({ at: b.last.at, kind: t('讨论区'), where: k === w.key ? t('工作区') : projOf(k).name, who: who(b.last.from), text: b.last.text, href: k === w.key ? `#/b/${encodeURIComponent(k)}` : `#/p/${encodeURIComponent(k)}/board` }); }
-  for (const d of S.decisions || []) if (ids.has(d.sid)) items.push({ at: d.at, kind: t('决定'), who: d.by === 'user' ? t('你') : d.name, text: d.what, href: `#/s/${encodeURIComponent(d.sid)}` });
+  for (const d of decsFor(ids)) items.push({ at: d.at, kind: t('决定'), who: d.by === 'user' ? t('你') : d.name, text: decText(d), href: `#/s/${encodeURIComponent(d.sid)}/report` });
   for (const [sid, r] of Object.entries(S.reports || {})) if (ids.has(sid) && r.r) for (const x of (r.r.refs || []).slice(0, 2)) items.push({ at: r.at, kind: t('产出'), who: r.name, text: x, href: `#/s/${encodeURIComponent(sid)}/report` });
   items.sort((a, b) => b.at - a.at);
   return items.length ? `<div class="feed">${items.slice(0, 12).map(i => `<a class="fi" href="${i.href}"><span class="k">${i.kind}${i.where ? ' · ' + esc(i.where) : ''}</span><span class="t"><b>${esc(i.who)}</b>${t('：')}${esc(String(i.text).replace(/\s+/g, ' ').slice(0, 160))}</span><time>${clock(i.at)}</time></a>`).join('')}</div>`
@@ -1140,7 +1159,7 @@ function srow(s) {  // (a session in one line: where there are too many for card
 function card(s) {
   const [st, label] = standing(s), a = attention(s);
   const k = FULL[s.kind] ? s.kind : 'codex';
-  const decs = (S.decisions || []).filter(d => d.sid === s.id).length;
+  const decs = decsFor(new Set([s.id])).length;
   const tool = s.state === 'working' && s.tool ? `<span class="tool">${esc(toolName(s.tool))}</span>` : '';
   const desc = s.summary || s.said || '';
   const br = s.branch && s.work && (projOf(s.project) || {}).path !== s.work;  // (its own worktree's branch, in place of the decision count)
@@ -1188,8 +1207,9 @@ function refLabel(x) {
   if ((m = x.match(/github\.com\/[^/]+\/([^/]+)\/pull\/(\d+)/))) return `${m[1]} #${m[2]}`;
   return x.replace(/^https?:\/\//, '').slice(0, 48);
 }
-function repCard(s, rep) {
+function repCard(s, rep, lean) {
   const k = FULL[s.kind] ? s.kind : 'codex', [st] = standing(s), r = rep && rep.r;
+  const tops = (S.topics || []).filter(d => d.sid === s.id).slice(0, 4);
   const busy = (S.reporting || []).includes(s.id);
   const list = (h, xs) => xs && xs.length ? `<h5>${t(h)}</h5><ul>${xs.map(x => `<li>${mdInline(x)}</li>`).join('')}</ul>` : '';
   return `<article class="rep">
@@ -1197,13 +1217,78 @@ function repCard(s, rep) {
       <button class="btn" data-report="${esc(s.id)}" ${busy ? 'disabled' : ''}>${busy ? t('正在写…') : r ? t('更新') : t('写报告')}</button></header>
     ${r ? `${r.goal ? `<p class="goal">${mdInline(r.goal)}</p>` : ''}
       ${list('做成了', r.done)}
-      ${r.decisions && r.decisions.length ? `<h5>${t('决定')}</h5><ul class="decs">${r.decisions.map(d => `<li><span class="by ${d.by}">${d.by === 'user' ? t('你') : 'AI'}</span><span>${mdInline(d.what)}</span></li>`).join('')}</ul>` : ''}
+      ${lean ? '' : tops.length ? `<h5>${t('决定')}</h5><ul class="decs">${tops.map(d => `<li>${byMark(d.by)}<span><b>${esc(d.topic)}</b>${t('：')}${mdInline(d.what)}</span></li>`).join('')}</ul>`
+        : r.decisions && r.decisions.length ? `<h5>${t('决定')}</h5><ul class="decs">${r.decisions.map(d => `<li>${byMark(d.by)}<span>${mdInline(d.what)}</span></li>`).join('')}</ul>` : ''}
       ${r.now ? `<h5>${t('现在')}</h5><p>${mdInline(r.now)}</p>` : ''}
       ${list('接下来', r.next)}
-      ${r.refs && r.refs.length ? `<h5>${t('产出')}</h5><div class="refs">${r.refs.map(x => /^https?:\/\//.test(x) ? `<a href="${esc(x)}" target="_blank" rel="noopener noreferrer">${esc(refLabel(x))}</a>` : `<code>${esc(x)}</code>`).join('')}</div>` : ''}`
+      ${r.refs && r.refs.length ? `<h5>${t('产出')}</h5><div class="refs">${r.refs.map(refChip).join('')}</div>` : ''}`
     : `<p class="hint">${busy ? t('正在读它的对话，大约半分钟。') : t('还没有报告。')}</p>`}
   </article>`;
 }
+const refChip = x => /^https?:\/\//.test(x) ? `<a href="${esc(x)}" target="_blank" rel="noopener noreferrer">${esc(refLabel(x))}</a>` : `<code>${esc(x)}</code>`;
+const byMark = by => `<span class="by ${by === 'user' ? 'user' : 'agent'}">${by === 'user' ? t('你') : 'AI'}</span>`;
+// ---------- a session's story: its timeline cut at your words, and what was settled, by topic ----------
+const STORY = {};  // (session id -> its story as last fetched)
+let tlAll = false, wantTurn = 0;  // (the whole timeline, not its last 30 turns; a turn to scroll to once drawn)
+function storyOf(s) {  // (fetched again once the deck has a newer one; asking for one it lacks makes the deck build it)
+  const have = STORY[s.id], meta = (S.stories || {})[s.id];
+  if (!have || (!have.loading && meta && (have.at || 0) < meta[1])) {
+    STORY[s.id] = { turns: [], topics: [], ...(have || {}), loading: true };
+    fetch('/api/story?id=' + encodeURIComponent(s.id), { cache: 'no-store' }).then(r => r.json())
+      .then(j => { STORY[s.id] = j; render(); }).catch(() => { STORY[s.id].loading = false; });
+  }
+  return STORY[s.id];
+}
+const storyBusy = (s, st) => (S.storying || []).includes(s.id) || !!(st && (st.left || st.asked || st.busy));
+function dayOf(ts) {
+  const d = new Date(ts * 1000), n = new Date(), y = new Date(n - 864e5);
+  return d.toDateString() === n.toDateString() ? t('今天') : d.toDateString() === y.toDateString() ? t('昨天') : d.toLocaleDateString(LANG === 'en' ? 'en-GB' : 'zh-CN', { month: 'short', day: 'numeric' });
+}
+const hm = ts => new Date(ts * 1000).toLocaleTimeString(LANG === 'en' ? 'en-GB' : 'zh-CN', { hour: '2-digit', minute: '2-digit' });
+function topicList(tops) {  // (each topic: its latest word, who said it and when; why; what it replaced, folded)
+  return tops.map(x => `<div class="tp">${byMark(x.by)}<div class="w"><div class="tp-h"><b>${esc(x.topic)}</b>${x.n ? `<a class="tp-at" data-turn="${x.n}" title="${t('在时间线里看')}">${clock(x.at)}</a>` : ''}</div>
+    <div class="tp-now">${mdInline(x.now)}</div>${x.why ? `<div class="tp-why">${esc(x.why)}</div>` : ''}${x.was && x.was.length ? `
+    <details class="tp-was"><summary>${t('改过 {n} 次', { n: x.was.length })}</summary><ol>${x.was.map(w => `<li>${esc(w)}</li>`).join('')}</ol></details>` : ''}</div></div>`).join('');
+}
+function decPanel(s, st, all) {  // (what was settled, by topic; before its story is there, the decisions as noted)
+  const tops = (st && st.topics) || [], raw = (S.decisions || []).filter(d => d.sid === s.id), busy = storyBusy(s, st), cut = all ? tops.length : 6;
+  return `<div class="panel"><h4>${t('决定')}<span class="r hint">${busy ? t('正在整理…') : tops.length ? t('{n} 个主题', { n: tops.length }) : ''}</span></h4>${tops.length ? `
+    <div class="tp-list">${topicList(tops.slice(0, cut))}</div>${all ? '' : `<button class="btn tp-more" data-tab-go="report">${tops.length > cut ? t('全部 {n} 个，和时间线', { n: tops.length }) : t('看时间线')}</button>`}`
+    : raw.length ? `<div class="d-list">${raw.slice(-6).reverse().map(d => `<div class="dec">${byMark(d.by)}<div class="w">${esc(d.what)}</div><time>${clock(d.at)}</time></div>`).join('')}</div>
+      <div class="hint">${t('还没按主题整理好，先列最近记下的。整理好后，同一件事只留现在算数的结论。')}</div>`
+    : `<div class="hint">${busy ? t('正在读它的对话，把拍板的事按主题整理。') : t('还没有记下决定。会话里拍板的事会按主题整理在这里。')}</div>`}</div>`;
+}
+function timeline(s, st) {  // (newest first, by day: what you asked, what got done, what was settled, what came out)
+  const turns = (st && st.turns) || [], busy = storyBusy(s, st), left = (st && st.left) || 0;
+  const head = `<div class="panel tl-panel"><h4>${t('时间线')}<span class="r hint">${left ? t('正在整理，还有 {n} 段', { n: left }) : busy ? t('正在整理…') : turns.length ? t('{n} 段 · 按你说的话分段', { n: turns.length }) : ''}</span></h4>`;
+  if (!turns.length) return head + `<div class="hint">${busy || (st && st.loading) ? t('正在读它的对话，按你的每次要求分段整理；长的对话要几分钟。') : t('还没有时间线。')}</div></div>`;
+  const list = turns.map((x, i) => ({ ...x, n: i + 1 })).reverse(), shown = tlAll ? list : list.slice(0, 30);
+  let day = '';
+  const rows = shown.map(x => {
+    const d = x.at ? dayOf(x.at) : '', h = d && d !== day ? `<div class="tl-day">${d}</div>` : '';
+    day = d || day;
+    return h + `<div class="tl" id="turn-${x.n}"><time>${x.at ? hm(x.at) : ''}</time><div class="tl-b">
+      <div class="tl-ask" title="${esc(x.words)}">${esc(x.ask)}${x.more ? `<span class="tl-more">${t('+{n} 条补充', { n: x.more })}</span>` : ''}</div>${x.done.length ? `
+      <ul class="tl-done">${x.done.map(d => `<li>${mdInline(d)}</li>`).join('')}</ul>` : ''}${x.decided.map(d => `
+      <div class="tl-dec">${byMark(d.by)}<span>${mdInline(d.what)}${d.why ? `<em>${t('：')}${esc(d.why)}</em>` : ''}</span></div>`).join('')}${x.out.length ? `
+      <div class="refs">${x.out.map(refChip).join('')}</div>` : ''}</div></div>`;
+  }).join('');
+  return head + `<div class="tl-list">${rows}</div>${list.length > 30 ? `<button class="btn" data-tl-all>${tlAll ? t('只看最近 30 段') : t('还有更早的 {n} 段', { n: list.length - 30 })}</button>` : ''}</div>`;
+}
+function drawReport(s) {
+  const st = storyOf(s), rep = (S.reports || {})[s.id];
+  draw('tab', ['report', s.id, rep && rep.at, S.reporting, S.storying, st && [st.at, st.left, st.busy, st.asked, st.loading], s.title, s.state, tlAll, tick()], () => {
+    $('#tabBody').innerHTML = `<div class="s-body"><div class="s-grid rep-grid"><div>${timeline(s, st)}</div><div><div class="rep-one">${repCard(s, rep, true)}</div>${decPanel(s, st, true)}</div></div></div>`;
+  });
+  const el = wantTurn && $('#turn-' + wantTurn);
+  if (el) { el.scrollIntoView({ block: 'center' }); el.classList.add('flash'); wantTurn = 0; }
+}
+// what was settled on some sessions: the latest word per topic where a story has it, else the decisions as noted
+function decsFor(ids) {
+  const told = new Set((S.topics || []).filter(d => ids.has(d.sid)).map(d => d.sid));
+  return [...(S.topics || []).filter(d => ids.has(d.sid)), ...(S.decisions || []).filter(d => ids.has(d.sid) && !told.has(d.sid))].sort((a, b) => (b.at || 0) - (a.at || 0));
+}
+const decText = d => d.topic ? `${d.topic}${t('：')}${d.what}` : d.what;
 function renderReports() {
   const reps = S.reports || {};
   const list = roots(S.sessions).filter(s => !s.stale && (reps[s.id] || (!['gone', 'ended'].includes(s.state) && !(s.unknown && !s.summary))));
@@ -1237,7 +1322,7 @@ function renderSession() {
         <div class="acts"><button class="hbtn" data-act="jump" ${s.loc ? '' : 'disabled'} title="${tt('让这台 Mac 上连着它的终端窗口跳到它的窗格（不在网页里打开）', 'Makes the terminal on this Mac that is attached to it jump to its pane (nothing opens in the page)')}">${I.jump}${tt('在本机终端里切过去', 'Switch to it in my terminal')}</button></div></nav></div>`;
   });
   if (sessTab === 'overview') drawOverview(s, k);
-  else if (sessTab === 'report') draw('tab', ['report', s.id, (S.reports || {})[s.id], S.reporting, s.title, s.state, tick()], () => { $('#tabBody').innerHTML = `<div class="s-body"><div class="rep-one">${repCard(s, (S.reports || {})[s.id])}</div></div>`; });
+  else if (sessTab === 'report') drawReport(s);
   else if (sessTab === 'chat') drawChat(s, k);
   else if (sessTab === 'sub') drawSub(s, k, route.sub);
   else if (sessTab === 'term') drawTerm(s);
@@ -1246,10 +1331,10 @@ function renderSession() {
 
 function drawOverview(s, k) {
   const a = attention(s);
-  const decs = (S.decisions || []).filter(d => d.sid === s.id);
+  const decs = (S.decisions || []).filter(d => d.sid === s.id), st = storyOf(s);
   const typing = document.activeElement && ['rText', 'rName'].includes(document.activeElement.id);
   if (typing && sig.ov) return drawSay(s);
-  draw('ov', [s.id, s.summary, s.needs_you, s.waiting_for, a, asksSig(s), s.said, s.loc, s.cwd, s.session, decs.length, s.summary_at && Math.floor(s.summary_at / 30), tick(), kidsOf(s).map(c => [c.id, c.state, c.status, c.summary]), (s.subs || []).map(x => [x.id, x.state, x.at]),
+  draw('ov', [s.id, s.summary, s.needs_you, s.waiting_for, a, asksSig(s), s.said, s.loc, s.cwd, s.session, decs.length, st && [st.at, st.left, st.busy, st.asked], (S.storying || []).includes(s.id), s.summary_at && Math.floor(s.summary_at / 30), tick(), kidsOf(s).map(c => [c.id, c.state, c.status, c.summary]), (s.subs || []).map(x => [x.id, x.state, x.at]),
     s.project, s.workspace, s.attrib, s.work, s.branch, Object.keys(S.projects || {}).length], () => {
     const keep = $('#rText') ? $('#rText').value : '';
     $('#tabBody').innerHTML = `<div class="s-body"><div class="s-grid"><div>
@@ -1263,7 +1348,7 @@ function drawOverview(s, k) {
           ${['gone', 'ended'].includes(c.state) ? '' : `<button class="btn" data-stop="${esc(c.id)}">${t('停止')}</button>`}</div>`; }).join('')}</div></div>` : ''}
     </div><div>
       ${asksPanel(s)}
-      <div class="panel"><h4>${t('决定')}<span class="r hint">${t('{n} 条', { n: decs.length })}</span></h4><div class="d-list">${decs.length ? decs.map(d => `<div class="dec"><span class="by ${d.by}">${d.by === 'user' ? t('你') : 'AI'}</span><div class="w">${esc(d.what)}</div><time>${clock(d.at)}</time></div>`).join('') : `<div class="hint">${t('还没有记下决定。会话里拍板的事会自动记在这里。')}</div>`}</div></div>
+      ${decPanel(s, st)}
       <div class="panel"><h4>${t('在哪里')}</h4><dl class="kv">${parentOf(s) ? `<dt>${t('启动者')}</dt><dd><a data-go="${esc(parentOf(s).id)}">${esc(parentOf(s).name)}</a></dd>` : s.origin ? `<dt>${t('启动方式')}</dt><dd>${esc(originT(s.origin))}</dd>` : ''}
         <dt>${tt('项目', 'Project')}</dt><dd>${projSelect(s)}</dd><dt>${tt('工作项', 'Work item')}</dt><dd>${s.work ? esc(home(s.work)) + (s.branch ? ` (${esc(s.branch)})` : '') : '—'}</dd>
         <dt>${t('组')}</dt><dd>${s.loc ? esc(groupName(s.loc.session)) + (s.loc.mux === 'tmux' ? ' (tmux)' : '') : groupName('~none')}</dd><dt>${t('窗格')}</dt><dd>${s.loc ? esc(s.loc.pane) : '—'}</dd>
@@ -1351,7 +1436,7 @@ function renderProject() {
 }
 function drawProjOverview(p, ss) {
   const f = p.facts || {}, b = boardOf(p.key);
-  const decs = (S.decisions || []).filter(d => ss.some(x => x.id === d.sid)).slice(0, 14);
+  const decs = decsFor(new Set(ss.map(x => x.id))).slice(0, 14);
   const lock = (S.locks || []).find(l => 'p-' + l.key === p.key);
   const refs = [...new Set(ss.flatMap(x => (((S.reports || {})[x.id] || {}).r || {}).refs || []))].slice(0, 10);
   draw('tab', ['pov', p.key, f.at, ss.map(x => [x.id, x.state, x.status, x.title, x.work, x.stale, x.attrib]), b && [b.unread, b.last && b.last.at, b.topics.map(t => [t.id, t.closed])], decs.length, lock && [lock.holder, lock.branch], refs, tick(), [...quietOpen]], () => {
@@ -1376,7 +1461,7 @@ function drawProjOverview(p, ss) {
           : `<div class="hint">${t('还没有人在这里说过话。发在这里的话，在这个项目上工作的会话都会收到。')}</div>`}
         ${open.map(tp => `<a class="topic-line" href="#/p/${encodeURIComponent(p.key)}/board" data-topic-open="${esc(tp.id)}">${I.chat}<b>${esc(tp.title)}</b><span>${t('{n} 方在谈', { n: tp.members.length })}</span></a>`).join('')}</div>
       ${lock ? `<div class="panel"><h4>${t('推送锁')}</h4><div class="hint">${I.lock} ${t('{b} 被 {h} 锁着，{t}前锁上', { b: esc(lock.branch), h: esc(lock.holder), t: ago(lock.since) })}${lock.note ? t('：{n}', { n: esc(lock.note) }) : ''}</div></div>` : ''}
-      <div class="panel"><h4>${t('决定')}<span class="r hint">${t('{n} 条', { n: decs.length })}</span></h4><div class="d-list">${decs.length ? decs.map(d => `<div class="dec"><span class="by ${d.by}">${d.by === 'user' ? t('你') : 'AI'}</span><div class="w">${esc(d.what)}<div class="src">${esc(d.name)}</div></div><time>${clock(d.at)}</time></div>`).join('') : `<div class="hint">${t('这个项目上的会话还没记下决定。')}</div>`}</div></div>
+      <div class="panel"><h4>${t('决定')}<span class="r hint">${t('{n} 条', { n: decs.length })}</span></h4><div class="d-list">${decs.length ? decs.map(d => `<div class="dec">${byMark(d.by)}<div class="w">${d.topic ? `<b>${esc(d.topic)}</b>${t('：')}` : ''}${esc(d.what)}<div class="src"><a data-go="${esc(d.sid)}" data-tab="report">${esc(d.name)}</a></div></div><time>${clock(d.at)}</time></div>`).join('') : `<div class="hint">${t('这个项目上的会话还没记下决定。')}</div>`}</div></div>
       ${refs.length ? `<div class="panel"><h4>${t('产出')}</h4><div class="refs">${refs.map(x => /^https?:\/\//.test(x) ? `<a href="${esc(x)}" target="_blank" rel="noopener noreferrer">${esc(refLabel(x))}</a>` : `<code>${esc(x)}</code>`).join('')}</div></div>` : ''}`;
     $('#tabBody').innerHTML = `<div class="s-body wide"><div class="s-grid">${left}<div>${right}</div></div></div>`;
   });
@@ -1983,6 +2068,14 @@ document.addEventListener('click', async e => {
   if ((el = q('[data-bclose]'))) { if (confirm(t('结束这场讨论？之后就不能再往里发言了。'))) { await post('topic_close', { key: BD.key, topic: el.dataset.bclose }); boardFetch(); } return; }
   if ((el = q('[data-bcall]'))) { const ta = $('#bText'), at = ta.selectionStart ?? ta.value.length, w = `@${el.dataset.bcall} `; ta.value = ta.value.slice(0, at) + w + ta.value.slice(at); ta.focus(); ta.selectionStart = ta.selectionEnd = at + w.length; return; }
   if ((el = q('[data-tab-go]'))) { go(route.id, el.dataset.tabGo); return; }
+  if ((el = q('[data-turn]'))) {  // (a topic's time: its turn in the timeline, on the report tab)
+    const st = STORY[route.id], n = +el.dataset.turn;
+    wantTurn = n;
+    if (st && (st.turns || []).length - n >= 30) tlAll = true;
+    if (sessTab === 'report') render(); else go(route.id, 'report');
+    return;
+  }
+  if (q('[data-tl-all]')) { tlAll = !tlAll; render(); return; }
   if ((el = q('[data-rail]'))) { railTab = el.dataset.rail; store.set('deck.rail', railTab); document.querySelectorAll('[data-rail]').forEach(b => b.classList.toggle('on', b === el)); sig.rail = ''; render(); return; }
   if ((el = q('[data-q]'))) { const b = { do: el.dataset.q, id: el.dataset.id }; if (b.do === 'delete' && !confirm(t('删掉这件排队的事？'))) return; post('queue', b); return; }
   if ((el = q('[data-qmode]'))) { qMode = el.dataset.qmode; document.querySelectorAll('[data-qmode]').forEach(b => b.classList.toggle('on', b === el)); return; }

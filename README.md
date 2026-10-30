@@ -41,7 +41,7 @@ A **work item is a worktree and its branch**. A project collects those work item
 
 ![Project overview showing worktrees, two agents on feat/usage-limits, branch progress, shared decisions, and an output reference.](docs/media/v0.13.1/project.png)
 
-Open a session to read its **Overview**, **Conversation**, or **Report**. Continue in the browser's **Terminal** tab, or use **Switch to it in my terminal** to focus its pane in an attached terminal. Reports gather the goal, completed work, decisions, current state, and next steps.
+Open a session to read its **Overview**, **Conversation**, or **Report**. Continue in the browser's **Terminal** tab, or use **Switch to it in my terminal** to focus its pane in an attached terminal. Reports gather the goal, current state, and next steps, with a timeline cut at each thing you asked (what got done, what was settled, what came out) and the decisions merged by topic: each topic keeps the word that stands now, with the ones it replaced folded under it.
 
 A session can keep working while it waits for your answer. It is then marked **Working · needs you**, and what it asked stays listed on the right of its Overview and Conversation tabs, with its own words, until you mark it handled or a later summary sees that you answered.
 
