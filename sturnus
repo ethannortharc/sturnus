@@ -1007,7 +1007,7 @@ PROMPT = '''你在为一位开发者的「会话总览」写状态。下面是�
 只输出一行 JSON，不要别的：{{"title": "...", "summary": "...", "status": "...", "needs_you": "...", "ask_quote": "...", "resolved": [], "decisions": [{{"what": "...", "by": "..."}}]}}
 - title：不超过 14 个汉字的任务名，像给这件事起的标题（例如「发布 faw 0.8.2」「复现 Mantis 1349608」）。
 - summary：不超过 40 个汉字。说清做到哪一步、下一步是什么。要具体（带上分支、功能、版本、文件等名字），不要空话。
-- status：working（正在干活）、waiting_user（在等用户回答或拍板）、review（做完了，等用户检查结果）、blocked（卡住或出错）、done（这件事做完了，不用再看）、idle（没有任务）之一。
+- status：working（正在干活）、waiting_user（在等用户回答或拍板；这时 needs_you 必须写清要他做什么。在等别的会话、别人、CI 或合并的不算，用 working 或 idle）、review（做完了，等用户检查结果）、blocked（卡住或出错）、done（这件事做完了，不用再看）、idle（没有任务）之一。
 - needs_you：只有当它在等用户决定、批准、回答、检查结果或亲手做某件事时（它一边接着干活一边等用户回答的也算），才用一句话说清要用户做什么、怎么做；否则必须是空字符串（不要写「无需…」「暂无」之类）。就是下面「还在等用户的事」里的某一条时，照抄那一条。
 - ask_quote：needs_you 不为空时，从片段里原样摘出它向用户提出这件事的原话，不超过 300 字；否则空字符串。
 - resolved：下面「还在等用户的事」里，片段显示用户已经回应过、或已经不再需要用户的那些的编号（数字）；看不出来就给空列表。
@@ -2147,6 +2147,8 @@ class Deck:
                     s['needs_you'] = ''
                 if s['status'] == 'waiting_user' and not s['asks']:
                     s['status'] = ''
+            if s['status'] == 'waiting_user' and not s['needs_you'] and not s['asks']:
+                s['status'] = ''  # (waiting on the person, a summary says, for nothing it names: nothing for them to do)
             if s['state'] == 'idle' and s['status'] == 'waiting_user' and sm.get('at', 0) >= s['at'] - 5:
                 s['state'] = 'waiting'  # (it stopped on a question to the person)
             s['stale'] = s['state'] != 'working' and now - (s['at'] or s['since'] or 0) > 24 * 3600  # (a day without a stir: out of the way, still there to open)
