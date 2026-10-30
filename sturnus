@@ -2047,7 +2047,9 @@ class Deck:
         codex = [s for s in sessions if s['kind'] == 'codex' and s['state'] not in ('gone', 'ended')]
         # (a window shows a thread that has stirred since it opened; one opened with `codex resume` and no id, an older one
         # too: the person picks it there. A new window has none until its first message: Codex registers a thread then)
-        may_show = lambda t, s: s['cwd'] == t['cwd'] and (t['resume'] and not t['thread'] or (s['at'] or 0) >= t['start'] - 5)
+        # (a thread's folder: where it began, as its file's first line says; its hooks report each command's folder instead)
+        home = lambda s: codex_meta(transcript_of(s) or '').get('cwd') or s['cwd']
+        may_show = lambda t, s: home(s) == t['cwd'] and (t['resume'] and not t['thread'] or (s['at'] or 0) >= t['start'] - 5)
         shown = set()
         for t in sorted(tuis, key=lambda t: -t['start']):  # (the newest window first: a thread begun since it opened is its)
             hit = next((s for s in codex if t['thread'] and s['session'] == t['thread']), None)
@@ -2068,8 +2070,8 @@ class Deck:
         for s in codex:  # (a thread of a Codex window that no window shows now: quit, closed, or /new; Codex says nothing then)
             if s.get('window_pid') or s.get('parent') or s.get('from') or codex_meta(transcript_of(s) or '').get('originator') != 'codex-tui':
                 continue
-            if not any(t['pid'] not in shown and may_show(t, s) for t in tuis):
-                s['state'] = 'gone'
+            if time.time() - (s['at'] or 0) > 120 and not any(t['pid'] not in shown and may_show(t, s) for t in tuis):
+                s['state'] = 'gone'  # (not one that stirred in the last two minutes: a doubt costs a stray row for a while, not a page)
         # Cursor windows: the CLI runs as node (its comm "MainThread"), one per pane; matched to its hooks' session by pane
         seen_panes = set()
         for p in ps:

@@ -1303,8 +1303,11 @@ function renderReports() {
 }
 
 // ---------- a session ----------
+let lastSess = null;  // (the session on screen as last seen: a blip in the deck's view of it does not tear its page down)
 function renderSession() {
-  const s = S.sessions.find(x => x.id === route.id);
+  let s = S.sessions.find(x => x.id === route.id);
+  if (s) lastSess = { s, at: Date.now() };
+  else if (lastSess && lastSess.s.id === route.id && Date.now() - lastSess.at < 15000) s = lastSess.s;
   if (!s) {
     draw('hero', ['missing', route.id], () => { $('#hero').innerHTML = `<div class="s-hero"><div class="row"><h1>${t('这个会话已经不在了')}</h1></div><div class="tabs"></div></div>`; $('#tabBody').innerHTML = `<div class="s-body"><a class="btn" href="#/">${I.back}${t('回到总览')}</a></div>`; });
     return;
