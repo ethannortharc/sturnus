@@ -439,6 +439,10 @@ Object.assign(EN, {
 "刷新页面再试一次。": "Reload the page and try again.",
 "连接断开了": "Disconnected",
 "它的会话还在，只是这个网页终端断了。": "Its session is still there; only this web terminal dropped.",
+"已复制到剪贴板": "Copied to the clipboard",
+"浏览器没让网页直接写剪贴板": "The browser kept the page from writing to the clipboard",
+"复制": "Copy",
+"浏览器不让复制": "The browser does not allow copying",
 "没有接上，免得 Zellij 崩掉": "Not connected, to keep Zellij from crashing",
 "这个 Zellij 已经开着 {held} 个文件，上限 {limit}。网页终端是它的又一个客户端，要再开约 {need} 个；超过上限 Zellij 会崩掉，里面的会话全部结束。先关掉一个连着它的终端再试；要多连几个，调高上限后重启 Zellij（见 README）。": "This Zellij already has {held} files open, with a limit of {limit}. A web terminal is one more client and needs about {need} more; past the limit Zellij crashes and every session in it ends. Close a terminal attached to it and try again; to attach more, raise the limit and restart Zellij (see the README).",
 "和它有关的消息": "Messages about it",
@@ -1664,6 +1668,36 @@ function termNote(title, text, retry) {
   const n = $('#termNote');
   if (n) { n.hidden = false; n.innerHTML = `<div class="box"><h3>${esc(title)}</h3>${text ? `<p>${esc(text)}</p>` : ''}${retry ? `<p><button class="btn" data-act="retry-term">${t('重新连接')}</button></p>` : ''}</div>`; }
 }
+// a copy made in the session (Zellij's mouse selection, tmux's copy mode, a program's own copy) comes as OSC 52, for the terminal's computer:
+// the one this page is on. While the page has no focus it was made in another terminal on the group, which copies it itself.
+function copyOut(b64) {
+  if (!b64 || b64 === '?' || !document.hasFocus()) return;  // ('?' asks for the clipboard: never answered)
+  let text;
+  try { text = new TextDecoder().decode(Uint8Array.from(atob(b64), c => c.charCodeAt(0))); } catch { return; }
+  toClipboard(text).then(ok => ok ? toast(t('已复制到剪贴板')) : copyAsk(text));
+}
+function toClipboard(text) {
+  const old = () => {  // (a page on plain http has no navigator.clipboard)
+    const was = document.activeElement, ta = Object.assign(document.createElement('textarea'), { value: text });
+    ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch {}
+    ta.remove();
+    if (was) was.focus();
+    return ok;
+  };
+  return navigator.clipboard && window.isSecureContext ? navigator.clipboard.writeText(text).then(() => true, old) : Promise.resolve(old());
+}
+function copyAsk(text) {  // (the browser wants a click of its own)
+  const el = document.createElement('div');
+  el.className = 'toast bad ask';
+  el.innerHTML = `<i>!</i><span>${t('浏览器没让网页直接写剪贴板')}</span><button class="btn">${t('复制')}</button>`;
+  el.querySelector('button').onclick = () => toClipboard(text).then(ok => { el.remove(); toast(ok ? t('已复制到剪贴板') : t('浏览器不让复制'), ok); if (xt) xt.term.focus(); });
+  $('#toasts').appendChild(el);
+  setTimeout(() => el.remove(), 15000);
+}
 async function drawTerm(s) {
   if (termFor === s.id && $('#xterm')) return;
   closeTerm();
@@ -1674,7 +1708,9 @@ async function drawTerm(s) {
   try { await loadXterm(); } catch { return termNote(t('终端组件没加载出来'), t('刷新页面再试一次。'), true); }
   if (termFor !== s.id || !$('#xterm')) return;
   const term = new Terminal({ fontFamily: '"JetBrains Mono", "SF Mono", Menlo, monospace', fontSize: 13, lineHeight: 1.15, cursorBlink: true, scrollback: 5000,
+    macOptionClickForcesSelection: true,  // (⌥-drag selects in the page while Zellij has the mouse, as ⇧-drag does elsewhere; ⌘C copies it)
     theme: { background: '#0b0b0d', foreground: '#e6e6ea', cursor: '#e6e6ea', selectionBackground: 'rgba(255,255,250,.22)' } });
+  term.parser.registerOscHandler(52, d => { const i = d.indexOf(';'); if (i >= 0) copyOut(d.slice(i + 1)); return true; });
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
   term.open($('#xterm'));
