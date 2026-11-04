@@ -31,7 +31,7 @@ The inline GIF is an 18-second preview at 2× speed; the full video plays at nor
 
 ### 1. Start with what needs your attention
 
-The workspace dashboard puts requests for a decision, blocked work, and results ready for review first. Below that, work items show branch progress and uncommitted files; session cards explain what each agent is doing.
+The workspace dashboard opens with **What is under way**: the assistant groups the sessions by the thing they work on, says where each thing stands, and lists its sessions with how they stand and when they last moved; a click opens a session, or its terminal. Requests for a decision, blocked work, and results ready for review come next. Below that, work items show branch progress and uncommitted files; session cards explain what each agent is doing.
 
 The left rail switches workspaces. The adjacent column follows your current workspace and lists its sessions in one list: those working while waiting on you first, then working, then waiting on you, then idle, each state in a fixed order so working sessions keep their places. A filter above it shows one state. Sub-agents appear under their parent session, with their own activity and conversation records.
 
@@ -81,7 +81,7 @@ sturnus status  # check the service and available addresses
 
 1. Open [127.0.0.1:7788](http://127.0.0.1:7788) and sign in with the token.
 2. Start or continue an agent session in a project. By default, its repository's parent folder becomes a workspace.
-3. Open **Settings → Assistant & models** to choose the models for summaries and the assistant. Defaults are Claude Haiku and Claude Sonnet, using your installed Claude CLI.
+3. Open **Settings → Assistant & models** to choose the models for summaries and the assistant. Defaults are Claude Haiku and Claude Sonnet, using your installed Claude CLI and the sign-in your Claude Code sessions keep fresh in `~/.claude/.credentials.json` (on macOS the service would otherwise read the login keychain, which sessions inside Zellij cannot reach).
 4. In **Settings → Display**, choose English or Chinese. The agents' working language is a separate setting for generated summaries, reports, replies, and drafts.
 
 You can also install from a [release archive](https://github.com/ethannortharc/sturnus/releases). See the [operations guide](docs/operations.md) for upgrades, service paths, remote access, and uninstalling.

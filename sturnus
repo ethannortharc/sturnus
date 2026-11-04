@@ -985,6 +985,21 @@ WORK_LANG = {  # (the agents' working language: what the models write for the pe
 }
 
 
+def claude_login():
+    """The person's Claude Code sign-in while it is good: the access token in Claude Code's own file. On macOS a deck run
+    by launchd would read the login keychain instead, and its copy goes stale when the person's sessions run where the
+    keychain is out of reach (inside Zellij) and keep only the file fresh. Read only: their sessions refresh it."""
+    if any(os.environ.get(k) for k in ('CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN')):
+        return None
+    try:
+        o = (A.get(os.path.join(os.environ.get('CLAUDE_CONFIG_DIR') or os.path.expanduser('~/.claude'), '.credentials.json'), {}) or {}).get('claudeAiOauth')
+        left = float(o.get('expiresAt') or 0) / 1000 - time.time()
+    except Exception:  # (a file not as Claude Code writes it: its own way)
+        return None
+    tok = o.get('accessToken')
+    return tok if isinstance(tok, str) and left > 150 else None  # (good through a call's two minutes; else Claude Code's own way, which refreshes)
+
+
 def ask_model(prompt, cfg, role='summary', m=None, key=None):
     prompt += WORK_LANG.get(cfg.get('work_lang') or 'zh', '')
     m = m or model_for(cfg, role)
@@ -1023,9 +1038,14 @@ def ask_model(prompt, cfg, role='summary', m=None, key=None):
         return r.stdout
     argv = ['claude', '-p', '--model', m.get('model') or 'haiku', '--no-session-persistence', '--strict-mcp-config',
             '--setting-sources', 'project', '--disable-slash-commands', '--tools=']
-    r = subprocess.run(argv, input=prompt, capture_output=True, text=True, timeout=120, cwd=CACHE, env=env)
+    tok = claude_login()
+    r = subprocess.run(argv, input=prompt, capture_output=True, text=True, timeout=120, cwd=CACHE, env={**env, 'CLAUDE_CODE_OAUTH_TOKEN': tok} if tok else env)
     if r.returncode != 0:
-        raise RuntimeError((r.stderr or r.stdout).strip()[:200] or f'exit {r.returncode}')
+        err = (r.stderr or r.stdout).strip()[:200] or f'exit {r.returncode}'
+        if re.search(r'authenticat|oauth|not logged in', err, re.I) and not re.search(r'api key', err, re.I):
+            raise RuntimeError(tx(f'Claude Code 的登录过期了：在终端里开一次 claude 就会刷新（需要的话再 /login）。{err}',
+                                  f'Claude Code’s sign-in has expired: start claude once in a terminal to refresh it (/login if it asks). {err}'))
+        raise RuntimeError(err)
     return r.stdout
 
 
@@ -1546,6 +1566,83 @@ class Stories:
         return sorted(out, key=lambda x: -(x['at'] or 0))[:n]
 
 
+DIGEST = '''你在为一位开发者写工作区「{ws}」的总览：让他一眼看出现在在做哪几件事、谁在做、做到哪了。下面是这个工作区里的会话，一行一个：名字｜项目 · 分支｜现在怎样｜最后动静｜它在做的事 — 进展。
+只输出一行 JSON，不要别的：{{"headline": "...", "items": [{{"thing": "...", "now": "...", "sessions": ["名字"]}}]}}
+- items：按「在做的同一件事」把会话归在一起，一件事一条。同一个功能、同一次发版、同一个问题的会话归在一起（开它的会话和它开的会话常常是一件事）；不相干的分开，不要硬凑。每个会话都要出现，而且只出现在一条里。
+- thing：不超过 16 个汉字，这件事叫什么（例如「发布 Sturnus 0.18」「Nucifraga 部署到 NAS」）。
+- now：不超过 50 个汉字，这件事整体做到哪一步、下一步是什么；有会话在等用户的，说清等他做什么。要具体，不要空话。
+- headline：不超过 60 个汉字，一句话说这个工作区现在主要在推进什么、有什么在等用户。
+- sessions：这件事的会话名字，照抄下面的。
+
+会话：
+{rows}
+'''
+DIGEST_ST = {'working': '工作中', 'waiting': '等用户', 'blocked': '卡住了', 'review': '做完了，等用户验收', 'idle': '空闲'}
+
+
+class Digests:
+    """Each workspace's overview: its sessions grouped by the thing they work on, where each thing stands, and a line
+    for the whole. Made by the summary model from the sessions' own summaries while the workspace's dashboard is open,
+    and again when those change: at most every two minutes after the last, ten after one that failed."""
+
+    def __init__(self):
+        self.file = os.path.join(CACHE, 'digests.json')
+        self.data = A.get(self.file, {}) or {}
+        self.wanted, self.next, self.busy, self.errors = {}, {}, None, {}
+
+    @staticmethod
+    def sessions(wkey, sessions):
+        ss = [s for s in sessions if s.get('workspace') == wkey and not s.get('stale') and s['state'] not in ('gone', 'ended')
+              and not s.get('starting') and not (s.get('unknown') and not s.get('summary'))]
+        return sorted(ss, key=lambda s: -(s.get('at') or 0))[:40]
+
+    @staticmethod
+    def basis(ss):  # (what it is made from: a session's state comes and goes, the page shows that itself)
+        return hashlib.sha1(json.dumps([[s['id'], s.get('title'), s.get('summary'), s.get('needs_you'), s.get('project'), s.get('branch')]
+                                        for s in sorted(ss, key=lambda s: s['id'])], ensure_ascii=False).encode()).hexdigest()[:12]
+
+    def due(self, wkey, ss):
+        if len(ss) < 2 or time.time() - self.wanted.get(wkey, 0) > 600:  # (one session needs no grouping; the dashboard not open for ten minutes)
+            return False
+        cur = self.data.get(wkey)
+        return not (cur and cur.get('basis') == self.basis(ss)) and time.time() >= self.next.get(wkey, 0)
+
+    def make(self, w, ss, cfg, pname):
+        wkey, ok = w['key'], False
+        self.busy = wkey
+        def row(s):
+            st = standing(s)[0]
+            where = ' · '.join(x for x in (pname(s), s.get('branch')) if x) or '—'
+            now = DIGEST_ST.get(st, st) + ('，也在等用户' if st == 'working' and (s.get('needs_you') or s.get('asks')) else '')
+            what = f'{s.get("title") or "（还没有总结）"} — {s.get("summary") or ""}' + (f'；在等用户：{s["needs_you"]}' if s.get('needs_you') else '')
+            return f'- {s["name"]}｜{where}｜{now}｜{ago_text(s.get("at") or s.get("since") or time.time())}｜{one_line(what, 300)}' + (f'｜由 {s["parent"]} 开的' if s.get('parent_id') else '')
+        try:
+            out = ask_model(DIGEST.format(ws=w['name'], rows='\n'.join(row(s) for s in ss)), cfg, 'summary')
+            r = json.loads(re.search(r'\{.*\}', out, re.S).group(0))
+            by, seen, items = {s['name']: s['id'] for s in ss}, set(), []
+            for x in r.get('items') or []:
+                if not isinstance(x, dict):
+                    continue
+                ids = [by[n] for n in dict.fromkeys(str(n) for n in (x.get('sessions') or []) if isinstance(n, str)) if n in by and by[n] not in seen]
+                if ids and one_line(x.get('thing'), 24):
+                    seen.update(ids)
+                    items.append({'thing': one_line(x.get('thing'), 24), 'now': one_line(x.get('now'), 120), 'sessions': ids})
+            week = time.time() - 7 * DAY  # (a new dict, not changed in place: the state is read from it meanwhile)
+            self.data = {**{k: v for k, v in self.data.items() if v.get('at', 0) > week}, wkey: {'at': time.time(), 'basis': self.basis(ss), 'headline': one_line(r.get('headline'), 140), 'items': items}}
+            self.errors.pop(wkey, None)
+            ok = True
+            os.makedirs(CACHE, exist_ok=True)
+            A.put(self.file, self.data)
+        except Exception as e:
+            self.errors[wkey] = f'{type(e).__name__}: {e}'[:300]
+        finally:
+            self.busy = None
+            self.next[wkey] = time.time() + (120 if ok else 600)
+
+    def view(self):
+        return {k: {x: v.get(x) for x in ('at', 'headline', 'items')} for k, v in self.data.items()}
+
+
 STARTED = time.time()
 
 
@@ -2023,6 +2120,7 @@ class Deck:
         self.sums = Summaries()
         self.reports = Reports()
         self.stories = Stories()
+        self.digests = Digests()
         self.origins = {}  # (pid -> how it was started: the process tree above it does not change)
         self.talk = Talk()
         self.state = {'sessions': [], 'talk': [], 'groups': {}, 'locks': [], 'at': 0}
@@ -2270,6 +2368,7 @@ class Deck:
                           'topics': self.stories.latest(),
                           'stories': {k: [len(v.get('topics') or []), v.get('at'), v.get('left', 0), len(v.get('turns') or [])] for k, v in self.stories.data.items()},
                           'storying': sorted(self.stories.asked | ({self.stories.busy} if self.stories.busy else set())),
+                          'digests': self.digests.view(), 'digest': {'busy': self.digests.busy, 'errors': dict(self.digests.errors)},
                           'events': list(self.events), 'pane_titles': self.cfg.get('pane_titles', True), 'me': ME_NAME, 'dirs': self._dirs,
                           'launch': self.cfg.get('launch', DEFAULTS['launch']), 'work_lang': self.cfg.get('work_lang') or 'zh',
                           'about': {'started': STARTED, 'app': APP, 'config': CONF, 'source': self.cfg.get('source'),
@@ -2669,6 +2768,10 @@ class Deck:
                 asked = next((s for s in live if s['id'] in self.stories.asked and self.stories.due(s)), None)
                 if asked:
                     self.stories.make(asked, self.cfg)
+                    continue
+                w = next((w for w in self.state.get('workspaces') or [] if self.digests.due(w['key'], Digests.sessions(w['key'], live))), None)
+                if w:  # (a dashboard open: what its workspace is doing, before the next summaries)
+                    self.digests.make(w, Digests.sessions(w['key'], live), self.cfg, lambda s: (self.projects.known.get(s.get('project')) or {}).get('name'))
                     continue
                 for s in sorted(live, key=lambda s: ({'working': 0, 'waiting': 1}.get(s['state'], 2), -(s['at'] or 0))):
                     basis = self.sums.due(s, self.cfg)
@@ -3745,6 +3848,12 @@ class Handler(BaseHTTPRequestHandler):
             if sid not in DECK.stories.data and DECK.find(sid):
                 DECK.stories.asked.add(sid)
             return self.send_json(DECK.stories.view(sid))
+        if self.path.startswith('/api/digest'):  # (a workspace's dashboard is open: its overview is kept up to date meanwhile)
+            from urllib.parse import urlparse, parse_qs
+            key = (parse_qs(urlparse(self.path).query).get('ws') or [''])[0]
+            if any(w['key'] == key for w in DECK.state.get('workspaces') or []):
+                DECK.digests.wanted[key] = time.time()
+            return self.send_json({'ok': True})
         if self.path.startswith('/api/transcript'):
             from urllib.parse import urlparse, parse_qs
             q = parse_qs(urlparse(self.path).query)

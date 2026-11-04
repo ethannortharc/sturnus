@@ -925,6 +925,29 @@ table.works .when { color: var(--muted); white-space: nowrap; font-variant-numer
 .side-s:hover .side-term, .side-term:focus-visible { opacity: 1; }
 .side-term:hover { color: var(--ink); }
 
+/* what the workspace is doing: a row a thing, its sessions as chips that open them (or their terminal) */
+.dg-head { display: flex; gap: 8px; align-items: flex-start; margin: -6px 2px 12px; font-size: 14px; line-height: 1.55; color: var(--ink-2); }
+.dg-head svg { width: 14px; height: 14px; margin-top: 4px; color: var(--accent); }
+.dg { border-radius: 16px; background: var(--panel); border: 1px solid var(--hair); box-shadow: var(--shadow-1); overflow: hidden; }
+.dg-row { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px; padding: 12px 16px; border-top: 1px solid var(--hair-2); }
+.dg-row:first-child { border-top: 0; }
+.dg-row[data-go] { cursor: pointer; } .dg-row[data-go]:hover { background: var(--panel-2); }
+.dg-row > .dot { margin-top: 7px; }
+.dg-row .top { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.dg-row .top b { font-size: 14.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
+.dg-row .where { display: inline-flex; align-items: center; gap: 3px; min-width: 0; flex: 0 1 auto; font: 11.5px var(--font-mono); color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dg-row .where svg { width: 11px; height: 11px; }
+.dg-row .top time { margin-left: auto; flex: none; font-size: 12px; color: var(--muted); white-space: nowrap; } .dg-row .top time.on { color: var(--ok); }
+.dg-row p { margin: 2px 0 0; font-size: 13px; color: var(--ink-2); }
+.dg-row .who { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.dg-s { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 3px 0 5px; border-radius: 8px; border: 1px solid var(--hair); background: var(--panel); font-size: 12px; cursor: pointer; max-width: 100%; }
+.dg-s:hover { border-color: color-mix(in srgb, var(--ink) 30%, var(--hair)); background: var(--panel-2); }
+.dg-s b { font: 500 11.5px var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.dg-s em { font-style: normal; color: var(--muted); white-space: nowrap; } .dg-s em.working, .dg-s em.asking { color: var(--ok); } .dg-s em.waiting, .dg-s em.blocked { color: var(--warn-ink); } .dg-s em.review { color: var(--review); }
+.dg-s button { width: 20px; height: 20px; border: 0; border-radius: 6px; background: none; color: var(--muted); display: grid; place-items: center; cursor: pointer; padding: 0; }
+.dg-s button:hover { background: var(--ink); color: var(--panel); }
+.dg-s button svg { width: 13px; height: 13px; }
+@media (max-width: 640px) { .dg-row .where { display: none; } }
 /* many sessions: the rest of a list folded, one line each when open */
 .attn-more { display: flex; align-items: center; gap: 6px; width: 100%; padding: 10px 16px; border: 0; background: none; color: var(--muted); font: inherit; font-size: 13px; cursor: pointer; text-align: left; }
 .attn-more:hover { color: var(--ink); }

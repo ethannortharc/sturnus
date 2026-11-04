@@ -213,6 +213,13 @@ Object.assign(EN, {
 "有会话在上面、或者还没合进 main 的工作项": "work items with a session on them, or not yet merged into main",
 "全部工作项": "All work items",
 "会话在做什么": "What the sessions are doing",
+"现在在做的事": "What is under way",
+"助手按在做的事把会话归在一起 · {t}": "Sessions grouped by what they work on, by the assistant · {t}",
+"助手正在按在做的事把会话归在一起……": "The assistant is grouping the sessions by what they work on…",
+"助手一会儿按在做的事把会话归在一起；在那之前一个会话一行": "The assistant will group the sessions by what they work on shortly; until then, one session per line",
+"没归成：{m}": "Not grouped: {m}",
+"这个工作区现在没有在跑的会话。": "No session runs in this workspace now.",
+"还有 {n} 件": "{n} more",
 "全部项目": "All projects",
 "最近": "Recent",
 "讨论区的新帖、记下的决定、产出": "new posts in channels, decisions noted, results",
@@ -684,7 +691,8 @@ function build() {  // (the frame of a view; render() fills it)
   } else if (route.name === 'ws') {  // (one workspace: its dashboard, its projects, its work items)
     $('#view').innerHTML = `<div class="page"><div class="ws-head" id="wsHead"></div><div id="wsBody"></div></div>`;
     if (route.tab === 'dash' && route.key !== '~') {
-      $('#wsBody').innerHTML = `<section class="entry"><div class="h-title"><h2>${t('需要你')}</h2><span class="sub" id="attnSub"></span></div><div id="attn"></div></section>${todo}
+      $('#wsBody').innerHTML = `<section class="sec-block"><div class="h-title"><h2>${t('现在在做的事')}</h2><span class="sub" id="dgSub"></span></div><div id="digest"></div></section>
+        <section class="entry"><div class="h-title"><h2>${t('需要你')}</h2><span class="sub" id="attnSub"></span></div><div id="attn"></div></section>${todo}
         <section class="sec-block"><div class="h-title"><h2>${t('进行中的工作')}</h2><span class="sub">${t('有会话在上面、或者还没合进 main 的工作项')}</span><a class="right lnk" href="#/w/${encodeURIComponent(route.key)}/works">${t('全部工作项')}</a></div><div id="wsWorks"></div></section>
         <section class="sec-block"><div class="h-title"><h2>${t('会话在做什么')}</h2><span class="sub" id="wsCardsSub"></span></div><div id="wsSess"></div></section>
         <section class="sec-block"><div class="h-title"><h2>${t('项目')}</h2><span class="sub" id="wsProjSub"></span><a class="right lnk" href="#/w/${encodeURIComponent(route.key)}/projects">${t('全部项目')}</a></div><div id="wsProj"></div></section>
@@ -1066,6 +1074,40 @@ function wsFeed(w) {
   return items.length ? `<div class="feed">${items.slice(0, 12).map(i => `<a class="fi" href="${i.href}"><span class="k">${i.kind}${i.where ? ' · ' + esc(i.where) : ''}</span><span class="t"><b>${esc(i.who)}</b>${t('：')}${esc(String(i.text).replace(/\s+/g, ' ').slice(0, 160))}</span><time>${clock(i.at)}</time></a>`).join('')}</div>`
     : `<div class="calm">${t('这个工作区还没有讨论、决定或产出。')}</div>`;
 }
+// what the workspace is doing: its sessions grouped by the thing they work on (by the assistant, from their summaries;
+// one it has not placed stands alone), those that need you first, then the busy ones, then the latest
+function dgRows(on, d) {
+  const by = new Map(on.map(s => [s.id, s])), seen = new Set(), rows = [];
+  for (const x of (d && d.items) || []) {
+    const ss = x.sessions.map(id => by.get(id)).filter(s => s && !seen.has(s.id));
+    ss.forEach(s => seen.add(s.id));
+    if (ss.length) rows.push({ thing: x.thing, now: x.now, ss });
+  }
+  for (const s of on) if (!seen.has(s.id)) rows.push({ thing: titleOf(s), now: s.summary || '', ss: [s] });
+  for (const r of rows) { r.ss.sort((a, b) => ORDER(a) - ORDER(b) || (b.at || 0) - (a.at || 0)); r.at = Math.max(...r.ss.map(s => s.at || 0)); }
+  return rows.sort((a, b) => ORDER(a.ss[0]) - ORDER(b.ss[0]) || b.at - a.at);
+}
+function dgRow(r) {
+  const own = s => s.branch && s.work && (projOf(s.project) || {}).path !== s.work;  // (its own worktree: its branch says what it is on)
+  const ps = [...new Set(r.ss.map(s => (projOf(s.project) || {}).name).filter(Boolean))], brs = [...new Set(r.ss.filter(own).map(s => s.branch))];
+  const busy = r.ss.some(s => ['working', 'asking'].includes(standing(s)[0]));  // (one at it now: when it last stirred says nothing)
+  return `<div class="dg-row"${r.ss.length === 1 ? ` data-go="${esc(r.ss[0].id)}"` : ''}><span class="dot ${standing(r.ss[0])[0]}"></span>
+    <div class="t"><div class="top"><b>${esc(r.thing)}</b>${ps.length ? `<span class="where">${esc(ps.join(' · '))}${brs.length ? ` · ${I.branch}${esc(brs.join(', '))}` : ''}</span>` : ''}<time${busy ? ' class="on"' : ''}>${busy ? t('进行中') : agoT(r.at)}</time></div>
+      ${r.now ? `<p>${esc(r.now)}</p>` : ''}
+      <div class="who">${r.ss.map(s => { const [st, label] = standing(s);
+        return `<span class="dg-s" data-go="${esc(s.id)}" title="${esc(titleOf(s) + (s.summary ? ' — ' + s.summary : ''))}">${mark(FULL[s.kind] ? s.kind : 'codex', st, 'xs')}<b>${esc(s.name)}</b><em class="${st}">${label}${['working', 'asking'].includes(st) ? '' : ' · ' + agoT(s.at)}</em>${webOk(s) ? `<button data-go="${esc(s.id)}" data-tab="term" title="${t('进入它的终端')}">${I.term}</button>` : ''}</span>`; }).join('')}</div></div></div>`;
+}
+function drawDigest(w) {
+  if (!document.hidden) draw('dgwant', [w.key, Math.floor(Date.now() / 60000)], () => fetch('/api/digest?ws=' + encodeURIComponent(w.key), { cache: 'no-store' }).catch(() => {}));  // (kept up to date while it is in view)
+  const on = S.sessions.filter(s => s.workspace === w.key && live(s) && !(s.unknown && !s.summary)), g = S.digest || {}, err = (g.errors || {})[w.key] || '';
+  const d = on.length > 1 ? (S.digests || {})[w.key] : null, rows = dgRows(on, d), open = quietOpen.has('dg:' + w.key), cut = !open && rows.length > 8 ? rows.length - 6 : 0;  // (one session: nothing to group)
+  draw('digest', [w.key, d && d.at, g.busy === w.key, err, open, rows.map(r => [r.thing, r.now, r.ss.map(s => [s.id, standing(s)[0], s.title, s.summary, s.branch, webOk(s)])]), tick()], () => {
+    $('#dgSub').textContent = d ? t('助手按在做的事把会话归在一起 · {t}', { t: agoT(d.at) }) + (g.busy === w.key ? t(' · 正在更新') : err ? ' · ' + t('没归成：{m}', { m: err.slice(0, 140) }) : '')
+      : g.busy === w.key ? t('助手正在按在做的事把会话归在一起……') : err ? t('没归成：{m}', { m: err.slice(0, 140) }) : rows.length > 1 ? t('助手一会儿按在做的事把会话归在一起；在那之前一个会话一行') : '';
+    $('#digest').innerHTML = !rows.length ? `<div class="calm">${t('这个工作区现在没有在跑的会话。')}</div>`
+      : `${d && d.headline ? `<p class="dg-head">${I.spark}<span>${esc(d.headline)}</span></p>` : ''}<div class="dg">${(cut ? rows.slice(0, 6) : rows).map(dgRow).join('')}${cut ? `<button class="attn-more" data-quiet="dg:${esc(w.key)}">${chev(false)}${t('还有 {n} 件', { n: cut })}</button>` : open && rows.length > 8 ? `<button class="attn-more" data-quiet="dg:${esc(w.key)}">${chev(true)}${t('收起')}</button>` : ''}</div>`;
+  });
+}
 function renderWs() {
   const key = route.key;
   if (key === '~') {
@@ -1099,6 +1141,7 @@ function renderWs() {
     });
     return;
   }
+  drawDigest(w);
   drawAttn(w.key);
   drawTodoProjects(w.projects);
   draw('wsbody', sig_, () => {
