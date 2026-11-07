@@ -12,7 +12,7 @@ is (its Zellij session and pane), what they say to each other. Jump to one, writ
   sturnus uninstall [--purge]      take everything out again (--purge: its settings and caches too)
   sturnus status | open | serve | version
 """
-import base64, calendar, difflib, fcntl, functools, ipaddress, glob, hashlib, hmac, importlib.machinery, importlib.util, json, os, plistlib, pty, re, secrets, shutil, signal, socket, sqlite3, struct, subprocess, sys, termios, threading, time, urllib.error, urllib.request
+import base64, calendar, difflib, fcntl, functools, ipaddress, glob, hashlib, hmac, importlib.machinery, importlib.util, json, os, plistlib, pty, re, resource, secrets, shutil, signal, socket, sqlite3, struct, subprocess, sys, termios, threading, time, urllib.error, urllib.request
 from collections import Counter, deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -264,6 +264,19 @@ def zellij_server(session):
 
 ROOM = threading.Lock()
 ROOM_TAKEN = {}  # (session -> [(when, files)]: what was let in a moment ago, its plugins maybe not loaded yet)
+
+
+def raise_file_limit():
+    """A Zellij server keeps the open-file limit of what starts it, and this service has the system's (macOS: 256), never
+    a shell's ~/.zshenv. zellij_room() takes zellij_max_files at its word, so a server started from here must really have
+    it. Read each time, as zellij_room() reads it: the setting can change under a running service. Only ever raises."""
+    try:
+        want = int(config().get('zellij_max_files') or 0)
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if want and soft != resource.RLIM_INFINITY and soft < want:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (want if hard == resource.RLIM_INFINITY else min(want, hard), hard))
+    except (OSError, ValueError, TypeError) as e:
+        print(f'open-file limit left as it is: {e}', file=sys.stderr, flush=True)
 
 
 def zellij_room(session, what='client'):
@@ -3205,6 +3218,7 @@ class Deck:
             w.write(layout)
         made = ''
         if group not in zellij_sessions():
+            raise_file_limit()
             r = run(['zellij', 'attach', '--create-background', group, 'options', '--show-startup-tips', 'false'], timeout=10)
             for _ in range(20):
                 if group in zellij_sessions():

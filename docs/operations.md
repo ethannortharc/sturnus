@@ -43,7 +43,7 @@ Every client of a Zellij session (each terminal attached to it, the page's termi
 
 So the page does not open its terminal, or a new tab in a Zellij session, when that would take the server past its limit, and says why. macOS does not tell one process another's limit, so there the deck takes it as 256 unless the server already holds more.
 
-To give Zellij more room, raise the limit in the shell it is started from, e.g. `ulimit -n 10240` in `~/.zshenv`, then start the Zellij session again: a running server keeps the limit it started with. On macOS, also set `zellij_max_files` to that number in the config, so the deck knows.
+To give Zellij more room, raise the limit in the shell it is started from, e.g. `ulimit -n 10240` in `~/.zshenv`, then start the Zellij session again: a running server keeps the limit it started with. On macOS, also set `zellij_max_files` to that number in the config, so the deck knows. A service does not read `~/.zshenv`, so the deck raises its own limit to that number before it starts a new Zellij session from the page, and that session has the same room.
 
 ## Settings
 
