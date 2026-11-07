@@ -12,7 +12,7 @@ is (its Zellij session and pane), what they say to each other. Jump to one, writ
   sturnus uninstall [--purge]      take everything out again (--purge: its settings and caches too)
   sturnus status | open | serve | version
 """
-import base64, calendar, difflib, fcntl, functools, ipaddress, glob, hashlib, hmac, importlib.machinery, importlib.util, json, os, plistlib, pty, re, resource, secrets, shutil, signal, socket, sqlite3, struct, subprocess, sys, termios, threading, time, urllib.error, urllib.request
+import base64, calendar, contextlib, difflib, fcntl, functools, ipaddress, glob, hashlib, hmac, importlib.machinery, importlib.util, json, os, plistlib, pty, re, resource, secrets, shutil, signal, socket, sqlite3, struct, subprocess, sys, termios, threading, time, urllib.error, urllib.request
 from collections import Counter, deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -608,6 +608,20 @@ def transcript_of(s):
     return found
 
 
+def transcript_cwd(path):
+    """The folder a conversation file says it ran in."""
+    try:
+        with open(path) as f:
+            for _, line in zip(range(40), f):
+                d = json.loads(line)
+                c = d.get('cwd') or (d.get('payload') or {}).get('cwd')
+                if c:
+                    return c
+    except (OSError, TypeError, ValueError, AttributeError):
+        pass
+    return None
+
+
 def codex_meta(path, _seen={}):
     if path not in _seen:
         try:
@@ -704,16 +718,38 @@ def lines_of(path, size=400000):
     return cursor_lines(lines) if '/.cursor/projects/' in path else lines
 
 
-def tail_lines(path, size=400000):
+INLINE_DATA = re.compile(rb'"data":\s*"[A-Za-z0-9+/=]{1000,}"')
+NOT_TALK = re.compile(rb'\{"type":"(api-request|api-request-blob|session-owner|atis-latch|mode|permission-mode|last-prompt|ai-title|tools-used)"')  # (Claude Code's own bookkeeping)
+
+
+def tail_lines(path, size=400000, furthest=40000000, longest=300000):
+    """The last lines of a file, about SIZE bytes of them, oldest first. A screenshot in a conversation weighs a megabyte
+    or more: a line that long has its inline data taken out (or is left out), so it neither crowds out the words around
+    it nor counts towards SIZE; for those, reading goes back as far as FURTHEST."""
+    kept, got = [], 0
     try:
         with open(path, 'rb') as f:
-            start = max(0, os.path.getsize(path) - size)
-            f.seek(start)
-            data = f.read().decode('utf-8', 'replace')
+            pos, seen, rest = os.path.getsize(path), 0, b''
+            while pos > 0 and got < size and seen < furthest:
+                n = min(1 << 20, pos)
+                pos -= n
+                seen += n
+                f.seek(pos)
+                parts = (f.read(n) + rest).split(b'\n')
+                rest = parts.pop(0) if pos > 0 else b''  # (its start is in the part before)
+                for line in reversed(parts):
+                    if NOT_TALK.match(line):
+                        continue
+                    if len(line) > longest:
+                        line = INLINE_DATA.sub(b'"data":""', line)
+                    if line.strip() and len(line) <= longest:
+                        kept.append(line)
+                        got += len(line)
+                        if got >= size:
+                            break
     except OSError:
         return []
-    lines = data.splitlines()
-    return lines[1:] if start and len(lines) > 1 else lines  # (read from mid-file, its first line is cut)
+    return [line.decode('utf-8', 'replace') for line in reversed(kept)]
 
 
 def text_of(content):
@@ -787,6 +823,11 @@ def items_of(lines):
             continue
         if not isinstance(d, dict):
             continue
+        if d.get('type') == 'attachment':  # (Claude Code: words the person sent while it worked)
+            a = d.get('attachment') or {}
+            if a.get('type') == 'queued_command' and isinstance(a.get('prompt'), str) and a['prompt'].strip():
+                items.append(('用户', a['prompt'].strip()))
+            continue
         if d.get('type') in ('user', 'assistant') and isinstance(d.get('message'), dict):  # Claude Code
             m = d['message']
             t, tools = text_of(m.get('content'))
@@ -813,8 +854,12 @@ def items_of(lines):
 
 def recent(path, budget=7000):
     """The end of a conversation as lines (who: what), oldest first, within budget characters."""
+    for size in (400000, 2000000, 8000000):  # (tools' output takes up most of a file and says little: further back when so)
+        items = items_of(lines_of(path, size))
+        if sum(len(t) for _, t in items) >= budget:
+            break
     out, n = [], 0
-    for who, t in reversed(items_of(lines_of(path))):
+    for who, t in reversed(items):
         t = t if len(t) < 1500 else t[:700] + ' … ' + t[-700:]
         line = f'{who}: {t}' if who else t
         if n + len(line) > budget:
@@ -1138,7 +1183,8 @@ class Summaries:
         lines = recent(path) if path else []
         if not lines and s.get('said'):
             lines = [f'助手: {s["said"]}']
-        if not lines:
+        if not lines:  # (nothing to read yet: noted, or it stays due and no other session, report or task list gets a turn)
+            self.data.setdefault(s['id'], {'title': ''}).update(basis=basis, at=time.time())
             return
         held, text = self.open_asks(s['id']), '\n'.join(lines)
         done = [a for a in self.asks if a['sid'] == s['id'] and a.get('by') == 'user'][-5:]
@@ -1243,8 +1289,16 @@ REPORT = '''你在给一位开发者写某个 AI 编码会话的简报（{kind}�
  "decisions": [{{"what": "定下来的事", "by": "user 或 agent"}}],
  "now": "现在停在哪儿，一句话",
  "next": ["接下来要做的、或在等这位开发者的事，0 到 3 条"],
- "refs": ["产出：MR/PR 链接、提交、版本、文档链接，0 到 6 条，原样照抄"]}}
+ "refs": ["产出：MR/PR 链接、提交、版本、文档链接，0 到 6 条，原样照抄"],
+ "tasks": [{{"id": "对得上已有任务就写它的 id；确实是新的才留空", "title": "任务名，十几个字，说清楚要做成什么", "status": "todo、doing、waiting 或 done", "now": "这件事现在到哪了，一句话", "next": "接着做的第一步，具体到能直接开始；做完了留空", "decisions": [{{"topic": "几个字的主题", "what": "这件事上定下来的", "by": "user 或 agent"}}], "results": ["这件事的产出：版本、链接、文件，原样照抄"]}}]}}
 「决定」只收真正拍板的：开发者明确同意、选择、否决的（by 写 user），或 agent 做的、影响后面的取舍（by 写 agent）；普通步骤不算。
+「任务」是项目里要推进的一件事，能说清楚做成什么样算完（修好某个问题、做完某个功能、发某个版本），不是一个步骤，也不是一次问答。一个会话通常碰到 1 到 3 件；闲聊、纯查询没有任务，给空列表。只写这个会话确实碰到的。能对上已有任务就用它的 id，不要换个说法再建一件。status：正在做 doing；做到一半在等开发者决定或确认 waiting；提了还没动 todo；确实做完了 done，拿不准就不写 done。
+
+{scope}里没做完的任务（id｜状态｜标题｜现状，* 是这个会话在做的）：
+{open}
+
+已经结束或被开发者删掉的任务（不要再建）：
+{gone}
 
 已经记下的决定（参考、补全，别重复）：
 {known}
@@ -1288,6 +1342,7 @@ class Reports:
         self.file = os.path.join(CACHE, 'reports.json')
         self.data = A.get(self.file, {}) or {}
         self.asked, self.busy, self.error = set(), None, ''
+        self.closing = set()  # (sessions that had their last report)
 
     @staticmethod
     def moved(path):
@@ -1302,15 +1357,54 @@ class Reports:
             return False
         return not cur or (self.moved(path) > cur['basis'] + 1 and time.time() - cur['at'] > 1800)
 
-    def make(self, s, cfg, decisions, story=None):
+    def last_due(self, s):
+        """A session that has just ended: once more, for what it did after its last report, so that its tasks hear of it."""
+        if s['state'] not in ('gone', 'ended') or s.get('starting') or s.get('unknown') or s['id'] in self.closing or time.time() - (s.get('at') or 0) > 6 * 3600:
+            return False
+        path = transcript_of(s)
+        cur = self.data.get(s['id'])
+        return bool(path) and (not cur or self.moved(path) > cur['basis'] + 1)
+
+    @staticmethod
+    def offered(s, key):
+        """The open tasks a report may name: those here, and this session's own wherever they are (it may have been placed
+        on the workspace at first, and on a project since)."""
+        return [t for t in A.tasks_query() if t['scope'] == key or any(x['name'] == s['name'] for x in t['sessions'])]
+
+    @classmethod
+    def absorb(cls, s, scope, name, items, as_of):
+        """What a report says of the tasks: by id when the model names one it was offered, else a new one. What is under way
+        comes last: the last task a session touched counts as the one it is on."""
+        here = {t['id'] for t in cls.offered(s, scope)}
+        me = {'name': s['name'], 'sid': s['id'], 'kind': s['kind']}
+        items = [x for x in (items if isinstance(items, list) else [])[:6] if isinstance(x, dict)]
+        for x in sorted(items, key=lambda x: x.get('status') in ('doing', 'waiting')):
+            op = {'who': 'summary', 'as_of': as_of, 'session': me, 'now': x.get('now'), 'next': x.get('next'),
+                  'status': x.get('status') if x.get('status') in ('todo', 'doing', 'waiting', 'done') else None,
+                  'decisions': x.get('decisions') if isinstance(x.get('decisions'), list) else [],
+                  'results': x.get('results') if isinstance(x.get('results'), list) else []}
+            if str(x.get('id') or '') in here:
+                A.task_do({**op, 'do': 'set', 'id': x['id'], 'scope': scope, 'scope_name': name})
+            elif one_line(x.get('title'), 120):
+                A.task_do({**op, 'do': 'add', 'scope': scope, 'scope_name': name, 'title': x['title']})
+
+    def make(self, s, cfg, decisions, story=None, scope=None):
         self.asked.discard(s['id'])
         path = transcript_of(s)
         if not path:
             return
+        key, sname = scope or (None, None)
+        tasks = self.offered(s, key)[:30] if key else []
+        mine = lambda t: '*' if any(x['name'] == s['name'] for x in t['sessions']) else ''
         known = [f'- {x["topic"]}：{x["now"]}（{"开发者" if x["by"] == "user" else "agent"}）' for x in (story or {}).get('topics') or []][:12] \
             or [f'- {d["what"]}（{"开发者" if d["by"] == "user" else "agent"}）' for d in decisions if d['sid'] == s['id']][-12:]
         prompt = REPORT.format(kind=s['kind'], name=s['name'], cwd=s.get('cwd') or '?', known='\n'.join(known) or '（无）',
-                               opening='\n'.join(opening(path)) or '（读不到）', log='\n'.join(recent(path, 16000)))
+                               opening='\n'.join(opening(path)) or '（读不到）', log='\n'.join(recent(path, 16000)),
+                               scope=f'「{sname}」' if key else '（这个会话不在任何项目或工作区里，tasks 给空列表）',
+                               open='\n'.join(f'{mine(t)}{t["id"]}｜{t["status"]}｜{t["title"]}｜{t["now"][:100]}' for t in tasks) or '（无）',
+                               gone='\n'.join(f'- {x}' for x in A.tasks_gone(key)) if key and A.tasks_gone(key) else '（无）')
+        if s['state'] in ('gone', 'ended'):
+            self.closing.add(s['id'])
         self.busy = s['id']
         try:
             basis = self.moved(path)
@@ -1326,6 +1420,8 @@ class Reports:
                                                       for d in (r.get('decisions') or []) if isinstance(d, dict) and one_line(d.get('what'), 160)][:8]}}
             self.error = ''
             A.put(self.file, self.data)
+            if key:
+                self.absorb(s, key, sname, r.get('tasks'), basis)
         except Exception as e:
             self.error = f'{type(e).__name__}: {e}'[:300]
             self.data.setdefault(s['id'], {'r': None, 'basis': 0, 'name': s['name'], 'kind': s['kind']})['at'] = time.time()
@@ -1577,6 +1673,14 @@ class Stories:
             out += [{'sid': sid, 'name': cur.get('name'), 'topic': x['topic'], 'what': x['now'], 'by': x['by'],
                      'at': turn_at(turns, x.get('n')) or cur.get('at')} for x in cur.get('topics') or []]
         return sorted(out, key=lambda x: -(x['at'] or 0))[:n]
+
+
+TIDY = '''你在整理「{name}」的任务列表，让它一直干净可用。下面是没做完的任务，一行一个：id｜状态｜标题｜现状｜接着做｜最后更新。
+
+{rows}
+
+只输出 JSON：{{"merge": [{{"keep": "留下的 id", "drop": ["并进去的 id"]}}], "done": [{{"id": "任务 id", "now": "为什么算做完，一句话，照它的现状写"}}]}}
+merge：明确是同一件事、只是说法不同的才合并，留下说得最清楚的那个。done：现状已经写明做完了、只是状态没改的才算。拿不准就不动，什么都不用动就给两个空列表。'''
 
 
 DIGEST = '''你在为一位开发者写工作区「{ws}」的总览：让他一眼看出现在在做哪几件事、谁在做、做到哪了。下面是这个工作区里的会话，一行一个：名字｜项目 · 分支｜现在怎样｜最后动静｜它在做的事 — 进展。
@@ -1834,6 +1938,9 @@ def web_url(remote):
     return f'https://{m.group(1)}/{m.group(2)}' if m else None
 
 
+WS_FOLDER = 'workspace'  # (a folder of this name is a workspace as soon as an agent runs in it, or anywhere below it)
+
+
 class Projects:
     def __init__(self, cfg):
         self.cfg = cfg
@@ -1852,11 +1959,22 @@ class Projects:
         return [os.path.realpath(os.path.expanduser(p)) for p in self.cfg.get('workspaces') or []]
 
     def ws_of(self, root):
-        """The workspace a project's folder is in: a configured one around it, else the folder above it (not the home
-        folder or the root: a repository right in there is in no workspace)."""
+        """The workspace a project's folder is in: a configured one around it, else the nearest folder called "workspace"
+        above it, else the folder above it (not the home folder or the root: a repository right in there is in no workspace)."""
         inside = [w for w in self.configured() if root == w or root.startswith(w + '/')]
+        if inside:
+            return max(inside, key=len)
         up = os.path.dirname(root)
-        return max(inside, key=len) if inside else None if up in (USER_HOME, '/') else up
+        return self.named_ws(up) or (None if up in (USER_HOME, '/') else up)
+
+    @staticmethod
+    def named_ws(p):
+        """The nearest folder called "workspace" at P or above it; none when that folder is itself a git repository, or in one."""
+        while p not in (USER_HOME, '/'):
+            if os.path.basename(p) == WS_FOLDER:
+                return None if A.git_common(p) else p
+            p = os.path.dirname(p)
+        return None
 
     def is_ws(self, p):
         """A folder of projects: configured, above a project seen, or holding two git repositories or more."""
@@ -1893,7 +2011,7 @@ class Projects:
             self.known[proj['key']] = proj
             out.update(project=proj, workspace=proj['workspace'], work=top, branch=git(top, 'symbolic-ref', '--short', '-q', 'HEAD') or '')
         else:
-            ws = next((w for w in sorted(self.configured(), key=len, reverse=True) if p.startswith(w + '/')), None)
+            ws = next((w for w in sorted(self.configured(), key=len, reverse=True) if p.startswith(w + '/')), None) or self.named_ws(p)
             up = p
             while not ws and up not in ('/', USER_HOME) and up.count('/') > 2:
                 if self.is_ws(up):
@@ -2142,6 +2260,10 @@ class Deck:
         self.failed = {}
         self.pending = {}
         self.launched = {}  # marker -> what was started from this page, until its session shows up
+        self.everyone = []  # (all the sessions, the ended ones too; the state holds those on the page)
+        self.linking = {}  # marker -> the task a session started from this page is for, until it is a session
+        self.tasks_seen, self.tasks_kept, self.tidied = (0, []), 0, {}  # (the store as last read; when it was last trimmed; scope -> when tidied, what it had)
+        self.tasks_lock, self.tasks_current, self.tasks_error = threading.Lock(), {}, ''  # (session name -> the task it touched last)
         self.qfile = os.path.join(CACHE, 'queue.json')
         self.queue = A.get(self.qfile, []) or []
         self._dirs, self._dirs_at = [], 0
@@ -2274,6 +2396,12 @@ class Deck:
                 card.update(state='idle', needs_you='', summary=tx('开好了，等你说第一句话（Codex 收到第一句话才登记成会话；窗格里若在问是否信任这个目录，先在那里回答）',
                                                                    'Ready for your first message (Codex registers a session at its first message; if its pane asks whether to trust this folder, answer there first)'))
             sessions.append(card)
+        for marker, l in list(self.linking.items()):  # (started to work on a task: once it is a session, that task's)
+            x = next((x for x in sessions if x.get('loc') and x['loc'] == (l['loc'] or marked(marker)) and not x.get('unknown')), None)
+            if x:
+                A.task_do({'do': 'set', 'who': A.task_who(x['name']), 'id': l['task'], 'status': 'doing', 'session': {'name': x['name'], 'sid': x['id'], 'kind': x['kind']}})
+            if x or now - l['at'] > 900:
+                self.linking.pop(marker)
         loose = []
         for s in sessions:
             if not self.projects.attribute(s):
@@ -2368,8 +2496,11 @@ class Deck:
         self.publish(sessions)
         workspaces, projects = self.layout(sessions)
         boards = self.boards_view()
+        task_rows = self.tasks_tick(sessions)
         with self.lock:
+            self.everyone = sessions
             self.state = {'sessions': [s for s in sessions if not s['hidden']], 'talk': self.talk.all(), 'groups': zs, 'locks': locks,
+                          'tasks': task_rows,
                           'workspaces': workspaces, 'projects': projects, 'boards': boards,
                           'muxes': [m for m in ('zellij', 'tmux') if shutil.which(m)], 'voice': self.voice_view(),
                           'at': now, 'version': VERSION, 'summarizer': {'busy': self.sums.busy, 'error': self.sums.error},
@@ -2776,7 +2907,7 @@ class Deck:
                 live = [s for s in self.state['sessions'] if not (s.get('unknown') and not s.get('transcript'))]
                 asked = next((s for s in live if s['id'] in self.reports.asked), None)
                 if asked:  # (what the person asked for first: a report, then a story)
-                    self.reports.make(asked, self.cfg, self.sums.decisions, self.stories.data.get(asked['id']))
+                    self.report(asked)
                     continue
                 asked = next((s for s in live if s['id'] in self.stories.asked and self.stories.due(s)), None)
                 if asked:
@@ -2794,11 +2925,17 @@ class Deck:
                 else:  # (no summary due: a report, else a story)
                     s = next((s for s in sorted(live, key=lambda s: -(s['at'] or 0)) if self.reports.due(s)), None)
                     if s:
-                        self.reports.make(s, self.cfg, self.sums.decisions, self.stories.data.get(s['id']))
+                        self.report(s)
                     else:
                         s = next((s for s in sorted(live, key=lambda s: -(s['at'] or 0)) if self.stories.due(s)), None)
                         if s:
                             self.stories.make(s, self.cfg)
+                        else:  # (nothing else to do: a session that has ended, then the task lists)
+                            s = next((s for s in self.everyone if self.reports.last_due(s)), None)
+                            if s:
+                                self.report(s)
+                            else:
+                                self.tidy_tasks()
             except Exception as e:
                 self.sums.error = repr(e)[:300]
             time.sleep(4)
@@ -2806,11 +2943,205 @@ class Deck:
     def find(self, sid):
         return next((s for s in self.state['sessions'] if s['id'] == sid), None)
 
+    # ---------- tasks: what the projects work through; sessions come and go on them ----------
+
+    def report(self, s):
+        self.reports.make(s, self.cfg, self.sums.decisions, self.stories.data.get(s['id']), self.scope_of(s))
+
+    def scope_name(self, key):
+        p = self.projects.known.get(key)
+        return (p or self.projects.ws_channel(key) or {}).get('name')
+
+    def scope_of(self, s):
+        """Where a session's tasks are kept: its project, else its workspace, as (key, name); None when it has neither."""
+        key = s.get('project') or s.get('workspace')
+        return (key, self.scope_name(key) or key) if key else None
+
+    def scope_at(self, folder):
+        """Where the tasks of work in a folder are kept: as for scope_of."""
+        at = self.projects.where(folder)
+        p, w = at.get('project'), at.get('workspace')
+        return (p['key'], p['name']) if p else (A.key_of('w', w), ws_name(w)) if w else None
+
+    @staticmethod
+    def task_shown(t, live):
+        """How a task stands as the person sees it: what its sessions do now, over what was written down."""
+        if t['status'] in A.TASK_CLOSED:
+            return t['status']
+        st = {standing(s)[0] for s in live}
+        if t['status'] == 'waiting' or st & {'waiting', 'asking', 'blocked', 'review'}:
+            return 'needs'
+        return 'working' if 'working' in st else 'todo' if t['status'] == 'todo' else 'paused'
+
+    def task_row(self, t, by_sid, by_name):
+        links = []
+        for x in t['sessions']:
+            s = by_sid.get(x.get('sid')) or by_name.get(x['name'])
+            on = bool(s) and s['state'] not in ('gone', 'ended') and not s.get('hidden')
+            links.append({'name': x['name'], 'kind': x.get('kind'), 'sid': s['id'] if on else x.get('sid'), 'live': on, 'at': x.get('at'),
+                          'st': standing(s)[0] if on else None, 'label': standing(s)[1] if on else None, 'title': (s.get('title') if on else None)})
+        # (a session on several tasks is on the one it touched last: the others do not light up with it)
+        live = [by_sid.get(x['sid']) for x in links if x['live'] and self.tasks_current.get(x['name']) == t['id']]
+        return {**{k: t[k] for k in ('id', 'scope', 'scope_name', 'title', 'status', 'now', 'next', 'at', 'made', 'closed')}, 'shown': self.task_shown(t, live),
+                'sessions': links, 'decs': t['decisions'][-2:], 'nd': len(t['decisions']), 'nr': len(t['results'])}
+
+    def tasks_tick(self, sessions):
+        """Each collect, and after the person's changes: apply what sandboxes left, keep the store small, and the tasks as
+        the page sees them. Whatever goes wrong here costs the page its update, never the collect, and it keeps the list it has."""
+        with self.tasks_lock:
+            try:
+                A.task_flush()
+                if time.time() - self.tasks_kept > 3600:
+                    self.tasks_kept = time.time()
+                    A.tasks_trim()
+                    self.import_tasks(sessions)
+                m = os.stat(A.TASKS).st_mtime_ns
+                if m != self.tasks_seen[0]:
+                    self.tasks_seen = (m, A.tasks_query(closed=time.time() - 7 * DAY, limit=300))
+                self.tasks_error = ''
+            except Exception as e:
+                if repr(e) != self.tasks_error:  # (said once, not on every pass)
+                    self.tasks_error = repr(e)
+                    self.note(tx(f'任务库出错：{e!r}', f'The task store failed: {e!r}'), False)
+            on = {}
+            for t in self.tasks_seen[1]:
+                if t['status'] not in A.TASK_CLOSED:
+                    for x in t['sessions']:
+                        if (x.get('at') or 0) >= on.get(x['name'], (0, ''))[0]:
+                            on[x['name']] = (x.get('at') or 0, t['id'])
+            self.tasks_current = {k: v[1] for k, v in on.items()}
+            by_sid, by_name = {s['id']: s for s in sessions}, {s['name']: s for s in sessions}
+            return [self.task_row(t, by_sid, by_name) for t in self.tasks_seen[1]]
+
+    def import_tasks(self, sessions):
+        """Once: what the reports already say becomes tasks, so it outlasts their sessions. Unless its session runs, or it
+        ended in the last three days with something left to do, it comes in as done: it can be looked up, and pretends to nothing."""
+        if A.task_meta('imported'):
+            return
+        by = {s['id']: s for s in sessions}
+        for sid, v in self.reports.data.items():
+            r = v.get('r')
+            if not r:
+                continue
+            s = by.get(sid)
+            if not s:  # (ended: placed as it would be while it ran, by its folder and the files it worked on)
+                kind, _, session = sid.partition(':')
+                path = transcript_of({'kind': kind, 'session': session})
+                cwd = transcript_cwd(path)
+                s = {'id': sid, 'name': v.get('name') or sid, 'kind': kind, 'session': session, 'cwd': cwd, 'home': cwd, 'state': 'gone', 'transcript': path}
+                self.projects.attribute(s)
+            scope = self.scope_of(s)
+            if not scope:
+                continue
+            old = s['state'] in ('gone', 'ended') and (time.time() - v.get('at', 0) > 3 * DAY or not r.get('next'))
+            A.task_do({'do': 'add', 'who': 'summary', 'scope': scope[0], 'scope_name': scope[1], 'at': v.get('at'), 'status': 'done' if old else 'doing',
+                       'title': (self.sums.data.get(sid) or {}).get('title') or r.get('goal'), 'now': r.get('now'), 'next': '；'.join(r.get('next') or []),
+                       'decisions': [{'topic': '', 'what': d['what'], 'by': d['by']} for d in r.get('decisions') or []], 'results': r.get('refs') or [],
+                       'session': {'name': v.get('name'), 'sid': sid, 'kind': v.get('kind')}})
+        A.task_meta('imported', '1')
+
+    def tidy_tasks(self):
+        """When nothing else waits: a list that has changed, and has grown long enough to need it, gets looked over, at
+        most every six hours: the same thing written twice is merged, what says it is finished is closed."""
+        by = {}
+        for t in A.tasks_query():
+            by.setdefault(t['scope'], []).append(t)
+        for scope, ts in by.items():
+            sig = sorted((t['id'], t['at']) for t in ts)
+            when, seen = self.tidied.get(scope, (0, None))
+            if len(ts) < 6 or seen == sig or time.time() - when < 6 * 3600:
+                continue
+            self.tidied[scope] = (time.time(), sig)
+            as_of = time.time()
+            rows = '\n'.join(f'{t["id"]}｜{t["status"]}｜{t["title"]}｜{t["now"][:120]}｜{t["next"][:80]}｜{int((time.time() - t["at"]) // 3600)} 小时前' for t in ts[:60])
+            out = ask_model(TIDY.format(name=ts[0].get('scope_name') or scope, rows=rows), self.cfg, 'summary')
+            r = json.loads(re.search(r'\{.*\}', out, re.S).group(0))
+            ids = {t['id'] for t in ts}
+            for m in r.get('merge') or []:
+                if isinstance(m, dict) and m.get('keep') in ids and isinstance(m.get('drop'), list):
+                    A.task_do({'do': 'merge', 'who': 'summary', 'as_of': as_of, 'id': m['keep'], 'drop': [x for x in m['drop'] if x in ids]})
+            for d in r.get('done') or []:
+                if isinstance(d, dict) and d.get('id') in ids:
+                    A.task_do({'do': 'set', 'who': 'summary', 'as_of': as_of, 'id': d['id'], 'status': 'done', 'now': d.get('now')})
+            return
+
+    def task_brief(self, t):
+        """What a session is told when it is given a task: one line, typed as the person's."""
+        i = t['id']
+        told = t['now'] or t['next']
+        return one_line(tx(f'接着做任务 {i}「{t["title"]}」。' + ('之前记下的，供参考，以实际情况为准：' if told else '') + (f'现状：{t["now"]}。' if t['now'] else '') + (f'接着做：{t["next"]}。' if t['next'] else '')
+                           + f'开始时运行 amail task start {i}；有进展用 amail task update {i} --now "现状" --next "接着做"；做完运行 amail task done {i}。',
+                           f'Pick up task {i} "{t["title"]}". ' + ('Noted earlier, for reference; check it against what you find: ' if told else '') + (f'Where it stands: {t["now"]}. ' if t['now'] else '') + (f'Next: {t["next"]}. ' if t['next'] else '')
+                           + f'Start with: amail task start {i}. As it moves: amail task update {i} --now "where it stands" --next "next step". When finished: amail task done {i}.'), 1500)
+
+    def task_view(self, tid):
+        """One task in full, for its page."""
+        t = A.task_get(tid)
+        by = self.everyone
+        row = self.task_row(t, {s['id']: s for s in by}, {s['name']: s for s in by})
+        for x in row['sessions']:  # (how to go back to one that has ended)
+            kind, _, session = (x.get('sid') or '').partition(':')
+            x['resume'] = None if x['live'] or not session else f'claude --resume {session}' if kind == 'claude' else f'codex resume {session}' if kind == 'codex' else None
+        return {**row, 'decisions': t['decisions'], 'results': t['results'], 'log': t['log'], 'brief': self.task_brief(t)}
+
+    def tasks_find(self, q, scope, closed):
+        by = self.everyone
+        rows = [self.task_row(t, {s['id']: s for s in by}, {s['name']: s for s in by}) for t in A.tasks_query(scope or None, closed=closed, q=q, limit=200)]
+        return {'ok': True, 'tasks': rows}
+
+    def task_act(self, b):
+        """What the person does to a task."""
+        do, tid = b.get('do'), str(b.get('id') or '')
+        s = self.find(b.get('sid')) if b.get('sid') else None
+        me = s and {'name': s['name'], 'sid': s['id'], 'kind': s['kind']}
+        if do == 'add':
+            scope = str(b.get('scope') or '')
+            name = self.scope_name(scope)
+            if not name:
+                return False, tx('先选一个项目或工作区', 'Pick a project or a workspace first')
+            if not one_line(b.get('title'), 120):
+                return False, tx('先写任务名', 'Write what the task is first')
+            new = A.task_do({'do': 'add', 'who': 'person', 'scope': scope, 'scope_name': name, 'title': b.get('title'), 'now': b.get('now'), 'next': b.get('next')})
+            if s:  # (given to a session as it is written down)
+                A.task_do({'do': 'set', 'who': A.task_who(s['name']), 'id': new, 'session': me, 'status': 'doing'})
+            return True, {'id': new, 'msg': tx('记下了', 'Added')}
+        t = A.task_get(tid)
+        if do == 'set':
+            A.task_do({'do': 'set', 'who': 'person', 'id': t['id'], **{k: b[k] for k in ('title', 'now', 'next', 'status') if b.get(k) is not None}})
+            return True, {}
+        if do == 'delete':
+            A.task_do({'do': 'delete', 'who': 'person', 'id': t['id']})
+            return True, tx(f'删掉了「{t["title"]}」', f'Deleted “{t["title"]}”')
+        if do == 'unlink':
+            A.task_do({'do': 'unlink', 'who': 'person', 'id': t['id'], 'session': {'name': str(b.get('name') or '')}})
+            return True, tx('不再关联', 'Unlinked')
+        if do in ('link', 'give'):
+            if not s:
+                return False, tx('这个会话已经不在了', 'That session is gone')
+            told = self.act('say', {'id': s['id'], 'text': self.task_brief(t)}) if do == 'give' else None
+            if told and not told[0]:  # (it did not get there: nothing has changed)
+                return told
+            # (the session's act, not the person's word on the status: its own updates and the summaries go on moving it)
+            A.task_do({'do': 'set', 'who': A.task_who(s['name']), 'id': t['id'], 'session': me, 'status': 'doing' if do == 'give' or t['status'] == 'todo' else None})
+            return told or (True, tx(f'{s["name"]} 关联上了这个任务', f'{s["name"]} is linked to this task'))
+        return False, tx('不知道要做什么', 'Unknown action')
+
     # actions
     def act(self, what, body, lang=None):
         if lang:
             _REQ.lang = lang
         s = self.find(body.get('id')) if body.get('id') else None
+        if what == 'task':
+            try:
+                out = self.task_act(body)
+            except ValueError as e:
+                return False, str(e)
+            except (sqlite3.Error, OSError) as e:
+                return False, tx(f'任务库现在写不进去，这次没有保存：{e}', f'The task store cannot be written just now; this was not saved: {e}')
+            rows = self.tasks_tick(self.everyone)  # (the page shows it at once, not at the next collect)
+            with self.lock:
+                self.state['tasks'] = rows
+            return out
         if what == 'say':  # (words for a session, as the person's: how they get there follows how it stands)
             text = (body.get('text') or '').strip()
             if not s or not text:
@@ -3188,6 +3519,14 @@ class Deck:
         argv = [os.environ.get('SHELL') or '/bin/bash', '-l'] if kind == 'shell' else list(self.cfg.get('launch', DEFAULTS['launch']).get(kind) or DEFAULTS['launch'][kind])
         if kind == 'claude' and name:
             argv += ['--name', name]
+        if b.get('task_title') and kind != 'shell':  # (something the person asked to get done: a task from the start)
+            scope = self.scope_at(cwd)
+            if scope:
+                b = {**b, 'task': A.task_do({'do': 'add', 'who': 'person', 'scope': scope[0], 'scope_name': scope[1], 'title': b['task_title']})}
+        if b.get('task'):  # (to work on a task: it says what to do unless the person wrote otherwise)
+            task = A.task_get(b['task'])
+            b = {**b, 'task': task['id']}
+            prompt = prompt or self.task_brief(task)
         if prompt and kind != 'shell':
             argv.append(prompt)
         marker = os.urandom(6).hex()
@@ -3249,6 +3588,8 @@ class Deck:
         if kind == 'codex' and name:
             self.pending[marker] = name  # (a Codex thread takes its name once it shows up)
         self.launched[marker] = {'kind': kind, 'name': name or tab, 'group': group, 'cwd': cwd, 'at': time.time()}
+        if b.get('task'):
+            self.linking[marker] = {'task': b['task'], 'loc': loc, 'at': time.time()}
         if b.get('jump'):
             threading.Thread(target=self._jump_when_up, args=(marker, tab), daemon=True).start()
         return True, tx(f'{made}在 {group.removeprefix("tmux:")} 里开了「{tab}」（{ {"claude": "Claude Code", "codex": "Codex", "cursor": "Cursor"}[kind]}，{cwd.replace(os.path.expanduser("~"), "~")}）', f'{made}Opened “{tab}” in {group.removeprefix("tmux:")} ({ {"claude": "Claude Code", "codex": "Codex", "cursor": "Cursor"}[kind]}, {cwd.replace(os.path.expanduser("~"), "~")})')
@@ -3868,6 +4209,17 @@ class Handler(BaseHTTPRequestHandler):
             if any(w['key'] == key for w in DECK.state.get('workspaces') or []):
                 DECK.digests.wanted[key] = time.time()
             return self.send_json({'ok': True})
+        if self.path.startswith('/api/tasks'):  # (all of them, the long-ended too, or those that mention something)
+            from urllib.parse import urlparse, parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            one = lambda k: (q.get(k) or [''])[0]
+            return self.send_json(DECK.tasks_find(one('q'), one('scope'), True if one('closed') else False))
+        if self.path.startswith('/api/task'):
+            from urllib.parse import urlparse, parse_qs
+            try:
+                return self.send_json({'ok': True, 'task': DECK.task_view((parse_qs(urlparse(self.path).query).get('id') or [''])[0])})
+            except ValueError as e:
+                return self.send_json({'ok': False, 'msg': str(e)}, 404)
         if self.path.startswith('/api/transcript'):
             from urllib.parse import urlparse, parse_qs
             q = parse_qs(urlparse(self.path).query)
@@ -4200,7 +4552,12 @@ def uninstall(purge, with_service=True):
     if purge:
         for d in (os.path.dirname(CONF), CACHE, A.HOME):
             shutil.rmtree(d, ignore_errors=True)
-        out.append('settings, caches and mail removed')
+        for f in (A.TASKS, A.TASKS + '-journal'):
+            if os.path.exists(f):
+                os.remove(f)
+        with contextlib.suppress(OSError):
+            os.rmdir(os.path.dirname(A.TASKS))
+        out.append('settings, caches, mail and tasks removed')
     return '\n'.join(x for x in out if x)
 
 

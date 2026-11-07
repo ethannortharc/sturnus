@@ -45,6 +45,24 @@ So the page does not open its terminal, or a new tab in a Zellij session, when t
 
 To give Zellij more room, raise the limit in the shell it is started from, e.g. `ulimit -n 10240` in `~/.zshenv`, then start the Zellij session again: a running server keeps the limit it started with. On macOS, also set `zellij_max_files` to that number in the config, so the deck knows. A service does not read `~/.zshenv`, so the deck raises its own limit to that number before it starts a new Zellij session from the page, and that session has the same room.
 
+## Tasks
+
+Sessions come and go; a project's tasks stay. They are kept in `~/.local/state/sturnus/tasks.db` (SQLite; `STURNUS_TASKS` points elsewhere), which upgrades and a plain `sturnus uninstall` leave alone; only `--purge` removes it.
+
+Three write to them, through one set of rules:
+
+- **The sessions**, as they work: `amail task add`, `start`, `update`, `done`, `drop`, `leave`. A sandbox that cannot write to the store (Codex's, Cursor's) leaves its change in amail's folder, and the service applies it.
+- **The assistant**, from each session's report, and once more when a session ends. It updates a task by its id or adds a new one. When a list has changed and holds six or more, it also merges what was written twice and closes what says it is finished, at most every six hours per list.
+- **You**, on the page: add, edit, change state, link a session, delete.
+
+So they do not undo each other: the assistant leaves any field you wrote, until a session updates that field; it changes no field, and replaces no decision, that a session or you have written since the conversation it read; it does not reopen an ended task, make again one that was ended or deleted, or link back a session you unlinked. Only you delete: a session drops a task, which stays findable. If the store cannot be written when you make a change, the page says so and nothing is saved; a session's change waits in amail's folder instead.
+
+A session on several tasks counts as being on the one it touched last, so the others do not show as under way with it.
+
+The store stays small. What is said again replaces what was there: one decision per topic, at most 12 decisions, 8 results and 20 log lines per task. A task ended over 30 days ago shrinks to its title, its last word and 3 results. A list keeps its newest 500 ended tasks. Deleted ones are gone for good after 60 days.
+
+A new session is told how to use `amail task` and, when its project has open ones, up to five of them.
+
 ## Settings
 
 `~/.config/sturnus/config.json`:
@@ -54,7 +72,7 @@ To give Zellij more room, raise the limit in the shell it is started from, e.g. 
 - `https_port` (7443);
 - `pane_titles`;
 - `zellij_max_files` (macOS: the open-file limit your Zellij sessions start with, once you have raised it);
-- `workspaces`: the folders of projects (default: the folder above each git repository a session works in);
+- `workspaces`: the folders of projects. Without it, a workspace is found on its own: a folder called `workspace` as soon as an agent runs in it or below it, the folder above each git repository a session works in, or a folder holding two git repositories or more;
 - `releases`: the GitHub repository `sturnus upgrade` takes releases from (default `ethannortharc/sturnus`);
 - `work_lang`: `"zh"` (default) or `"en"` for generated summaries, reports, assistant replies, and drafts;
 - `models.summary` and `models.assist`: separate model configurations for background summaries and interactive assistance;
@@ -90,7 +108,7 @@ The dashboard and its state live on this machine. Model features send relevant s
 
 ## Trying a change
 
-A second instance can run beside the installed one: `STURNUS_CONF`, `STURNUS_CACHE` and `AMAIL_HOME` point it at its own settings (with another `port`), caches and mail. `STURNUS_DRY=1` suppresses typing into panes and queueing into Codex threads; it is not a general network or filesystem sandbox.
+A second instance can run beside the installed one: `STURNUS_CONF`, `STURNUS_CACHE`, `STURNUS_TASKS` and `AMAIL_HOME` point it at its own settings (with another `port`), caches, tasks and mail. `STURNUS_DRY=1` suppresses typing into panes and queueing into Codex threads; it is not a general network or filesystem sandbox.
 
 To reproduce the README media without contacting agent sessions or model services, use the [fixture capture runbook](../.demo-studio/runbook.md). That browser harness serves the unmodified frontend with fictional API responses and rejects mutating requests.
 

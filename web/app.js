@@ -170,7 +170,7 @@ const boardOf = k => (S.boards || {})[k] || null;
 const live = s => !s.stale && !['gone', 'ended'].includes(s.state);
 
 // ---------- language: the menus and navigation in Chinese or English (the Chinese is the key) ----------
-const EN = { "总览": "Overview", "总览：所有工作区": "Overview: all workspaces", "讨论：所有讨论区": "Channels: all of them", "消息：会话之间的信": "Messages: mail between sessions", "报告：每个会话的简报": "Reports: a brief per session", "排队：等会话空了再发": "Queue: sent once a session is free", "所有工作区（还有 {n} 个安静的）": "All workspaces ({n} more, quiet)", "所有工作区": "All workspaces", "不在工作区里的会话": "Sessions in no workspace", "不在工作区里": "In no workspace", "（再点一下：收起或展开旁边那栏）": " (click again: fold or unfold the column)", "目录不在任何工作区里的会话": "sessions whose folder is in no workspace", "仪表盘": "Dashboard", "项目": "Projects", "工作项": "Work items", "讨论区": "Channel", "终端": "Terminal", "讨论": "Channels", "每个工作区、每个项目一个讨论区": "one per workspace and per project", "{name} 工作区": "{name} workspace", "消息": "Messages", "会话之间的信，和写给你的": "mail between sessions, and to you", "会话之间": "Between sessions", "与你有关": "To and from you", "报告": "Reports", "每个会话的简报": "a brief per session", "排队": "Queue", "等会话空了再发的事": "things to send once a session is free", "可以发了": "Ready to send", "排着": "Waiting", "已发出": "Sent", "不用发了": "Dropped", "{n} 个 · 有会话的在前": "{n} · busy ones first", "筛选工作区": "Filter workspaces", "有会话": "With sessions", "安静": "Quiet", "{n} 个会话": "{n} sessions", "没有这个名字的工作区": "No workspace by that name", "{a} 个工作区 · {b} 个会话": "{a} workspaces · {b} sessions", "等你": "Needs you", "工作中": "Working", "空闲": "Idle", "卡住": "Blocked", "待验收": "To review", "已离开": "Gone", "已结束": "Ended", "一天以上没动静 {n} 个": "{n} quiet for a day", "现在没有会话": "No sessions now", "工作区顶层": "workspace top", "概览": "Overview", "对话": "Conversation", "在终端里打开": "Open in terminal", "进入": "Enter", "让连着这个组的终端切到它": "Switch the attached terminal to it", "会话": "Sessions", "{n} 条新": "{n} new", "在这里新建会话": "New session here", "收起旁边那栏（⌘B）": "Fold the column (⌘B)", "展开旁边那栏（⌘B）": "Unfold the column (⌘B)", "设置": "Settings", "助手与模型": "Assistant & models", "语音输入": "Voice input", "显示": "Display", "访问": "Access", "关于": "About", "这台机器上的显示偏好。": "Display preferences on this machine.", "主题": "Theme", "跟随系统，或固定浅色、深色。": "Follow the system, or always light or dark.", "跟随系统": "System", "浅色": "Light", "深色": "Dark", "工作区图标": "Workspace marks", "最左边那条栏里工作区的颜色。": "The color of workspaces on the rail.", "石墨": "Graphite", "暗彩": "Muted colors", "石墨加色条": "Graphite with a stripe", "页面配色": "Page colors", "外框和中间页面的颜色，浅色、深色主题都适用。": "The colors of the frame and of the page inside it, in light and dark.", "暖灰": "Warm grey", "冷灰": "Cool grey", "深色外框": "Dark frame", "窗格标题": "Pane titles", "用「状态 · 会话名 · 在做的事」做每个 agent 窗格的标题，在 Zellij 或 tmux 里一眼认出是哪个（tmux 要开 pane-border-status 才看得到）。": "Title each agent pane \"state · name · what it does\", to tell them apart in Zellij or tmux (tmux shows them with pane-border-status).", "语言": "Language", "菜单和导航用的语言；页面内容暂时还是中文。": "The language of menus and navigation; page content is in Chinese for now.", "agent 的工作语言": "Agents’ working language", "总结、简报、助手的回答、帮你起草的话用哪种语言写。已经写好的，等它们下次更新时换过来。": "The language summaries, reports, the assistant’s answers and drafts are written in. Ones already written change at their next update.", "搜索工作区、项目、会话": "Search…", "新建会话": "New session", "新建会话（N）": "New session (N)", "实时": "Live", "连接中断，重试中": "Disconnected, retrying", "与本机 sturnus 服务的连接": "Connection to Sturnus on this machine", "主题：跟随系统": "Theme: system", "主题：浅色": "Theme: light", "主题：深色": "Theme: dark", "助手：问各个会话的事（⌘/Ctrl+J）": "Assistant: ask about the sessions (⌘/Ctrl+J)", "工作区、项目、会话的名字，任务，目录……": "Names of workspaces, projects, sessions; tasks; folders…", "选择": "select", "打开": "open", "进终端": "terminal", "关闭": "close", "没有匹配的工作区、项目或会话": "No matching workspace, project or session", "工作区 · {p}": "Workspace · {p}", "项目 · {w}": "Project · {w}", "总结模型出错，去设置里看看": "The summary model failed: see Settings", "总结：{m}": "Summaries: {m}", " · 正在更新": " · updating", "刷新于 {t}": "Refreshed {t}", "刚刚": "just now", "{t}前": "{t} ago", "{n} 分钟": "{n} min", "{n} 小时": "{n} h", "{n} 天": "{n} d", "工作区与全局入口": "Workspaces and global places", "Sturnus 总览": "Sturnus overview", "搜索会话": "Search" };
+const EN = { "任务": "Tasks", "任务：每个项目在推进的事": "Tasks: what each project is working through", "每个项目在推进的事": "What each project is working through", "总览": "Overview", "总览：所有工作区": "Overview: all workspaces", "讨论：所有讨论区": "Channels: all of them", "消息：会话之间的信": "Messages: mail between sessions", "报告：每个会话的简报": "Reports: a brief per session", "排队：等会话空了再发": "Queue: sent once a session is free", "所有工作区（还有 {n} 个安静的）": "All workspaces ({n} more, quiet)", "所有工作区": "All workspaces", "不在工作区里的会话": "Sessions in no workspace", "不在工作区里": "In no workspace", "（再点一下：收起或展开旁边那栏）": " (click again: fold or unfold the column)", "目录不在任何工作区里的会话": "sessions whose folder is in no workspace", "仪表盘": "Dashboard", "项目": "Projects", "工作项": "Work items", "讨论区": "Channel", "终端": "Terminal", "讨论": "Channels", "每个工作区、每个项目一个讨论区": "one per workspace and per project", "{name} 工作区": "{name} workspace", "消息": "Messages", "会话之间的信，和写给你的": "mail between sessions, and to you", "会话之间": "Between sessions", "与你有关": "To and from you", "报告": "Reports", "每个会话的简报": "a brief per session", "排队": "Queue", "等会话空了再发的事": "things to send once a session is free", "可以发了": "Ready to send", "排着": "Waiting", "已发出": "Sent", "不用发了": "Dropped", "{n} 个 · 有会话的在前": "{n} · busy ones first", "筛选工作区": "Filter workspaces", "有会话": "With sessions", "安静": "Quiet", "{n} 个会话": "{n} sessions", "没有这个名字的工作区": "No workspace by that name", "{a} 个工作区 · {b} 个会话": "{a} workspaces · {b} sessions", "等你": "Needs you", "工作中": "Working", "空闲": "Idle", "卡住": "Blocked", "待验收": "To review", "已离开": "Gone", "已结束": "Ended", "一天以上没动静 {n} 个": "{n} quiet for a day", "现在没有会话": "No sessions now", "工作区顶层": "workspace top", "概览": "Overview", "对话": "Conversation", "在终端里打开": "Open in terminal", "进入": "Enter", "让连着这个组的终端切到它": "Switch the attached terminal to it", "会话": "Sessions", "{n} 条新": "{n} new", "在这里新建会话": "New session here", "收起旁边那栏（⌘B）": "Fold the column (⌘B)", "展开旁边那栏（⌘B）": "Unfold the column (⌘B)", "设置": "Settings", "助手与模型": "Assistant & models", "语音输入": "Voice input", "显示": "Display", "访问": "Access", "关于": "About", "这台机器上的显示偏好。": "Display preferences on this machine.", "主题": "Theme", "跟随系统，或固定浅色、深色。": "Follow the system, or always light or dark.", "跟随系统": "System", "浅色": "Light", "深色": "Dark", "工作区图标": "Workspace marks", "最左边那条栏里工作区的颜色。": "The color of workspaces on the rail.", "石墨": "Graphite", "暗彩": "Muted colors", "石墨加色条": "Graphite with a stripe", "页面配色": "Page colors", "外框和中间页面的颜色，浅色、深色主题都适用。": "The colors of the frame and of the page inside it, in light and dark.", "暖灰": "Warm grey", "冷灰": "Cool grey", "深色外框": "Dark frame", "窗格标题": "Pane titles", "用「状态 · 会话名 · 在做的事」做每个 agent 窗格的标题，在 Zellij 或 tmux 里一眼认出是哪个（tmux 要开 pane-border-status 才看得到）。": "Title each agent pane \"state · name · what it does\", to tell them apart in Zellij or tmux (tmux shows them with pane-border-status).", "语言": "Language", "菜单和导航用的语言；页面内容暂时还是中文。": "The language of menus and navigation; page content is in Chinese for now.", "agent 的工作语言": "Agents’ working language", "总结、简报、助手的回答、帮你起草的话用哪种语言写。已经写好的，等它们下次更新时换过来。": "The language summaries, reports, the assistant’s answers and drafts are written in. Ones already written change at their next update.", "搜索工作区、项目、会话": "Search…", "新建会话": "New session", "新建会话（N）": "New session (N)", "实时": "Live", "连接中断，重试中": "Disconnected, retrying", "与本机 sturnus 服务的连接": "Connection to Sturnus on this machine", "主题：跟随系统": "Theme: system", "主题：浅色": "Theme: light", "主题：深色": "Theme: dark", "助手：问各个会话的事（⌘/Ctrl+J）": "Assistant: ask about the sessions (⌘/Ctrl+J)", "工作区、项目、会话的名字，任务，目录……": "Names of workspaces, projects, sessions; tasks; folders…", "选择": "select", "打开": "open", "进终端": "terminal", "关闭": "close", "没有匹配的工作区、项目或会话": "No matching workspace, project or session", "工作区 · {p}": "Workspace · {p}", "项目 · {w}": "Project · {w}", "总结模型出错，去设置里看看": "The summary model failed: see Settings", "总结：{m}": "Summaries: {m}", " · 正在更新": " · updating", "刷新于 {t}": "Refreshed {t}", "刚刚": "just now", "{t}前": "{t} ago", "{n} 分钟": "{n} min", "{n} 小时": "{n} h", "{n} 天": "{n} d", "工作区与全局入口": "Workspaces and global places", "Sturnus 总览": "Sturnus overview", "搜索会话": "Search" };
 Object.assign(EN, {
 "你": "You",
 "还认不出在做什么": "Can’t tell yet what it is doing",
@@ -585,7 +585,7 @@ Object.assign(EN, {
 });
 let LANG = 'zh';
 const tt = (zh, en) => (LANG === 'en' ? en : zh);  // (a label whose English differs by where it stands)
-const t = (s, v) => { let x = LANG === 'en' && EN[s] !== undefined ? EN[s] : s; for (const k in v || {}) x = x.split('{' + k + '}').join(v[k]); return x; };
+const t = (s, v) => { let x = LANG === 'en' && EN[s] !== undefined ? EN[s] : s; for (const k in v || {}) x = x.split('{' + k + '}').join(v[k]); return x.replace('刚刚前', '刚刚').replace('just now ago', 'just now'); };
 const agoT = t0 => { const a = ago(t0); return a === t('刚刚') ? a : t('{t}前', { t: a }); };
 // how a session outside Zellij and tmux was started: the deck writes it in Chinese, the page puts it in its own language
 const originT = o => { if (LANG !== 'en' || !o) return o; const m = o.match(/^终端窗口（(.*)）$/) || o.match(/^由 (.*) 启动$/); const r = m ? t(o.startsWith('由') ? '由 {n} 启动' : '终端窗口（{n}）', { n: t(m[1]) }) : t(o); return r.charAt(0).toUpperCase() + r.slice(1); };
@@ -653,13 +653,16 @@ function parseRoute() {
   let mt = h.match(/^\/term\/([^/]+)(?:\/([^/]+))?$/);
   if (mt) return { name: 'gterm', group: decodeURIComponent(mt[1]), pane: mt[2] ? decodeURIComponent(mt[2]) : '' };
   if (h === '/reports') return { name: 'reports' };
+  if (h === '/tasks') return { name: 'tasks' };
   if (h === '/boards') return { name: 'boards' };
   if (h === '/workspaces') return { name: 'workspaces' };
+  mt = h.match(/^\/tasks\/([^/]+)$/);
+  if (mt) return { name: 'tasks', scope: decodeURIComponent(mt[1]) };
   mt = h.match(/^\/boards\/([^/]+)$/);
   if (mt) return { name: 'boards', key: decodeURIComponent(mt[1]) };
   mt = h.match(/^\/w\/([^/]+)(?:\/(projects|works))?$/);
   if (mt) return { name: 'ws', key: decodeURIComponent(mt[1]), tab: mt[2] || 'dash' };
-  mt = h.match(/^\/p\/([^/]+)(?:\/(overview|board|sessions))?$/);
+  mt = h.match(/^\/p\/([^/]+)(?:\/(overview|tasks|board|sessions))?$/);
   if (mt) return { name: 'project', key: decodeURIComponent(mt[1]), tab: mt[2] || 'overview' };
   mt = h.match(/^\/b\/([^/]+)$/);
   if (mt) return { name: 'board', key: decodeURIComponent(mt[1]) };
@@ -692,6 +695,7 @@ function build() {  // (the frame of a view; render() fills it)
     $('#view').innerHTML = `<div class="page"><div class="ws-head" id="wsHead"></div><div id="wsBody"></div></div>`;
     if (route.tab === 'dash' && route.key !== '~') {
       $('#wsBody').innerHTML = `<section class="sec-block"><div class="h-title"><h2>${t('现在在做的事')}</h2><span class="sub" id="dgSub"></span></div><div id="digest"></div></section>
+        <section class="sec-block"><div class="h-title"><h2>${tt('没做完的任务', 'Open tasks')}</h2><span class="sub" id="wsTasksSub"></span><a class="right lnk" href="#/tasks/${encodeURIComponent(route.key)}">${tt('全部任务', 'All tasks')}</a></div><div id="wsTasks"></div></section>
         <section class="entry"><div class="h-title"><h2>${t('需要你')}</h2><span class="sub" id="attnSub"></span></div><div id="attn"></div></section>${todo}
         <section class="sec-block"><div class="h-title"><h2>${t('进行中的工作')}</h2><span class="sub">${t('有会话在上面、或者还没合进 main 的工作项')}</span><a class="right lnk" href="#/w/${encodeURIComponent(route.key)}/works">${t('全部工作项')}</a></div><div id="wsWorks"></div></section>
         <section class="sec-block"><div class="h-title"><h2>${t('会话在做什么')}</h2><span class="sub" id="wsCardsSub"></span></div><div id="wsSess"></div></section>
@@ -734,6 +738,14 @@ function build() {  // (the frame of a view; render() fills it)
       const j = await post('send', { to: $('#composeTo').value, text });
       if (j && j.ok) { ta.value = ''; ta.style.height = 'auto'; }
     });
+  } else if (route.name === 'tasks') {
+    crumb('任务');
+    TF.found = null;
+    $('#view').innerHTML = `<div class="page"><div class="h-title"><h2>${t('任务')}</h2><span class="sub" id="taskSub"></span></div>${taskNewForm(route.scope || '')}
+      <div class="task-bar"><div class="task-tabs" id="taskTabs" role="group"></div><input class="field" id="taskQ" type="search" placeholder="${tt('搜索任务、决定、产出', 'Search tasks, decisions, results')}" title="${tt('也搜已结束的', 'Ended ones too')}" value="${esc(TF.q)}" autocomplete="off"></div>
+      <div id="taskList"></div></div>`;
+    sig.tasktabs = sig.tasklist = sig.taskscope = null;
+    if (TF.q || TF.show === 'closed') taskFetch();
   } else if (route.name === 'reports') {
     crumb('报告');
     $('#view').innerHTML = `<div class="page"><div class="h-title"><h2>${t('报告')}</h2><span class="sub" id="repSub"></span></div><div id="repList"></div></div>`;
@@ -768,7 +780,7 @@ function render() {
   draw('status', [S.summarizer, S.about && S.about.model, Math.floor(Date.now() / 5000), S.version], drawStatus);
   drawRail();
   drawSide();
-  ({ home: renderHome, ws: renderWs, workspaces: renderWorkspaces, gterm: () => drawTerm({ id: `g:${route.group}:${route.pane}`, group: route.group, pane: route.pane, loc: (S.groups || {})[route.group] }), talk: renderTalk, reports: renderReports, queue: renderQueue,
+  ({ home: renderHome, ws: renderWs, workspaces: renderWorkspaces, gterm: () => drawTerm({ id: `g:${route.group}:${route.pane}`, group: route.group, pane: route.pane, loc: (S.groups || {})[route.group] }), talk: renderTalk, tasks: renderTasks, reports: renderReports, queue: renderQueue,
      project: renderProject, board: renderBoardPage, boards: () => (route.key ? renderBoardPage() : renderBoards()) }[route.name] || renderSession)();
   if (!$('#palette').hidden) drawPalette();
 }
@@ -802,7 +814,7 @@ function space() {
   if (r.name === 'project') { const p = projOf(r.key); return p && p.workspace ? { t: 'ws', key: p.workspace, page: 'projects' } : { t: 'home' }; }
   if (r.name === 'session') { const s = S.sessions.find(x => x.id === r.id); return s ? { t: 'ws', key: s.workspace || '~' } : { t: 'home' }; }
   if (r.name === 'board') return wsOf(r.key) ? { t: 'ws', key: r.key, page: 'board' } : { t: 'boards' };
-  if (['boards', 'talk', 'reports', 'queue', 'workspaces'].includes(r.name)) return { t: r.name };
+  if (['boards', 'talk', 'tasks', 'reports', 'queue', 'workspaces'].includes(r.name)) return { t: r.name };
   if (r.name === 'gterm') {  // (a group's terminal: in the workspace most of its sessions are in)
     const n = {};
     for (const s of S.sessions) if (s.loc && s.loc.session === r.group && s.workspace) n[s.workspace] = (n[s.workspace] || 0) + 1;
@@ -863,7 +875,8 @@ function drawRail() {
     const w = wsOf(sp.key), seen = store.get('deck.wsSeen', []);
     if (w && !w.live && !seen.includes(w.key)) store.set('deck.wsSeen', [w.key, ...seen].slice(0, 3));
   }
-  draw('railnav', [sp, on.map(w => [w.key, w.name, wsNeed(w), wsWorking(w)]), rest, loose, need, bNew, bCalls, today, qReady], () => {
+  const tNeed = (S.tasks || []).filter(x => x.shown === 'needs').length;
+  draw('railnav', [sp, on.map(w => [w.key, w.name, wsNeed(w), wsWorking(w)]), rest, loose, need, bNew, bCalls, today, qReady, tNeed], () => {
     const g = (href, on, icon, label, n, hot) => `<a class="tile g${on ? ' on' : ''}" href="${href}" title="${t(label, { n: rest })}${on ? t('（再点一下：收起或展开旁边那栏）') : ''}" aria-label="${t(label, { n: rest })}">${icon}${n ? `<span class="badge${hot ? ' hot' : ''}">${big(n)}</span>` : ''}</a>`;
     $('#rail').innerHTML = g('#/', sp.t === 'home', I.grid, '总览：所有工作区', need, true) + '<hr>'
       + on.map((w, i) => `<a class="tile ws${sp.t === 'ws' && sp.key === w.key ? ' on' : ''}${w.live ? '' : ' quiet'}" href="#/w/${encodeURIComponent(w.key)}" style="--t:${wsColor(w)}" title="${esc(w.name)} · ${esc(home(w.path))}${i < 9 ? ` (⌘${i + 1})` : ''}" aria-label="${esc(w.name)}">${esc(w.name.slice(0, 1).toUpperCase())}${wsNeed(w) ? `<span class="badge hot">${wsNeed(w)}</span>` : wsWorking(w) ? '<i class="pulse"></i>' : ''}</a>`).join('')
@@ -872,6 +885,7 @@ function drawRail() {
       + '<span class="push"></span>'
       + g('#/boards', sp.t === 'boards', I.chat, '讨论：所有讨论区', bCalls || bNew, bCalls > 0)
       + g('#/talk', sp.t === 'talk', I.mail, '消息：会话之间的信', today)
+      + g('#/tasks', sp.t === 'tasks', I.check, '任务：每个项目在推进的事', tNeed, true)
       + g('#/reports', sp.t === 'reports', I.doc, '报告：每个会话的简报', '')
       + g('#/queue', sp.t === 'queue', I.list, '排队：等会话空了再发', qReady, true);
   });
@@ -880,7 +894,7 @@ function drawSide() {
   const sp = space(), cur = route.name === 'session' ? S.sessions.find(x => x.id === route.id) : null, tops = roots(S.sessions);
   draw('side', [sp, route, [...quietOpen], S.sessions.map(s => [s.id, s.title, s.state, s.status, s.needs_you && 1, (s.asks || []).length, asking(s), s.stale, s.kind, s.project, s.workspace, s.branch, s.born, (s.subs || []).map(a => [a.id, a.state, a.task])]), sideShow, Math.floor(Date.now() / 60000), (S.workspaces || []).map(w => [w.key, w.live, w.projects.length]),
     Object.values(S.boards || {}).map(b => [b.key, b.unread]), Object.entries(S.groups || {}).map(([g, z]) => [g, z.clients.length, z.agents]), (S.queue || []).map(i => i.status), railTab, [...quietOpen],
-    Object.values(S.projects || {}).map(p => [p.key, p.facts && p.facts.at]), (S.workspaces || []).map(w => w.groups)], () => {
+    Object.values(S.projects || {}).map(p => [p.key, p.facts && p.facts.at]), (S.workspaces || []).map(w => w.groups), route.name === 'tasks' && (S.tasks || []).map(x => [x.scope, x.shown])], () => {
     const head = (x, sub, extra = '') => `<div class="sp-head"><b>${t(x)}</b>${sub ? `<span>${t(sub)}</span>` : ''}${extra}</div>`;
     const item = (href, on, icon, label, n, hot) => `<a class="nav-item${on ? ' on' : ''}" href="${href}">${icon}${t(label)}${n ? `<span class="n${hot ? ' hot' : ''}">${big(n)}</span>` : ''}</a>`;
     const row = (s, pre) => { const [st, label] = standing(s), p = projOf(s.project); return `<div class="side-s${cur && cur.id === s.id ? ' on' : ''}${s.stale ? ' quiet' : ''}" data-go="${esc(s.id)}" title="${esc(s.name)} · ${tt('双击进终端', 'double-click: terminal')}">${webOk(s) ? `<button class="side-term" data-go="${esc(s.id)}" data-tab="term" title="${tt('进它的终端（T）', 'Its terminal (T)')}">${I.term}</button>` : ''}${mark(FULL[s.kind] ? s.kind : 'codex', st, 'sm')}<b>${esc(titleOf(s))}</b><span><em class="${st}">${label}</em> · ${pre ? esc(pre) + ' · ' : ''}${p ? esc(p.name) + (s.branch && s.work !== p.path ? ' · ' + esc(s.branch) : '') : s.workspace ? t('工作区顶层') : esc(s.name)}</span></div>`; };
@@ -924,6 +938,13 @@ function drawSide() {
       }).join('');
     } else if (sp.t === 'talk') {
       html = head('消息', '会话之间的信，和写给你的') + [['talk', '会话之间'], ['mine', '与你有关']].map(([k, l]) => `<a class="nav-item${railTab === k ? ' on' : ''}" data-rail="${k}" href="#/talk">${I.mail}${t(l)}</a>`).join('');
+    } else if (sp.t === 'tasks') {
+      const tasks = (S.tasks || []).filter(taskOpen), cnt = k => tasks.filter(x => taskIn(x, k)).length;
+      const known = k => projOf(k) || wsOf(k), other = [...new Set(tasks.map(x => x.scope).filter(k => !known(k)))];
+      html = head('任务', '每个项目在推进的事') + item('#/tasks', !route.scope, I.check, tt('全部', 'All'), tasks.length)
+        + (S.workspaces || []).map(w => { const ps = (w.projects || []).map(k => projOf(k)).filter(p => p && cnt(p.key));
+          return cnt(w.key) ? `<div class="side-gh"><span>${esc(w.name)}</span></div>${item(`#/tasks/${encodeURIComponent(w.key)}`, route.scope === w.key, I.list, tt('这个工作区全部', 'All in this workspace'), cnt(w.key))}${ps.map(p => item(`#/tasks/${encodeURIComponent(p.key)}`, route.scope === p.key, I.folder, esc(p.name), cnt(p.key))).join('')}` : ''; }).join('')
+        + (other.length ? `<div class="side-gh"><span>${tt('其他', 'Other')}</span></div>${other.map(k => item(`#/tasks/${encodeURIComponent(k)}`, route.scope === k, I.folder, esc(tasks.find(x => x.scope === k).scope_name || k), cnt(k))).join('')}` : '');
     } else if (sp.t === 'reports') {
       html = head('报告', '每个会话的简报') + (S.workspaces || []).map(w => { const l = tops.filter(s => s.workspace === w.key && !['gone', 'ended'].includes(s.state));
         return l.length ? `<div class="side-gh"><span>${esc(w.name)}</span></div>${l.map(s => row(s)).join('')}` : ''; }).join('');
@@ -1142,6 +1163,11 @@ function renderWs() {
     return;
   }
   drawDigest(w);
+  { const open = taskListFor(w.key, 500), first = open.slice(0, 6);
+    draw('wstasks', [w.key, taskSig(first), open.length, tick()], () => {
+      $('#wsTasksSub').textContent = open.length ? tt(`${open.length} 件 · 会话结束了也还在`, `${open.length} · they outlast the sessions`) : '';
+      $('#wsTasks').innerHTML = first.length ? `<div class="task-list">${first.map(taskRow).join('')}</div>` : `<div class="calm">${tt('还没有任务。会话在做的事会自动记到这里。', 'No tasks yet. What sessions work on is noted here on its own.')}</div>`;
+    }); }
   drawAttn(w.key);
   drawTodoProjects(w.projects);
   draw('wsbody', sig_, () => {
@@ -1176,12 +1202,14 @@ async function todoAsk() {
     ${j.new ? `<div class="rec-opt"><div><b>${t('新开一个 {k} 会话', { k: FULL[j.new.kind] })}</b><span>${esc(home(j.new.cwd))}${j.new.group ? ' · ' + esc(groupName(j.new.group)) : ''}${j.new.name ? ' · ' + esc(j.new.name) : ''}</span><p>${esc(j.new.why)}</p></div><button class="btn${to ? '' : ' primary'}" data-trec="new">${t('新开并交给它')}</button></div>` : ''}
     ${!to && !j.new ? `<p class="hint">${esc(j.why || t('没找到合适的会话'))}</p>` : ''}</div>`;
 }
+const todoTask = (s, text, on) => { const scope = s && (s.project || s.workspace); if (scope) api('task', { do: 'add', scope, title: text, ...(on ? { sid: s.id } : {}) }).then(load).catch(() => {}); };  // (what the person hands out stays on the list)
 async function takeTodo(which) {
   const r = TREC;
   if (!r) return;
   const j = which === 'say' ? await post('say', { id: r.to.id, text: r.text })
     : which === 'queue' ? await post('queue', { do: 'add', text: r.text, to: r.to.name, mode: 'auto' })
-      : await post('new', { kind: r.new.kind, group: r.new.group, mux: muxOf(r.new.group || ''), cwd: r.new.cwd, name: r.new.name, prompt: r.text, jump: false });
+      : await post('new', { kind: r.new.kind, group: r.new.group, mux: muxOf(r.new.group || ''), cwd: r.new.cwd, name: r.new.name, prompt: r.text, task_title: r.text, jump: false });
+  if (j && j.ok && which !== 'new' && r.to) todoTask(S.sessions.find(x => x.id === r.to.id), r.text, which === 'say');
   if (j && j.ok) { $('#tText').value = ''; $('#tRec').innerHTML = ''; TREC = null; }
 }
 
@@ -1340,6 +1368,110 @@ function decsFor(ids) {
   return [...(S.topics || []).filter(d => ids.has(d.sid)), ...(S.decisions || []).filter(d => ids.has(d.sid) && !told.has(d.sid))].sort((a, b) => (b.at || 0) - (a.at || 0));
 }
 const decText = d => d.topic ? `${d.topic}${t('：')}${d.what}` : d.what;
+// ---------- tasks: what the projects work through; sessions come and go on them ----------
+const TASK_LOOK = { needs: ['等你', 'Needs you'], working: ['进行中', 'Under way'], paused: ['待继续', 'To pick up'], todo: ['待办', 'To do'], done: ['做完了', 'Done'], dropped: ['不做了', 'Dropped'] };
+const TASK_RANK = { needs: 0, working: 1, paused: 2, todo: 3, done: 4, dropped: 5 };
+const taskOpen = x => !['done', 'dropped'].includes(x.shown);
+const taskOrder = (a, b) => TASK_RANK[a.shown] - TASK_RANK[b.shown] || b.at - a.at;
+const taskIn = (x, key) => !key || x.scope === key || (projOf(x.scope) || {}).workspace === key;
+const taskLabel = k => tt(...TASK_LOOK[k]);
+const taskAgo = ts => { const a = ago(ts); return a === t('刚刚') ? a : tt(`${a}前`, `${a} ago`); };
+const taskLinked = l => { const s = l.live && (S.sessions || []).find(x => x.id === l.sid); return s ? standing(s) : [l.st, '']; };
+const TASK_WORDS = { todo: ['待办', 'to do'], doing: ['在做', 'under way'], waiting: ['等你', 'needs you'], done: ['做完了', 'done'], dropped: ['不做了', 'dropped'] };
+function taskLogText(w) {  // (kept in one language, said in the page's)
+  if (w === 'added') return tt('记下了', 'added');
+  if (w.startsWith('merged in: ')) return tt('并入了：', 'merged in: ') + w.slice(11);
+  const m = w.match(/^(\w+) → (\w+)(: .*)?$/);
+  return m && TASK_WORDS[m[1]] && TASK_WORDS[m[2]] ? `${tt(...TASK_WORDS[m[1]])} → ${tt(...TASK_WORDS[m[2]])}${m[3] ? tt('：', ': ') + m[3].slice(2) : ''}` : w;
+}
+const taskSig = l => l.map(x => [x.id, x.shown, x.title, x.now, x.next, x.at, x.sessions.map(s => [s.name, s.st, s.live])]);
+function taskRow(x) {
+  const on = x.sessions.filter(l => l.live), ended = x.sessions.length - on.length;
+  return `<article class="task ${x.shown}" data-task="${esc(x.id)}">
+    <div class="task-head"><span class="task-st"><i></i>${taskLabel(x.shown)}</span><b>${esc(x.title)}</b><time>${taskAgo(x.at)}</time></div>
+    ${x.now ? `<p class="task-now">${esc(x.now)}</p>` : ''}
+    ${x.next && taskOpen(x) ? `<p class="task-next"><em>${tt('接着做', 'Next')}</em>${esc(x.next)}</p>` : ''}
+    ${on.length || ended ? `<div class="task-foot">${on.map(l => `<a class="task-sess" data-go="${esc(l.sid)}" title="${esc(l.title || l.name)}">${mark(l.kind, taskLinked(l)[0], 'sm')}<span>${esc(l.name)}</span><em>${esc(taskLinked(l)[1])}</em></a>`).join('')}${ended ? `<span class="task-ended">${tt(`${ended} 个会话已结束`, `${ended} session${ended > 1 ? 's' : ''} ended`)}</span>` : ''}</div>` : ''}
+  </article>`;
+}
+const taskMini = x => `<div class="task-mini ${x.shown}" data-task="${esc(x.id)}"><span class="task-st"><i></i></span><div><b>${esc(x.title)}</b><p>${esc(taskOpen(x) && x.next ? x.next : x.now || taskLabel(x.shown))}</p></div></div>`;
+function taskGroups(list) {
+  const by = new Map();
+  for (const x of list.slice().sort(taskOrder)) { if (!by.has(x.scope)) by.set(x.scope, []); by.get(x.scope).push(x); }
+  return [...by.entries()].sort((a, b) => taskOrder(a[1][0], b[1][0])).map(([k, l]) => {
+    const p = projOf(k), w = p ? wsOf(p.workspace) : wsOf(k), name = (p || w || {}).name || l[0].scope_name || k;
+    const left = l.filter(taskOpen).length;
+    return `<section class="grp"><div class="grp-head"><h3>${p ? `<a href="#/p/${encodeURIComponent(k)}">${esc(name)}</a>` : w ? `<a href="#/w/${encodeURIComponent(k)}">${esc(name)}</a>` : esc(name)}</h3>
+      <span class="meta">${p && w ? `<span>${esc(w.name)}</span>` : w ? `<span>${tt('工作区本身', 'The workspace itself')}</span>` : ''}${left ? `<span>${tt(`${left} 件没做完`, `${left} open`)}</span>` : ''}</span></div>
+      <div class="task-list">${l.map(taskRow).join('')}</div></section>`;
+  }).join('');
+}
+function taskScopes(chosen) {
+  return ((S && S.workspaces) || []).map(w => `<optgroup label="${esc(w.name)}"><option value="${esc(w.key)}"${chosen === w.key ? ' selected' : ''}>${esc(w.name)} · ${tt('工作区本身', 'the workspace itself')}</option>
+    ${(w.projects || []).map(k => projOf(k)).filter(Boolean).map(p => `<option value="${esc(p.key)}"${chosen === p.key ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}</optgroup>`).join('');
+}
+const taskNewForm = scope => `<form class="task-new" data-task-new="${esc(scope || '')}" autocomplete="off"><input class="field" name="title" placeholder="${tt('要推进的一件事，说清楚做成什么样算完', 'Something to get done, and what done looks like')}">${scope ? '' : `<select class="field" name="scope" aria-label="${tt('放在哪个项目', 'Which project')}">${taskScopes(store.get('deck.taskScope', ''))}</select>`}<button class="btn" type="submit">${I.plus}${tt('记下', 'Add')}</button></form>`;
+let TF = { show: 'open', q: '', found: null, timer: 0 };
+async function taskFetch() {
+  const j = await fetch('/api/tasks?closed=1&q=' + encodeURIComponent(TF.q), { cache: 'no-store' }).then(r => r.json()).catch(() => ({ tasks: [] }));
+  TF.found = j.tasks || [];
+  sig.tasklist = null;
+  if (route.name === 'tasks') renderTasks();
+}
+function renderTasks() {
+  const key = route.scope || '', live = (S.tasks || []).filter(x => taskIn(x, key)), n = k => live.filter(x => x.shown === k).length, open = live.filter(taskOpen);
+  draw('tasktabs', [key, TF.show, ['needs', 'working', 'paused', 'todo'].map(n), open.length], () => {
+    $('#taskSub').textContent = tt('会话结束了它们还在：现状、接着做什么、定下来的事都留在这里', 'They outlast the sessions: where each stands, what comes next and what was settled stay here');
+    $('#taskTabs').innerHTML = [['open', tt('没做完', 'Open'), open.length], ['needs', taskLabel('needs'), n('needs')], ['working', taskLabel('working'), n('working')], ['paused', taskLabel('paused'), n('paused')], ['todo', taskLabel('todo'), n('todo')], ['closed', tt('已结束', 'Ended'), 0]]
+      .map(([k, l, c]) => `<button type="button" data-task-show="${k}" class="${TF.show === k ? 'on' : ''}">${l}${c ? ` <b>${c}</b>` : ''}</button>`).join('');
+  });
+  draw('taskscope', [(S.workspaces || []).map(w => [w.key, w.name, w.projects])], () => { const sel = $('.task-new select'); if (sel && document.activeElement !== sel) sel.innerHTML = taskScopes(store.get('deck.taskScope', '')); });
+  const wide = TF.q || TF.show === 'closed';
+  const base = wide ? (TF.found || []).filter(x => taskIn(x, key)) : live;
+  const list = TF.q ? base : TF.show === 'closed' ? base.filter(x => !taskOpen(x)) : TF.show === 'open' ? base.filter(taskOpen) : base.filter(x => x.shown === TF.show);
+  draw('tasklist', [key, TF.show, TF.q, taskSig(list), tick()], () => {
+    $('#taskList').innerHTML = taskGroups(list) || `<div class="calm">${TF.q ? tt('没有提到这个的任务。', 'No task mentions that.') : TF.show === 'open' ? tt('这里还没有没做完的任务。会话在做的事会自动记到这里，也可以自己写一件。', 'No open tasks here yet. What sessions work on is noted here on its own, or add one yourself.') : tt('现在没有这种状态的任务。', 'No task in this state now.')}</div>`;
+  });
+}
+let TP = null;
+async function openTask(id) {
+  const j = await fetch('/api/task?id=' + encodeURIComponent(id), { cache: 'no-store' }).then(r => r.json()).catch(e => ({ ok: false, msg: e.message }));
+  if (!j.ok) { toast(j.msg || tt('打不开这个任务', 'Could not open this task'), false); return; }
+  TP = j.task;
+  closeOverlays();
+  $('#taskPanel').hidden = false;
+  drawTaskPanel();
+}
+function drawTaskPanel() {
+  const x = TP, near = s => (s.project === x.scope || s.workspace === x.scope || (projOf(x.scope) || {}).workspace === s.workspace ? 0 : 1);
+  const can = roots(S.sessions).filter(live).filter(s => !x.sessions.some(l => l.live && l.name === s.name)).sort((a, b) => near(a) - near(b) || (b.at || 0) - (a.at || 0));
+  const STATES = [['todo', '待办', 'To do'], ['doing', '在做', 'Under way'], ['waiting', '等你', 'Needs you'], ['done', '做完了', 'Done'], ['dropped', '不做了', 'Dropped']];
+  $('#taskBody').innerHTML = `<div class="tkp">
+    <input class="field tkp-title" id="tpTitle" value="${esc(x.title)}" aria-label="${tt('任务名', 'Task name')}">
+    <div class="tkp-meta"><span class="task-st ${x.shown}"><i></i>${taskLabel(x.shown)}${x.shown === 'paused' ? ` · ${tt('现在没有会话在做', 'No session is on it now')}` : ''}</span><span>${esc(x.scope_name || '')}</span><span>${tt(`${taskAgo(x.at)}更新`, `updated ${taskAgo(x.at)}`)}</span><code>${esc(x.id)}</code></div>
+    <div class="seg tkp-states">${STATES.map(([k, a, b]) => `<button type="button" data-tp-status="${k}" class="${x.status === k ? 'on' : ''}">${tt(a, b)}</button>`).join('')}</div>
+    <label class="tkp-l" for="tpNow">${tt('现状', 'Where it stands')}</label><textarea class="field" id="tpNow" rows="2">${esc(x.now)}</textarea>
+    <label class="tkp-l" for="tpNext">${tt('接着做', 'Next')}</label><textarea class="field" id="tpNext" rows="2">${esc(x.next)}</textarea>
+    <h5>${tt('让谁来做', 'Who does it')}</h5>
+    <div class="tkp-do"><button type="button" class="btn primary" data-tp-new>${I.plus}${tt('开新会话来做', 'In a new session')}</button>
+      ${can.length ? `<select class="field" id="tpSess" aria-label="${tt('选一个现有会话', 'Pick a session')}">${can.map(s => `<option value="${esc(s.id)}">${esc(s.name)}${titleOf(s) !== s.name ? ' · ' + esc(titleOf(s)) : ''} · ${esc(standing(s)[1])}</option>`).join('')}</select>
+      <button type="button" class="btn" data-tp-give title="${tt('关联上，并把任务发给它', 'Link it and send it the task')}">${tt('交给它', 'Give it')}</button>
+      <button type="button" class="btn" data-tp-link title="${tt('只记下它在做这件事，不发消息', 'Only note that it works on this; nothing is sent')}">${tt('只关联', 'Only link')}</button>` : ''}</div>
+    ${x.sessions.length ? `<h5>${tt('做过它的会话', 'Sessions on it')}</h5><div class="tkp-rows">${x.sessions.map(l => `<div class="tkp-s">${mark(l.kind, taskLinked(l)[0], 'sm')}<div>${l.live ? `<a data-tp-go="${esc(l.sid)}"><b>${esc(l.name)}</b></a><span>${esc(taskLinked(l)[1])}</span>` : `<b>${esc(l.name)}</b><span>${tt('已结束', 'ended')}</span>`}${l.resume ? `<code>${esc(l.resume)}</code>` : ''}</div><button type="button" class="link" data-tp-unlink="${esc(l.name)}">${tt('不再关联', 'Unlink')}</button></div>`).join('')}</div>` : ''}
+    ${x.decisions.length ? `<h5>${tt('定下来的事', 'What was settled')}</h5><div class="d-list">${x.decisions.slice().reverse().map(d => `<div class="dec">${byMark(d.by)}<div class="w">${d.topic ? `<b>${esc(d.topic)}</b> ` : ''}${esc(d.what)}</div><time>${clock(d.at)}</time></div>`).join('')}</div>` : ''}
+    ${x.results.length ? `<h5>${tt('产出', 'Results')}</h5><div class="refs">${x.results.slice().reverse().map(r => /^https?:\/\//.test(r) ? `<a href="${esc(r)}" target="_blank" rel="noopener noreferrer">${esc(refLabel(r))}</a>` : `<span>${esc(r)}</span>`).join('')}</div>` : ''}
+    ${x.log.length ? `<h5>${tt('经过', 'What happened')}</h5><div class="tkp-log">${x.log.map(l => `<div><time>${clock(l.at)}</time><b>${esc(l.who === 'person' ? tt('你', 'You') : l.who === 'summary' ? tt('助手', 'Assistant') : l.who)}</b><span>${esc(taskLogText(l.what))}</span></div>`).join('')}</div>` : ''}
+    <div class="tkp-foot"><button type="button" class="link danger" data-tp-delete>${tt('删除这个任务', 'Delete this task')}</button><button type="button" class="btn" data-close>${tt('关闭', 'Close')}</button></div></div>`;
+}
+function taskPanelFor(s) {  // (a session's page: what it works on, and picking one)
+  const all = S.tasks || [], on = all.filter(x => taskOpen(x) && x.sessions.some(l => l.name === s.name)), scope = s.project || s.workspace;
+  const rest = all.filter(x => taskOpen(x) && !on.includes(x) && (x.scope === scope || (s.workspace && taskIn(x, s.workspace)))).sort(taskOrder);
+  return `<div class="panel"><h4>${tt('任务', 'Tasks')}<span class="r"><a class="lnk" href="#/tasks${scope ? '/' + encodeURIComponent(scope) : ''}">${tt('全部', 'All')}</a></span></h4>
+    ${on.length ? on.map(taskMini).join('') : `<div class="hint">${tt('还没关联任务。它自己可以用 amail task 记，助手也会从总结里补上。', 'No task linked yet. It can note its own with amail task, and the assistant fills in from its summaries.')}</div>`}
+    ${rest.length ? `<div class="inline tkp-pick"><select class="field" id="stPick" aria-label="${tt('选一个任务', 'Pick a task')}">${rest.map(x => `<option value="${esc(x.id)}">${esc(x.title)}</option>`).join('')}</select><button type="button" class="btn" data-st-link="${esc(s.id)}">${tt('关联', 'Link')}</button></div>` : ''}</div>`;
+}
+const taskListFor = (s, n) => (S.tasks || []).filter(x => taskOpen(x) && (x.scope === s || taskIn(x, s))).sort(taskOrder).slice(0, n);
+
 function renderReports() {
   const reps = S.reports || {};
   const list = roots(S.sessions).filter(s => !s.stale && (reps[s.id] || (!['gone', 'ended'].includes(s.state) && !(s.unknown && !s.summary))));
@@ -1389,7 +1521,7 @@ function drawOverview(s, k) {
   const typing = document.activeElement && ['rText', 'rName'].includes(document.activeElement.id);
   if (typing && sig.ov) return drawSay(s);
   draw('ov', [s.id, s.summary, s.needs_you, s.waiting_for, a, asksSig(s), s.said, s.loc, s.cwd, s.home, s.session, decs.length, st && [st.at, st.left, st.busy, st.asked], (S.storying || []).includes(s.id), s.summary_at && Math.floor(s.summary_at / 30), tick(), kidsOf(s).map(c => [c.id, c.state, c.status, c.summary]), (s.subs || []).map(x => [x.id, x.state, x.at]),
-    s.project, s.workspace, s.attrib, s.work, s.branch, Object.keys(S.projects || {}).length], () => {
+    s.project, s.workspace, s.attrib, s.work, s.branch, Object.keys(S.projects || {}).length, taskSig((S.tasks || []).filter(x => taskOpen(x) && (x.scope === (s.project || s.workspace) || x.sessions.some(l => l.name === s.name))))], () => {
     const keep = $('#rText') ? $('#rText').value : '';
     $('#tabBody').innerHTML = `<div class="s-body"><div class="s-grid"><div>
       ${a ? `<div class="need-box ${ATT[a][1]}"><div class="k">${standing(s)[0] === 'asking' ? t('工作中 · 等你确认') : t(ATT[a][0])}</div><p>${esc(needOf(s) || s.summary || '')}</p>${replyBox(s)}</div>`
@@ -1401,6 +1533,7 @@ function drawOverview(s, k) {
         <div class="kid-row">${mark(c.kind, st, 'sm')}<div data-go="${esc(c.id)}"><b>${esc(titleOf(c))}</b><p>${esc(label)} ${ago(c.since)} · ${esc(c.name)}${c.summary ? ' · ' + esc(c.summary) : ''}</p></div>
           ${['gone', 'ended'].includes(c.state) ? '' : `<button class="btn" data-stop="${esc(c.id)}">${t('停止')}</button>`}</div>`; }).join('')}</div></div>` : ''}
     </div><div>
+      ${taskPanelFor(s)}
       ${asksPanel(s)}
       ${decPanel(s, st)}
       <div class="panel"><h4>${t('在哪里')}</h4><dl class="kv">${parentOf(s) ? `<dt>${t('启动者')}</dt><dd><a data-go="${esc(parentOf(s).id)}">${esc(parentOf(s).name)}</a></dd>` : s.origin ? `<dt>${t('启动方式')}</dt><dd>${esc(originT(s.origin))}</dd>` : ''}
@@ -1471,15 +1604,19 @@ function renderProject() {
   }
   const w = wsOf(p.workspace), f = p.facts || {}, b = boardOf(p.key), ss = S.sessions.filter(x => x.project === p.key), tab = route.tab;
   $('#crumbs').innerHTML = `${w ? `${I.chev}<a href="#/w/${encodeURIComponent(w.key)}">${esc(w.name)}</a>` : ''}${I.chev}<b>${esc(p.name)}</b>`;
-  draw('hero', [p.key, p.name, f.main, f.tag, f.url, f.ahead, f.behind, b && b.unread, ss.length, tab], () => {
+  const pts = (S.tasks || []).filter(x => x.scope === p.key), ptOpen = pts.filter(taskOpen);
+  draw('hero', [p.key, p.name, f.main, f.tag, f.url, f.ahead, f.behind, b && b.unread, ss.length, ptOpen.length, tab], () => {
     const up = f.ahead || f.behind ? ` · ${f.ahead && f.behind ? t('比远端多 {a} 个提交、少 {b} 个', { a: f.ahead, b: f.behind }) : f.ahead ? t('比远端多 {n} 个提交', { n: f.ahead }) : t('比远端少 {n} 个', { n: f.behind })}` : f.ahead === 0 ? ` · ${t('和远端一致')}` : '';
     $('#hero').innerHTML = `<div class="s-hero proj"><div class="row"><span class="mark lg pj">${I.folder}</span><div style="min-width:0"><h1>${esc(p.name)}</h1>
         <div class="sub">${w ? `<span>${t('工作区 {name}', { name: esc(w.name) })}</span>` : ''}<span class="nm">${esc(home(p.path))}</span>${p.git ? `<span>${I.branch}${esc(f.main || '')}${f.tag ? ' · ' + esc(f.tag) : ''}${up}</span>` : `<span>${t('文件夹，不是 git 仓库')}</span>`}${f.url ? `<a href="${esc(f.url)}" target="_blank" rel="noopener noreferrer">${esc(f.url.replace(/^https:\/\//, ''))}</a>` : ''}</div></div>
       </div>
-      <nav class="tabs">${[['overview', t('概览')], ['board', t('讨论') + (b && b.unread ? ' · ' + t('{n} 条新', { n: b.unread }) : '')], ['sessions', `${t('会话')} · ${ss.length}`]].map(([x, l]) => `<button data-ptab="${x}" class="${tab === x ? 'on' : ''}">${esc(l)}</button>`).join('')}
+      <nav class="tabs">${[['overview', t('概览')], ['tasks', tt('任务', 'Tasks') + (ptOpen.length ? ` · ${ptOpen.length}` : '')], ['board', t('讨论') + (b && b.unread ? ' · ' + t('{n} 条新', { n: b.unread }) : '')], ['sessions', `${t('会话')} · ${ss.length}`]].map(([x, l]) => `<button data-ptab="${x}" class="${tab === x ? 'on' : ''}">${esc(l)}</button>`).join('')}
         <div class="acts"><button class="hbtn primary" data-newp="${esc(p.key)}">${I.plus}${t('在这里新建会话')}</button></div></nav></div>`;
   });
-  if (tab === 'board') {
+  if (tab === 'tasks') {
+    if (!$('#ptBody')) { sig.tab = null; $('#tabBody').innerHTML = `<div class="s-body wide">${taskNewForm(p.key)}<div id="ptBody"></div></div>`; }
+    draw('tab', ['ptasks', p.key, taskSig(pts), tick()], () => { $('#ptBody').innerHTML = taskGroups(pts) || `<div class="calm">${tt('这个项目还没有任务。会话在做的事会自动记到这里，也可以自己写一件。', 'No tasks on this project yet. What sessions work on is noted here on its own, or add one yourself.')}</div>`; });
+  } else if (tab === 'board') {
     if (!$('#boardBox')) { $('#tabBody').innerHTML = `<div class="s-body wide" id="boardBox"></div>`; BD.key = null; }
     drawBoard(p.key, $('#boardBox'));
   } else if (tab === 'sessions') {
@@ -1490,10 +1627,11 @@ function renderProject() {
 }
 function drawProjOverview(p, ss) {
   const f = p.facts || {}, b = boardOf(p.key);
-  const decs = decsFor(new Set(ss.map(x => x.id))).slice(0, 14);
+  const pts = (S.tasks || []).filter(x => x.scope === p.key), ptOpen = pts.filter(taskOpen).sort(taskOrder);
+  const decs = [...pts.flatMap(x => x.decs || []), ...decsFor(new Set(ss.map(x => x.id)))].sort((a, c) => (c.at || 0) - (a.at || 0)).slice(0, 14);
   const lock = (S.locks || []).find(l => 'p-' + l.key === p.key);
   const refs = [...new Set(ss.flatMap(x => (((S.reports || {})[x.id] || {}).r || {}).refs || []))].slice(0, 10);
-  draw('tab', ['pov', p.key, f.at, ss.map(x => [x.id, x.state, x.status, x.title, x.work, x.stale, x.attrib]), b && [b.unread, b.last && b.last.at, b.topics.map(t => [t.id, t.closed])], decs.length, lock && [lock.holder, lock.branch], refs, tick(), [...quietOpen]], () => {
+  draw('tab', ['pov', p.key, f.at, ss.map(x => [x.id, x.state, x.status, x.title, x.work, x.stale, x.attrib]), b && [b.unread, b.last && b.last.at, b.topics.map(t => [t.id, t.closed])], taskSig(ptOpen.slice(0, 6)), ptOpen.length, decs.length, lock && [lock.holder, lock.branch], refs, tick(), [...quietOpen]], () => {
     const works = (f.works || []).map(w => ({ ...w, ss: ss.filter(x => x.work === w.path) }));
     const loose = ss.filter(x => !works.some(w => w.ss.includes(x)));
     const busy = works.filter(w => w.ss.length || w.main).sort((a, c) => c.ss.length - a.ss.length || a.main - c.main || c.at - a.at), idle = works.filter(w => !w.ss.length && !w.main);
@@ -1510,7 +1648,8 @@ function drawProjOverview(p, ss) {
       ${idle.length ? `<button class="quiet-tg" data-quiet="${esc(qk)}">${chev(quietOpen.has(qk))}${t('没有会话的 {n} 个工作项', { n: idle.length })}</button>${quietOpen.has(qk) ? idle.map(wi).join('') : ''}` : ''}
       ${!ss.length ? `<div class="hint" style="margin-top:10px">${t('现在没有会话在这个项目上。')}</div>` : ''}</div>`;
     const open = b ? b.topics.filter(t => !t.closed) : [];
-    const right = `<div class="panel"><h4>${t('讨论区')}<span class="r"><a class="lnk" href="#/p/${encodeURIComponent(p.key)}/board">${tt('打开', 'Open')}</a></span></h4>
+    const right = `<div class="panel"><h4>${tt('任务', 'Tasks')}<span class="r"><a class="lnk" href="#/p/${encodeURIComponent(p.key)}/tasks">${ptOpen.length > 6 ? tt(`全部 ${ptOpen.length} 件`, `All ${ptOpen.length}`) : tt('全部', 'All')}</a></span></h4>${ptOpen.length ? ptOpen.slice(0, 6).map(taskMini).join('') : `<div class="hint">${tt('现在没有没做完的任务。', 'No open tasks now.')}</div>`}</div>
+      <div class="panel"><h4>${t('讨论区')}<span class="r"><a class="lnk" href="#/p/${encodeURIComponent(p.key)}/board">${tt('打开', 'Open')}</a></span></h4>
         ${b && b.last ? `<div class="m">${face(b.last.from)}<div><div class="route"><b>${esc(who(b.last.from))}</b><time>${clock(b.last.at)}</time></div><div class="txt">${md(b.last.text)}</div></div></div>${b.unread ? `<div class="hint">${t('{n} 条新消息', { n: b.unread })}</div>` : ''}`
           : `<div class="hint">${t('还没有人在这里说过话。发在这里的话，在这个项目上工作的会话都会收到。')}</div>`}
         ${open.map(tp => `<a class="topic-line" href="#/p/${encodeURIComponent(p.key)}/board" data-topic-open="${esc(tp.id)}">${I.chat}<b>${esc(tp.title)}</b><span>${t('{n} 方在谈', { n: tp.members.length })}</span></a>`).join('')}</div>
@@ -1814,7 +1953,8 @@ async function takeRec(which) {
   if (!r) return;
   const j = which === 'to'
     ? await post('queue', { do: 'add', text: r.text, to: r.to.name, mode: qMode })
-    : await post('new', { kind: r.new.kind, group: r.new.group, mux: muxOf(r.new.group || ''), cwd: r.new.cwd, name: r.new.name, prompt: r.text, jump: false });
+    : await post('new', { kind: r.new.kind, group: r.new.group, mux: muxOf(r.new.group || ''), cwd: r.new.cwd, name: r.new.name, prompt: r.text, task_title: r.text, jump: false });
+  if (j && j.ok && which === 'to') todoTask(S.sessions.find(x => x.name === r.to.name), r.text, false);
   if (j && j.ok) { $('#qText').value = ''; $('#qRec').innerHTML = ''; REC = null; }
 }
 function renderQueue() {
@@ -1879,7 +2019,7 @@ function drawPalette() {
       <div class="t"><b>${esc(titleOf(s))}</b><div>${esc(s.name)} · ${esc(s.summary || standing(s)[1])}</div></div>
       <span class="loc">${s.loc ? `${esc(groupName(s.loc.session))}:${esc(s.loc.pane)}` : esc(folder(s.cwd))}</span></div>`).join('') : `<div class="p-sec">${t('没有匹配的工作区、项目或会话')}</div>`;
 }
-function closeOverlays() { for (const id of ['#palette', '#settings', '#newSess']) $(id).hidden = true; }
+function closeOverlays() { for (const id of ['#palette', '#settings', '#newSess', '#taskPanel']) $(id).hidden = true; }
 
 // ---------- new session ----------
 let NS = null;
@@ -1889,7 +2029,7 @@ function openNew(group, opts = {}) {
   const withClient = groups.filter(g => S.groups[g].clients.length);
   let g = group || store.get('deck.newGroup', '');
   if (!groups.includes(g)) g = withClient[0] || groups[0] || '+';
-  NS = { kind: store.get('deck.newKind', 'claude'), group: g, newGroup: '', mux: store.get('deck.newMux', 'zellij'), cwd: opts.cwd || store.get('deck.newCwd', '~/projects'), name: '', prompt: '', jump: store.get('deck.newJump', true) };
+  NS = { kind: store.get('deck.newKind', 'claude'), group: g, newGroup: '', mux: store.get('deck.newMux', 'zellij'), cwd: opts.cwd || store.get('deck.newCwd', '~/projects'), name: '', prompt: opts.prompt || '', task: opts.task || null, jump: store.get('deck.newJump', true) };
   $('#newSess').hidden = false;
   drawNew();
   setTimeout(() => $('#nsCwd') && $('#nsCwd').focus(), 60);
@@ -1950,7 +2090,7 @@ async function submitNew() {
   const group = isNew ? (NS.newGroup && mux === 'tmux' ? 'tmux:' + NS.newGroup : NS.newGroup) : NS.group;
   if (!group) { toast(t('先选一个组，或给新组起个名字'), false); return; }
   $('#nsGo').disabled = true;
-  const j = await post('new', { kind: NS.kind, group, mux, cwd: NS.cwd, name: NS.name, prompt: NS.prompt.trim(), jump: false });
+  const j = await post('new', { kind: NS.kind, group, mux, cwd: NS.cwd, name: NS.name, prompt: NS.prompt.trim(), task: NS.task, jump: false });
   if ($('#nsGo')) $('#nsGo').disabled = false;
   if (j && j.ok) {
     store.set('deck.newKind', NS.kind); store.set('deck.newGroup', group); store.set('deck.newMux', mux); store.set('deck.newCwd', NS.cwd); store.set('deck.newJump', NS.jump);
@@ -2127,6 +2267,26 @@ function readModel(role) {
 }
 
 // ---------- events ----------
+document.addEventListener('submit', async e => {  // (a task written down, on the tasks page or a project's)
+  const f = e.target.closest('[data-task-new]');
+  if (!f) return;
+  e.preventDefault();
+  const title = f.elements.title.value.trim(), scope = f.dataset.taskNew || (f.elements.scope && f.elements.scope.value);
+  if (!title) { f.elements.title.focus(); return; }
+  if (f.elements.scope) store.set('deck.taskScope', scope);
+  const j = await post('task', { do: 'add', scope, title });
+  if (j && j.ok) { f.elements.title.value = ''; if (TF.found) taskFetch(); }
+});
+document.addEventListener('change', e => {  // (what is written in a task's page is kept as it leaves the field)
+  const k = { tpTitle: 'title', tpNow: 'now', tpNext: 'next' }[e.target.id];
+  if (k && TP) { TP[k] = e.target.value; api('task', { do: 'set', id: TP.id, [k]: e.target.value }).then(load); }
+});
+document.addEventListener('input', e => {
+  if (e.target.id !== 'taskQ') return;
+  TF.q = e.target.value.trim();
+  clearTimeout(TF.timer);
+  TF.timer = setTimeout(() => { if (TF.q) taskFetch(); else { TF.found = null; sig.tasklist = null; renderTasks(); } }, 220);
+});
 document.addEventListener('click', async e => {
   const q = sel => e.target.closest(sel);
   let el;
@@ -2181,6 +2341,24 @@ document.addEventListener('click', async e => {
     }
     return;
   }
+  if ((el = q('[data-task-show]'))) { TF.show = el.dataset.taskShow; if (TF.show === 'closed') taskFetch(); renderTasks(); return; }
+  if ((el = q('[data-tp-status]'))) { await post('task', { do: 'set', id: TP.id, status: el.dataset.tpStatus }); openTask(TP.id); return; }
+  if (q('[data-tp-new]')) {
+    const p = projOf(TP.scope), w = wsOf(p ? p.workspace : TP.scope), dir = (p && p.path) || (w && w.path);
+    openNew((w && w.groups[0]) || '', { ...(dir ? { cwd: home(dir) } : {}), prompt: TP.brief, task: TP.id });
+    return;
+  }
+  if ((el = q('[data-tp-give], [data-tp-link]'))) {
+    const j = await post('task', { do: 'tpGive' in el.dataset ? 'give' : 'link', id: TP.id, sid: $('#tpSess').value });
+    if (j && j.ok) openTask(TP.id);
+    return;
+  }
+  if ((el = q('[data-tp-unlink]'))) { await post('task', { do: 'unlink', id: TP.id, name: el.dataset.tpUnlink }); openTask(TP.id); return; }
+  if ((el = q('[data-tp-go]'))) { closeOverlays(); go(el.dataset.tpGo); return; }
+  if (q('[data-tp-delete]')) { if (confirm(tt(`删除任务「${TP.title}」？助手之后也不会再把它建回来。`, `Delete the task “${TP.title}”? The assistant will not make it again either.`))) { await post('task', { do: 'delete', id: TP.id }); closeOverlays(); if (TF.found) taskFetch(); } return; }
+  if ((el = q('[data-st-link]'))) { if ($('#stPick')) post('task', { do: 'link', id: $('#stPick').value, sid: el.dataset.stLink }); return; }
+  if (q('.task-sess')) { const a = q('.task-sess'); go(a.dataset.go); return; }
+  if ((el = q('[data-task]'))) { openTask(el.dataset.task); return; }
   if ((el = q('[data-go]'))) {
     const keep = !el.dataset.tab && el.closest('.side') && route.name === 'session' && ['term', 'chat', 'report', 'msgs'].includes(route.tab) ? route.tab : '';
     go(el.dataset.go, el.dataset.tab || keep);
@@ -2277,7 +2455,7 @@ $('#paletteQ').addEventListener('keydown', e => {
 });
 document.addEventListener('keydown', e => {
   const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
-  const overlay = ['#palette', '#settings', '#newSess'].some(id => !$(id).hidden);
+  const overlay = ['#palette', '#settings', '#newSess', '#taskPanel'].some(id => !$(id).hidden);
   if (e.key === 'Escape') { if (overlay) closeOverlays(); else if (route.name === 'session' && !typing) location.hash = '#/'; return; }
   if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && document.activeElement.id === 'rText') { const b = document.querySelector('[data-act="say"]:not([disabled])'); if (b) b.click(); return; }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openPalette(); return; }

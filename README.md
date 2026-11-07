@@ -113,6 +113,15 @@ A session belongs to the workspace and project of the folder it was started in, 
 
 Single-key shortcuts apply when you are not typing. Double-click a session in the side column to open its browser terminal.
 
+## Tasks that outlast the sessions
+
+A session is temporary; what it was working toward is not. Each project and workspace keeps a list of tasks, as lists and cards on the **Tasks** page, on the project's page and on the workspace dashboard. Each says where it stands, where to pick it up, what was settled, what came out of it, and which sessions worked on it. A task shows as under way while a session works on it, and as ready to pick up once that session ends.
+
+- Start a new session from a task, give it to a running one, or pick one from a session's page.
+- Sessions keep their tasks up to date with `amail task`, and hear of the open ones when they start.
+- The assistant fills in what they leave out from each session's report, without overwriting you, and tidies the list as it grows.
+- Search covers tasks, decisions and results, ended ones too. Updates replace what was there, so the store stays small. See [Tasks in the operations guide](docs/operations.md#tasks).
+
 ## Shared channels with amail
 
 From a project directory:
