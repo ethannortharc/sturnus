@@ -136,6 +136,15 @@ amail topics
 
 Ordinary posts reach the project's sessions at the start of their next turn; on a busy channel a turn starts with what calls the session, your posts and its discussions in full, the newest of the rest, and a count of the others. `@NAME` calls a session while it works and can wake it when idle; `@all` calls everyone on the channel. On a channel of more than 12 sessions a session's `@all` wakes nobody and reaches them at their next turn; yours still calls everyone. Invited discussions close after 24 posts by default, or when explicitly closed. The project's **Channels** tab shows the same discussion. Run `amail help` for all commands.
 
+## Answering from a phone
+
+`/api/phone/summary` and `/api/phone/inbox` list what waits on you: a session stopped at a permission prompt, at a question, or waiting for your words. `POST /api/phone/actions/<id>` with `{"choice": …, "text": …}` answers one of them, with the same sign-in as the page (the [Columba](https://git.giomni.com/ethan/columba) iPhone app uses these).
+
+- A permission prompt shows what it is for (the command, the file, the address) and can be allowed or denied: Allow presses `1` (always the first choice, Yes), Deny presses Esc. Choices that change lasting rules, such as always allowing or switching to auto mode, stay in the terminal.
+- A question with one answer offers its options; several questions, several answers, a plan to approve and Codex prompts can only be opened.
+- An answer names the very prompt it was shown. Once that prompt is answered or replaced, the answer is refused, so a late tap types nothing.
+- Words for a waiting session go the way the page sends them: typed when it is idle, held while it works, mailed when it is in no pane.
+
 ## Models, data, and access
 
 Sturnus runs on your machine and reads local agent activity and Git state. **Summaries, reports, and assistant requests send relevant context to the model you configure**, which may be a remote service. Model sources include Claude Code, Codex, pi, and OpenAI-compatible APIs. Optional voice input sends recordings to the transcription provider you choose.

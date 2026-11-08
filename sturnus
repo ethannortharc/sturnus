@@ -2302,7 +2302,7 @@ class Deck:
                  'from': place_from(e['from']) if isinstance(e.get('from'), dict) else None}  # (a headless run: the pane it was started from)
             r = raw.get(name) or {}
             if r.get('state') == 'waiting' and (r.get('at') or 0) >= (s['at'] - 1):
-                s['state'], s['waiting_for'] = 'waiting', r.get('waiting_for')
+                s['state'], s['waiting_for'], s['asking'] = 'waiting', r.get('waiting_for'), r.get('asking')
             s['prompting'] = s['state'] == 'waiting'  # (at a permission or choice prompt: typed text would answer it)
             # (the folder it was opened in: Claude Code's own record while it runs, else where its conversation began,
             # else the one amail saw first — Cursor's, its workspace; its hooks report the folder each command runs in)
@@ -3767,6 +3767,140 @@ def codex_set_name(thread, name):
         return False, repr(e)
 
 
+# ---------- the phone: what waits on the person, and the answers a phone may give (Columba) ----------
+#
+# GET /api/phone/summary, GET /api/phone/inbox, POST /api/phone/actions/<id> {choice, text}: the same sign-in as the page.
+# A phone answers only the prompt it was shown: an item's id names the prompt (its tool call), and an answer to an id
+# that is no longer there is refused, so a late tap cannot land on a later prompt or in the input line.
+# A permission prompt gets Yes (key 1, always the first) or No (Esc, always a cancel); the choices that change lasting
+# rules ("always allow", "switch to auto mode") are left to the terminal. A question gets its option's number, when it
+# is one question with one answer; anything else (several questions, a plan, Codex) is opened, not answered.
+
+PHONE_FIELD = {'Bash': 'command', 'Edit': 'file_path', 'MultiEdit': 'file_path', 'Write': 'file_path', 'NotebookEdit': 'notebook_path',
+               'Read': 'file_path', 'WebFetch': 'url', 'WebSearch': 'query', 'Glob': 'pattern', 'Grep': 'pattern'}
+
+
+def phone_said(tool, inp):
+    """What a permission prompt is for, in the few lines a person needs to judge it."""
+    inp = inp if isinstance(inp, dict) else {}
+    main = str(inp.get(PHONE_FIELD.get(tool, '')) or '')
+    if tool == 'Bash':
+        lines = [tx('运行：', 'Run: ') + main, str(inp.get('description') or '')]
+    elif tool in ('Edit', 'MultiEdit', 'NotebookEdit'):
+        lines = [tx('改文件：', 'Edit: ') + main, (tx('改成：', 'To: ') + str(inp['new_string'])[:300]) if inp.get('new_string') else '']
+    elif tool == 'Write':
+        lines = [tx('写文件：', 'Write: ') + main]
+    elif tool == 'WebFetch':
+        lines = [tx('打开网页：', 'Fetch: ') + main]
+    elif main:
+        lines = [f'{tool}：{main}']
+    else:
+        rest = json.dumps(inp, ensure_ascii=False)
+        lines = [tool, rest[:400] if rest != '{}' else '']
+    return '\n'.join(x for x in lines if x)[:1200]
+
+
+def phone_question(inp):
+    """The one question with one answer a phone can give, or None."""
+    qs = (inp or {}).get('questions') if isinstance(inp, dict) else None
+    if not isinstance(qs, list) or len(qs) != 1 or not isinstance(qs[0], dict) or qs[0].get('multiSelect'):
+        return None
+    opts = [str((o or {}).get('label') or '') for o in qs[0].get('options') or [] if isinstance(o, dict)]
+    return {'question': str(qs[0].get('question') or ''), 'options': opts} if 2 <= len(opts) <= 9 and all(opts) else None
+
+
+def phone_items(sessions, project_of=lambda s: ''):
+    """What waits on the person, most pressing first: prompts an agent is stopped at, then what summaries say it needs."""
+    from urllib.parse import quote
+    out = []
+    for s in sessions:
+        if s.get('hidden') or s.get('unknown') or s['state'] in ('gone', 'ended'):
+            continue
+        who = s.get('title') or s['name']
+        meta = ' · '.join(x for x in (project_of(s), s['name'] if s.get('title') else '') if x)
+        ask = s.get('asking') or {}
+        here = bool(s.get('loc'))  # (answered by keys into its pane: no pane, nothing to answer with)
+        if at_menu(s):
+            tool, inp = ask.get('tool') or s.get('tool') or '', ask.get('input') or {}
+            key = f'{s["id"]}|menu|{ask.get("use") or ask.get("at") or s.get("since")}'
+            q = phone_question(inp) if s['kind'] == 'claude' and tool == 'AskUserQuestion' else None
+            if q:
+                item = {'kind': 'question', 'title': tx(f'{who} 问你', f'{who} asks you'), 'body': q['question'],
+                        'actions': [{'id': f'o{n}', 'label': o} for n, o in enumerate(q['options'], 1)] if here else []}
+            elif s['kind'] == 'claude' and ask.get('tool') and tool not in ASKS:
+                item = {'kind': 'permission', 'title': tx(f'{who} 要你确认', f'{who} needs your OK'), 'body': phone_said(tool, inp),
+                        'actions': [{'id': 'allow', 'label': tx('允许', 'Allow'), 'style': 'primary'},
+                                    {'id': 'deny', 'label': tx('拒绝', 'Deny'), 'style': 'danger'}] if here else []}
+            else:
+                body = str(inp.get('plan') or '')[:600] if tool == 'ExitPlanMode' else '\n'.join(
+                    str(q.get('question') or '') for q in inp.get('questions') or [] if isinstance(q, dict)) if tool == 'AskUserQuestion' else ''
+                item = {'kind': 'menu', 'title': tx(f'{who} 停在一个提示上', f'{who} is stopped at a prompt'),
+                        'body': body or s.get('waiting_for') or tool, 'actions': []}
+            item.update(level='urgent', at=ask.get('at') or s.get('since') or s.get('at'))
+        elif s.get('needs_you') or s.get('asks'):
+            asks = s.get('asks') or []
+            need = s.get('needs_you') or asks[0]['what']
+            key = f'{s["id"]}|need|{need}|{",".join(a["id"] for a in asks)}'
+            acts = [{'id': 'reply', 'label': tx('回复', 'Reply'), 'text': {'placeholder': tx(f'对 {s["name"]} 说…', f'Say to {s["name"]}…')}}]
+            if asks:
+                acts.append({'id': 'done', 'label': tx('已处理', 'Handled')})
+            item = {'kind': 'needs', 'title': tx(f'{who} 在等你', f'{who} is waiting for you'), 'body': need, 'actions': acts,
+                    'level': 'attention', 'at': s.get('summary_at') or s.get('at')}
+        else:
+            continue
+        item.update(id=hashlib.sha1(key.encode()).hexdigest()[:16], meta=meta, session=s['id'], open_url='/#/s/' + quote(s['id'], safe=''))
+        out.append(item)
+    out.sort(key=lambda i: (i['level'] != 'urgent', -(i['at'] or 0)))
+    return out
+
+
+def phone_summary(sessions, items):
+    live = [s for s in sessions if not (s.get('hidden') or s.get('unknown') or s['state'] in ('gone', 'ended'))]
+    working, n = sum(1 for s in live if s['state'] == 'working'), len(items)
+    parts = ([tx(f'{n} 件事在等你', f'{n} waiting for you')] if n else []) + ([tx(f'{working} 个会话在工作', f'{working} working')] if working else [])
+    return {'status': 'attention' if n else 'ok', 'headline': ' · '.join(parts) or tx('没有会话在工作', 'Nothing is working'),
+            'metrics': [{'label': tx('等你', 'Waiting'), 'value': str(n)}, {'label': tx('工作中', 'Working'), 'value': str(working)},
+                        {'label': tx('会话', 'Sessions'), 'value': str(len(live))}],
+            'needs_me': n}
+
+
+def phone_view(deck, what):
+    with deck.lock:
+        sessions = list(deck.state['sessions'])
+    items = phone_items(sessions, lambda s: (deck.projects.known.get(s.get('project')) or {}).get('name') or '')
+    public = [{k: v for k, v in i.items() if k not in ('kind', 'session')} for i in items]
+    return phone_summary(sessions, items) if what == 'summary' else {'items': public}
+
+
+def phone_answer(deck, iid, choice, text=''):
+    """(http status, message): the person's answer from the phone, to the very item it showed."""
+    with deck.lock:
+        sessions = list(deck.state['sessions'])
+    it = next((i for i in phone_items(sessions) if i['id'] == iid), None)
+    if not it:
+        return 409, tx('这件事已经变了，刷新看看现在的样子', 'This has changed; refresh to see where it stands')
+    if choice not in {a['id'] for a in it['actions']}:
+        return 400, tx('这里没有这个选项', 'That is not a choice here')
+    s = deck.find(it['session'])
+    if not s:
+        return 409, tx('这个会话已经不在了', 'That session is gone')
+    if it['kind'] in ('permission', 'question'):
+        keys = {'allow': '1', 'deny': '\x1b'}.get(choice) or choice[1:]
+        ok, msg = deck.type_in(s, keys, False)
+        done = {'allow': tx('已允许', 'Allowed'), 'deny': tx('已拒绝', 'Denied')}.get(choice) or tx(f'已选「{next(a["label"] for a in it["actions"] if a["id"] == choice)}」', 'Chosen')
+        return (200, done) if ok else (502, msg)
+    if choice == 'done':
+        for a in s.get('asks') or []:
+            deck.sums.ask_done(a['id'])
+        return 200, tx('记下了：已处理', 'Marked as handled')
+    text = (text or '').strip()
+    if not text:
+        return 400, tx('先写要说的话', 'Write what to say first')
+    ok, msg = deck.act('say', {'id': s['id'], 'text': text})
+    msg = msg.get('msg') if isinstance(msg, dict) else msg
+    return (200 if ok else 502), msg or (tx('发出去了', 'Sent') if ok else tx('没发出去', 'Not sent'))
+
+
 # ---------- the web server ----------
 
 DECK = None
@@ -4187,6 +4321,12 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith('/api/state'):
             with DECK.lock:
                 return self.send_json(DECK.state)
+        if self.path.split('?')[0] in ('/api/phone/summary', '/api/phone/inbox'):  # (Columba, the iPhone app)
+            _REQ.lang = 'en' if self.headers.get('X-Lang') == 'en' else 'zh'
+            try:
+                return self.send_json(phone_view(DECK, self.path.split('?')[0].rsplit('/', 1)[-1]))
+            finally:
+                _REQ.lang = None
         if self.path.startswith('/api/board'):  # (a channel: its posts, discussions, who is on it)
             from urllib.parse import urlparse, parse_qs
             q = parse_qs(urlparse(self.path).query)
@@ -4262,6 +4402,11 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(int(self.headers.get('Content-Length') or 0)) or b'{}')
         except ValueError:
             body = {}
+        if self.path.startswith('/api/phone/actions/'):  # (an answer from Columba, to the item it showed)
+            code, msg = phone_answer(DECK, self.path.split('?')[0].rsplit('/', 1)[-1], str(body.get('choice') or ''), str(body.get('text') or ''))
+            if code == 200:
+                DECK.note(tx(f'手机上：{msg}', f'From the phone: {msg}'))
+            return self.send_json({'ok': code == 200, 'msg': msg}, code)
         what = self.path.rsplit('/', 1)[-1]
         secure = '; Secure' if self.https else ''  # (plain http on the tailnet is WireGuard's; a Secure cookie needs https)
         if what == 'login':
