@@ -231,6 +231,27 @@ class Answers(unittest.TestCase):
         self.assertEqual(self.answer(d, 'reply', 'Use the other folder')[0], 200)
 
 
+@unittest.skipUnless(S.shutil.which('tmux'), 'needs tmux')
+class Screen(unittest.TestCase):
+    """A pane as it looks now, read only, from a tmux server of its own."""
+
+    def test_a_pane_is_read_with_its_colours_and_width(self):
+        import subprocess
+        name = f'sturnus-screen-{os.getpid()}'
+        subprocess.run(['tmux', '-L', name, 'new-session', '-d', '-s', 't', '-x', '70', '-y', '10', "printf '\\033[32mgreen\\033[0m plain\\n'; sleep 30"], check=True)
+        self.addCleanup(subprocess.run, ['tmux', '-L', name, 'kill-server'], capture_output=True)
+        sock = subprocess.run(['tmux', '-L', name, 'display', '-p', '#{socket_path}'], capture_output=True, text=True).stdout.strip()
+        pane = subprocess.run(['tmux', '-L', name, 'display', '-p', '#{pane_id}'], capture_output=True, text=True).stdout.strip()
+        for _ in range(40):
+            ok, text, cols = S.pane_screen({'mux': 'tmux', 'sock': sock, 'pane': pane, 'session': 'tmux:t'})
+            if 'plain' in text:
+                break
+            S.time.sleep(.1)
+        self.assertTrue(ok)
+        self.assertIn('\x1b[32mgreen', text)
+        self.assertEqual(cols, 70)
+
+
 class Hooks(unittest.TestCase):
     """amail keeps what a permission prompt is for, and lets go of it once the prompt is answered."""
 

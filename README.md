@@ -145,6 +145,8 @@ Ordinary posts reach the project's sessions at the start of their next turn; on 
 - Keys are offered only while Claude Code itself says the session waits, in the pane its process runs in now, with one prompt open. An answer names the very prompt it was shown and is checked again the moment before the keys go; once that prompt is answered (here or in the terminal) or replaced, the answer is refused, and so is a second answer to the same item, so a late tap types nothing.
 - Words for a waiting session go the way the page sends them: typed when it is idle, held while it works, mailed when it is in no pane.
 
+On a screen under 640 px wide (a phone, as Columba opens it) the page has a layout of its own: one list on the home page (what needs you, with a prompt's Allow and Deny right there; what is under way, by workspace; idle sessions, open tasks and all workspaces folded), every other place in a menu, and a session page with its head and a reply line fixed. Its terminal tab only looks: it shows the agent's own pane as it is, refreshed every two seconds, with no client attached, so the desktop's layout keeps its size; taking the terminal over to type is a separate step that says so.
+
 ## Models, data, and access
 
 Sturnus runs on your machine and reads local agent activity and Git state. **Summaries, reports, and assistant requests send relevant context to the model you configure**, which may be a remote service. Model sources include Claude Code, Codex, pi, and OpenAI-compatible APIs. Optional voice input sends recordings to the transcription provider you choose.

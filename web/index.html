@@ -24,6 +24,7 @@
       <button class="new-btn" id="newBtn" type="button" title="新建会话（N）" data-i18n-title><svg viewBox="0 0 20 20"><path d="M10 4.5v11M4.5 10h11"/></svg><span data-i18n>新建会话</span></button>
       <span class="conn" id="conn" title="与本机 sturnus 服务的连接" data-i18n-title><i></i><span>实时</span></span>
       <button class="icon-btn" id="themeBtn" type="button" title="主题"></button>
+      <button class="icon-btn menu-btn" id="menuBtn" type="button" title="菜单" aria-label="菜单" data-i18n-title data-i18n-label><svg viewBox="0 0 20 20"><path d="M3.5 6h13M3.5 10h13M3.5 14h13"/></svg></button>
       <button class="icon-btn" id="settingsBtn" type="button" title="设置" data-i18n-title>
         <svg viewBox="0 0 20 20"><path d="M8.6 2.8h2.8l.4 2 1.6.9 1.9-.7 1.4 2.4-1.5 1.3v1.8l1.5 1.3-1.4 2.4-1.9-.7-1.6.9-.4 2H8.6l-.4-2-1.6-.9-1.9.7-1.4-2.4 1.5-1.3V9.1L3.3 7.8l1.4-2.4 1.9.7 1.6-.9z"/><circle cx="10" cy="10" r="2.3"/></svg>
       </button>
@@ -42,6 +43,11 @@
     <div class="palette-list" id="paletteList"></div>
     <div class="palette-foot"><span><kbd>↑</kbd><kbd>↓</kbd> <i data-i18n>选择</i></span><span><kbd>Enter</kbd> <i data-i18n>打开</i></span><span><kbd>⌘Enter</kbd> <i data-i18n>进终端</i></span><span><kbd>Esc</kbd> <i data-i18n>关闭</i></span></div>
   </div>
+</div>
+
+<div class="ovl" id="phoneMenu" hidden>
+  <div class="scrim" data-close></div>
+  <nav class="pm" role="dialog" aria-label="菜单" data-i18n-label id="menuBody"></nav>
 </div>
 
 <div class="ovl" id="newSess" hidden>

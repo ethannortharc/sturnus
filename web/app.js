@@ -591,6 +591,30 @@ const agoT = t0 => { const a = ago(t0); return a === t('刚刚') ? a : t('{t}前
 const originT = o => { if (LANG !== 'en' || !o) return o; const m = o.match(/^终端窗口（(.*)）$/) || o.match(/^由 (.*) 启动$/); const r = m ? t(o.startsWith('由') ? '由 {n} 启动' : '终端窗口（{n}）', { n: t(m[1]) }) : t(o); return r.charAt(0).toUpperCase() + r.slice(1); };
 const mlabel = s => (LANG === 'en' ? String(s || '').replace('OpenAI 兼容接口', 'OpenAI-compatible API').replace('默认模型', 'default model') : String(s || ''));
 
+Object.assign(EN, {  // (the phone's page)
+"{n} 个工作区": "{n} workspaces",
+"不折行": "No wrap",
+"折行": "Wrap",
+"停在一个提示上": "Stopped at a prompt",
+"只看：它窗格现在的样子，每两秒刷新，不会把电脑上的布局缩小": "Look only: its pane as it is now, refreshed every two seconds; the desktop’s layout keeps its size",
+"在做的事": "Under way",
+"它不在 Zellij 或 tmux 里：会放进它的信箱": "It is in no Zellij or tmux pane: this goes to its mailbox",
+"它停在一个提示上：先回答上面的提示": "It is stopped at a prompt: answer that first",
+"它在做事：这句话会在它这一轮做完时送到": "It is working: this arrives when its turn ends",
+"它已经退出了": "It has exited",
+"对 {n} 说……": "Say to {n}…",
+"接管后可以在这里打字，但电脑上这个 Zellij 会话的布局会缩小到手机的大小，直到你离开这一页。接管吗？": "Taking over lets you type here, but the Zellij session’s layout on the computer shrinks to the phone’s size until you leave this page. Take over?",
+"接管终端": "Take over",
+"接管终端（电脑上的布局会缩小）": "Take over the terminal (the computer’s layout shrinks)",
+"搜索": "Search",
+"更多": "More",
+"没做完的任务": "Open tasks",
+"现在没有会话在工作。": "No session is working now.",
+"看它的终端": "See its terminal",
+"空闲的会话": "Idle sessions",
+"读不到它的窗格": "Its pane could not be read",
+"已回答，等它接着做": "Answered; waiting for it to go on",
+});
 function applyLang() {
   const v = store.get('deck.lang', 'auto');
   LANG = v === 'auto' ? (/^zh/i.test(navigator.language || 'zh') ? 'zh' : 'en') : v === 'en' ? 'en' : 'zh';
@@ -645,6 +669,201 @@ function toast(text, ok = true) {
   setTimeout(() => { el.style.transition = 'opacity .3s'; el.style.opacity = 0; setTimeout(() => el.remove(), 300); }, ok ? 3200 : 6500);
 }
 
+// ---------- the phone: below 640 px, a page of its own (Columba, the iPhone app, opens Sturnus at this width) ----------
+// One list for the home page (what needs you, what is under way, the rest folded), every other place in a menu, and a
+// session page with its head and a reply line fixed and the middle scrolling. A desktop never sees any of it.
+const PHONE = matchMedia('(max-width: 640px)');
+const phone = () => PHONE.matches;
+let phoneFull = null;  // (the session whose real terminal the phone took over; otherwise its terminal tab only looks)
+function applyPhone() { document.documentElement.classList.toggle('phone', phone()); }
+PHONE.addEventListener('change', () => { applyPhone(); closeTerm(); phoneFull = null; for (const k in sig) delete sig[k]; build(); render(); });
+// what the phone interface says waits on the person: a prompt's own answers come from there, the same ones Columba offers
+const PI = { at: 0, items: [], busy: false, answered: {} };  // (answered: session id → when, until the deck has seen the answer)
+function phoneInbox() {
+  if (PI.busy || Date.now() - PI.at < 2500) return;
+  if (!S.sessions.some(s => s.prompting || asking(s))) { if (PI.items.length) { PI.items = []; delete sig.phneed; delete sig.phprompt; } return; }
+  PI.busy = true;
+  fetch('/api/phone/inbox', { cache: 'no-store', headers: { 'X-Lang': LANG } }).then(r => r.json()).then(j => {
+    PI.items = j.items || []; PI.at = Date.now(); PI.busy = false; delete sig.phneed; delete sig.phprompt; render();
+  }).catch(() => { PI.busy = false; PI.at = Date.now(); });
+}
+const promptItem = s => PI.items.find(i => (i.open_url || '').endsWith('/s/' + encodeURIComponent(s.id)) && !i.actions.some(a => a.text));
+const justAnswered = s => Date.now() - (PI.answered[s.id] || 0) < 15000 && (s.prompting || asking(s));
+async function phoneAnswer(id, choice, sid) {
+  try {
+    const r = await fetch('/api/phone/actions/' + encodeURIComponent(id), { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Deck': '1', 'X-Lang': LANG }, body: JSON.stringify({ choice }) });
+    const j = await r.json(); toast(j.msg || '', !!j.ok);
+    if (j.ok && sid) PI.answered[sid] = Date.now();
+  } catch (e) { toast(t('没连上 sturnus 服务：{m}', { m: e.message }), false); }
+  PI.items = PI.items.filter(i => i.id !== id); PI.at = 0; delete sig.phneed; delete sig.phprompt; load();
+}
+const phActs = (it, s) => justAnswered(s) ? `<span class="ph-done">${I.check}${t('已回答，等它接着做')}</span>` : it.actions.filter(a => !a.text).map(a => `<button class="btn${a.style === 'primary' ? ' primary' : a.style === 'danger' ? ' danger' : ''}" data-pa="${esc(it.id)}" data-pc="${esc(a.id)}" data-ps="${esc(s.id)}">${esc(a.label)}</button>`).join('');
+
+function renderPhoneHome() {
+  drawTodoProjects((S.workspaces || []).flatMap(w => w.projects.filter(k => S.sessions.some(s => s.project === k))));
+  phoneInbox();
+  const need = S.sessions.map(s => [s, attention(s)]).filter(([, a]) => a).sort((a, b) => ['decide', 'blocked', 'review'].indexOf(a[1]) - ['decide', 'blocked', 'review'].indexOf(b[1]) || (b[0].at || 0) - (a[0].at || 0));
+  const mails = S.inbox || [], locks = S.lock_issues || [];
+  const typing = document.activeElement && document.activeElement.closest && document.activeElement.closest('#phNeed');
+  if (!typing) draw('phneed', [need.map(([s, a]) => [s.id, a, standing(s)[0], s.title, s.summary, s.needs_you, (s.asks || []).length, s.waiting_for, s.workspace, justAnswered(s)]), mails.map(m => m.id), locks.map(l => [l.key, l.why]), PI.items.map(i => [i.id, i.actions.length]), tick()], () => {
+    const n = need.length + mails.length + locks.length;
+    $('#phNeed').innerHTML = `<div class="ph-h"><h2>${t('需要你')}</h2>${n ? `<span>${t('{n} 件', { n })}</span>` : ''}</div>${n ? '' : `<div class="calm">${I.check}${t('现在没有要你决定或验收的事，它们都在各自干活。')}</div>`}
+      ${need.map(([s, a]) => { const [st] = standing(s), it = (s.prompting || asking(s)) && promptItem(s), w = wsOf(s.workspace), p = projOf(s.project);
+        return `<div class="ph-card ${ATT[a][1]}"><div class="ph-top" data-go="${esc(s.id)}">${mark(s.kind, st === 'asking' ? 'asking' : ATT[a][1], 'sm')}<div class="ph-t"><b>${esc(titleOf(s))}</b><span>${esc(s.name)}${p ? ' · ' + esc(p.name) : w ? ' · ' + esc(w.name) : ''} · ${ago(s.since)}</span></div><span class="ph-pill ${ATT[a][1]}">${st === 'asking' ? t('等你确认') : t(ATT[a][0])}</span></div>
+          ${it && it.body ? `<pre class="ph-cmd">${esc(it.body)}</pre>` : `<p class="ph-need">${esc(needOf(s) || s.summary || '')}</p>`}
+          <div class="ph-acts">${it && it.actions.length ? phActs(it, s) : `<button class="btn" data-phreply="${esc(s.id)}">${I.reply}${t('回复')}</button><button class="btn dark" data-go="${esc(s.id)}">${t('打开')}</button>`}</div></div>`; }).join('')}
+      ${mails.map(m => `<div class="ph-card mail"><div class="ph-top">${face(m.from)}<div class="ph-t"><b>${t('找你')}</b><span>${esc(m.from)} · ${clock(m.at)}</span></div></div><div class="ph-need md">${md(m.text)}</div>
+        <form class="m-reply" data-mid="${esc(m.id)}" hidden><input class="field" id="mr-${esc(m.id)}" placeholder="${t('回复 {n}……', { n: esc(m.from) })}" autocomplete="off"><button class="btn primary" type="submit">${t('发送')}</button></form>
+        <div class="ph-acts"><button class="btn" data-mreply="${esc(m.id)}">${I.reply}${t('回复')}</button><button class="btn" data-mread="${esc(m.id)}">${t('知道了')}</button></div></div>`).join('')}
+      ${locks.map(l => `<div class="ph-card blocked"><div class="ph-top"><span class="mark sm lk">${I.lock}</span><div class="ph-t"><b>${t('推送锁')} · ${esc(l.branch)}</b><span>${esc(l.holder)} · ${t('{t}前锁上', { t: ago(l.since) })}</span></div></div><p class="ph-need">${esc(l.why)}</p><div class="ph-acts"><button class="btn" data-unlock="${esc(l.key)}">${t('释放')}</button></div></div>`).join('')}`;
+  });
+  const busy = roots(S.sessions).filter(s => live(s) && ['working', 'asking'].includes(standing(s)[0]));
+  draw('phdoing', [busy.map(s => [s.id, standing(s)[0], s.title, s.summary, s.workspace]), LANG], () => {
+    const groups = new Map();
+    for (const s of busy) { const k = s.workspace || '~'; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(s); }
+    $('#phDoing').innerHTML = `<div class="ph-h"><h2>${t('在做的事')}</h2>${busy.length ? `<span>${t('{n} 件', { n: busy.length })}${groups.size > 1 ? ' · ' + t('{n} 个工作区', { n: groups.size }) : ''}</span>` : ''}</div>
+      ${busy.length ? `<div class="ph-list">${[...groups.entries()].map(([k, ss]) => { const w = wsOf(k);
+        return `<a class="ph-ws" href="${w ? `#/w/${encodeURIComponent(k)}` : '#/workspaces'}"><span class="wsdot" style="--t:${w ? wsColor(w) : '#888'}">${esc((w ? w.name : '·').slice(0, 1).toUpperCase())}</span>${esc(w ? w.name : t('不在工作区里'))}</a>${ss.map(s => { const [st, label] = standing(s);
+          return `<a class="ph-row" href="#/s/${encodeURIComponent(s.id)}"><i class="dot ${st}"></i><span class="ph-t"><b>${esc(titleOf(s))}</b><span class="${st}">${esc(s.name)} · ${label}</span></span>${I.chev}</a>`; }).join('')}`; }).join('')}</div>` : `<div class="calm">${t('现在没有会话在工作。')}</div>`}`;
+  });
+  const idle = roots(S.sessions).filter(s => live(s) && standing(s)[0] === 'idle').sort((a, b) => (b.at || 0) - (a.at || 0));
+  const open = (S.tasks || []).filter(x => taskOpen(x)).length, ws = S.workspaces || [], idleOpen = quietOpen.has('ph-idle');
+  draw('phmore', [idle.map(s => [s.id, s.title, s.at && Math.floor(s.at / 60)]), open, ws.length, idleOpen, LANG], () => {
+    $('#phMore').innerHTML = `<div class="ph-list">
+      <button class="ph-row" data-quiet="ph-idle"><span class="ph-t"><b>${t('空闲的会话')}</b></span><span class="n">${idle.length}</span>${chev(idleOpen)}</button>
+      ${idleOpen ? idle.map(s => `<a class="ph-row sub" href="#/s/${encodeURIComponent(s.id)}"><i class="dot idle"></i><span class="ph-t"><b>${esc(titleOf(s))}</b><span>${esc(s.name)} · ${ago(s.at)}</span></span>${I.chev}</a>`).join('') : ''}
+      <a class="ph-row" href="#/tasks"><span class="ph-t"><b>${t('没做完的任务')}</b></span><span class="n">${open}</span>${I.chev}</a>
+      <a class="ph-row" href="#/workspaces"><span class="ph-t"><b>${t('所有工作区')}</b></span><span class="n">${ws.length}</span>${I.chev}</a></div>`;
+  });
+}
+
+function renderPhoneSession() {
+  let s = S.sessions.find(x => x.id === route.id);
+  if (s) lastSess = { s, at: Date.now() };
+  else if (lastSess && lastSess.s.id === route.id && Date.now() - lastSess.at < 15000) s = lastSess.s;
+  if (!s) {
+    draw('phhead', ['missing', route.id], () => { $('#phHead').innerHTML = `<div class="ph-hrow"><a class="ph-back" href="#/">${I.back}${t('总览')}</a></div><div class="ph-id"><h1>${t('这个会话已经不在了')}</h1></div>`; $('#tabBody').innerHTML = ''; $('#phReply').hidden = true; });
+    return;
+  }
+  phoneInbox();
+  const k = FULL[s.kind] ? s.kind : 'codex', [st, label] = standing(s), w = wsOf(s.workspace), p = projOf(s.project);
+  $('#crumbs').innerHTML = `${I.chev}<b>${esc(titleOf(s))}</b>`;
+  draw('phhead', [s.id, st, label, s.title, s.summary, sessTab, s.workspace, s.project, LANG], () => {
+    $('#phHead').innerHTML = `<div class="ph-hrow"><a class="ph-back" href="${w ? `#/w/${encodeURIComponent(w.key)}` : '#/'}">${I.back}${esc(w ? w.name : t('总览'))}</a><span class="sp"></span>
+        <button class="ph-more" type="button" data-phmore aria-label="${t('更多')}"><svg viewBox="0 0 20 20"><circle cx="4.5" cy="10" r="1.6"/><circle cx="10" cy="10" r="1.6"/><circle cx="15.5" cy="10" r="1.6"/></svg></button></div>
+      <div class="ph-id ${k}">${mark(k, st, 'lg')}<div class="ph-t"><h1>${esc(titleOf(s))}</h1><span>${esc(s.name)}${p ? ' · ' + esc(p.name) : ''} · <b class="${st}">${label}</b></span></div></div>
+      <nav class="ph-tabs">${[['overview', '概要'], ['chat', '对话'], ['report', '报告'], ['term', '终端']].map(([x, l]) => `<button data-tab-go="${x}" class="${sessTab === x ? 'on' : ''}">${t(l)}</button>`).join('')}</nav>`;
+  });
+  const full = sessTab === 'term' && phoneFull === s.id;
+  if (sessTab === 'overview') drawOverview(s, k);
+  else if (sessTab === 'chat') drawChat(s, k);
+  else if (sessTab === 'report') drawReport(s);
+  else if (sessTab === 'sub') drawSub(s, k, route.sub);
+  else if (sessTab === 'term') full ? drawTerm(s) : drawScreen(s);
+  else drawMsgs(s);
+  drawPhPrompt(s, full);
+  drawPhReply(s, full);
+}
+// the prompt it is stopped at, with the answers a phone may give (the deck's phone interface decides which); else a way to look
+function drawPhPrompt(s, full) {
+  const at = !full && (s.prompting || asking(s)), it = at && promptItem(s);
+  draw('phprompt', [s.id, at, it && [it.id, it.title, it.body, it.actions.map(a => a.id)], justAnswered(s), LANG], () => {
+    const el = $('#phPrompt');
+    el.hidden = !at;
+    el.innerHTML = at ? `<div class="ph-pk">${esc(it ? it.title : t('停在一个提示上'))}</div>${it && it.body ? `<pre class="ph-cmd">${esc(it.body)}</pre>` : `<p class="ph-need">${esc(needOf(s))}</p>`}
+      <div class="ph-acts">${it && it.actions.length ? phActs(it, s) : `<button class="btn dark" data-tab-go="term">${I.term}${t('看它的终端')}</button>`}</div>` : '';
+  });
+}
+const PH_SAY = { type: '', queue: '它在做事：这句话会在它这一轮做完时送到', mail: '它不在 Zellij 或 tmux 里：会放进它的信箱', menu: '它停在一个提示上：先回答上面的提示', gone: '它已经退出了' };
+function drawPhReply(s, full) {
+  const how = sayHow(s), f = $('#phReply');
+  f.hidden = full;
+  draw('phreply', [s.id, how, S.voice && S.voice.on, LANG], () => {
+    $('#phText').placeholder = t('对 {n} 说……', { n: s.name });
+    $('#phText').disabled = $('#phSend').disabled = ['menu', 'gone'].includes(how);
+    $('#phHint').hidden = how === 'type';
+    $('#phHint').innerHTML = how === 'type' ? '' : `<span>${esc(t(PH_SAY[how]))}</span>${how === 'queue' ? `<button type="button" class="chip" data-phnow>${t('现在就插进去')}</button>` : ''}`;
+    $('#phMic').innerHTML = micBtn('phText');
+  });
+}
+async function phSay(now) {
+  const s = S.sessions.find(x => x.id === route.id), ta = $('#phText');
+  if (!s || !ta) return;
+  const text = ta.value.trim();
+  if (!text) { ta.focus(); return; }
+  const j = await post('say', { id: s.id, text, now });
+  if (j && j.ok) { ta.value = ''; ta.style.height = ''; if (sessTab === 'chat') { chatTimer = 0; setTimeout(() => { chatTimer = 0; render(); }, 1500); } }
+}
+// a pane as it looks now, read only: no client is attached, so the desktop's layout keeps its size and this is the agent's
+// own pane, whatever tab the desktop shows. Taking the terminal over is a step of its own.
+let scrTimer = 0, scrWrap = store.get('deck.scrWrap', true);
+async function drawScreen(s) {
+  if (sig.scrFor !== s.id) {
+    sig.scrFor = s.id; scrTimer = 0;
+    $('#tabBody').innerHTML = `<div class="ph-screen"><div class="ph-scr-bar"><span>${t('只看：它窗格现在的样子，每两秒刷新，不会把电脑上的布局缩小')}</span>
+      <button class="btn" type="button" data-scrwrap>${scrWrap ? t('不折行') : t('折行')}</button><button class="btn dark" type="button" data-phfull ${s.loc ? '' : 'disabled'}>${I.term}${t('接管终端')}</button></div>
+      <pre class="ansi${scrWrap ? ' wrap' : ''}" id="scr">${t('读取中……')}</pre></div>`;
+  }
+  if (!s.loc) { $('#scr').textContent = t('这个会话不在 Zellij 或 tmux 里。'); return; }
+  if (scrTimer && Date.now() - scrTimer < 1800) return;
+  scrTimer = Date.now();
+  try {
+    const j = await (await fetch('/api/screen?id=' + encodeURIComponent(s.id), { cache: 'no-store' })).json(), el = $('#scr');
+    if (!el || sig.scrFor !== s.id) return;
+    if (!j.ok) { el.textContent = j.msg || t('读不到它的窗格'); return; }
+    draw('scr', [j.text], () => { el.innerHTML = ansiHtml(j.text.replace(/\s+$/, '')); });
+  } catch {}
+}
+// a terminal's colours as HTML: SGR (16, 256 and true colours, bold, dim, italic, underline, inverse); other escapes dropped
+const ANSI16 = ['#2b2b2f', '#e5534b', '#57ab5a', '#c69026', '#539bf5', '#b083f0', '#39c5cf', '#c5c5cf', '#6e6e78', '#ff7b72', '#7ee787', '#f2cc60', '#79c0ff', '#d2a8ff', '#56d4dd', '#f5f5f7'];
+function ansiColor(p, i) {  // (p: the numbers after 38 or 48; returns [colour, how many numbers it took])
+  if (p[i] === 5) { const n = p[i + 1] ?? 0; if (n < 16) return [ANSI16[n], 2]; if (n < 232) { const v = n - 16, c = x => (x ? 55 + x * 40 : 0); return [`rgb(${c(Math.floor(v / 36))},${c(Math.floor(v / 6) % 6)},${c(v % 6)})`, 2]; } const g = 8 + (n - 232) * 10; return [`rgb(${g},${g},${g})`, 2]; }
+  if (p[i] === 2) return [`rgb(${p[i + 1] ?? 0},${p[i + 2] ?? 0},${p[i + 3] ?? 0})`, 4];
+  return [null, 1];
+}
+function ansiHtml(src) {
+  let st = {}, out = '', last = 0, m;
+  const re = /\x1b\[([0-9;:]*)m|\x1b\[[0-9;?:]*[ -\/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-_]|[\x00-\x08\x0b-\x1f\x7f]/g;
+  const emit = text => {
+    if (!text) return;
+    let fg = st.fg, bg = st.bg; if (st.inv) [fg, bg] = [bg || '#0b0b0d', fg || '#e6e6ea'];
+    const css = [fg && `color:${fg}`, bg && `background:${bg}`, st.b && 'font-weight:700', st.dim && 'opacity:.6', st.it && 'font-style:italic', st.u && 'text-decoration:underline'].filter(Boolean).join(';');
+    out += css ? `<span style="${css}">${esc(text)}</span>` : esc(text);
+  };
+  while ((m = re.exec(src))) {
+    emit(src.slice(last, m.index)); last = re.lastIndex;
+    if (m[1] === undefined) continue;
+    const p = m[1] === '' ? [0] : m[1].split(/[;:]/).map(x => +x || 0);
+    for (let i = 0; i < p.length; i++) {
+      const c = p[i];
+      if (c === 0) st = {}; else if (c === 1) st.b = 1; else if (c === 2) st.dim = 1; else if (c === 3) st.it = 1; else if (c === 4) st.u = 1; else if (c === 7) st.inv = 1;
+      else if (c === 22) st.b = st.dim = 0; else if (c === 23) st.it = 0; else if (c === 24) st.u = 0; else if (c === 27) st.inv = 0;
+      else if (c >= 30 && c <= 37) st.fg = ANSI16[c - 30]; else if (c >= 90 && c <= 97) st.fg = ANSI16[c - 82]; else if (c === 39) st.fg = null;
+      else if (c >= 40 && c <= 47) st.bg = ANSI16[c - 40]; else if (c >= 100 && c <= 107) st.bg = ANSI16[c - 92]; else if (c === 49) st.bg = null;
+      else if (c === 38 || c === 48) { const [col, n] = ansiColor(p, i + 1); if (col) st[c === 38 ? 'fg' : 'bg'] = col; i += n; }
+    }
+  }
+  emit(src.slice(last));
+  return out;
+}
+// the menu: every place the desktop's rail and top bar hold
+function openMenu(s) {
+  closeOverlays();
+  $('#phoneMenu').hidden = false;
+  const row = (attrs, icon, label, n) => `<a class="pm-row" ${attrs}>${icon || ''}<span>${esc(label)}</span>${n ? `<span class="n">${n}</span>` : ''}</a>`;
+  const th = store.get('deck.theme', 'auto');
+  $('#menuBody').innerHTML = s ? `<div class="pm-h">${esc(titleOf(s))}</div>
+      ${row('href="#/s/' + encodeURIComponent(s.id) + '/msgs"', I.mail, t('消息'))}
+      ${s.loc ? row('data-pm="jump"', I.jump, tt('在本机终端里切过去', 'Switch to it in my terminal')) : ''}
+      ${s.loc ? row('data-pm="full"', I.term, t('接管终端（电脑上的布局会缩小）')) : ''}`
+    : `<div class="pm-top"><button class="btn" type="button" data-pm="search">${t('搜索')}</button><button class="btn primary" type="button" data-pm="new">${I.plus}${t('新建会话')}</button></div>
+      ${row('href="#/"', I.grid, t('总览'))}${row('href="#/tasks"', I.list, t('任务'))}${row('href="#/boards"', I.chat, t('讨论'))}${row('href="#/talk"', I.mail, t('消息'))}${row('href="#/reports"', I.doc, t('报告'))}${row('href="#/queue"', I.plus, t('排队'), (S.queue || []).filter(i => i.status === 'ready').length)}
+      <div class="pm-h">${t('工作区')}</div>${railWs().map(w => row(`href="#/w/${encodeURIComponent(w.key)}"`, `<span class="wsdot" style="--t:${wsColor(w)}">${esc(w.name.slice(0, 1).toUpperCase())}</span>`, w.name, wsNeed(w))).join('')}${row('href="#/workspaces"', '', t('所有工作区'))}
+      <div class="pm-h"></div>${row('data-pm="asst"', I.spark, t('助手'))}${row('data-pm="settings"', $('#settingsBtn').innerHTML, t('设置'))}
+      <div class="pm-seg">${['auto', 'light', 'dark'].map(x => `<button type="button" data-pm-theme="${x}" class="${th === x ? 'on' : ''}">${t({ auto: '跟随系统', light: '浅色', dark: '深色' }[x])}</button>`).join('')}</div>
+      <div class="pm-foot">${$('#status').innerHTML}</div>`;
+}
+
 // ---------- routes ----------
 function parseRoute() {
   const h = location.hash.replace(/^#/, '');
@@ -672,7 +891,7 @@ function parseRoute() {
   return m ? { name: 'session', id: decodeURIComponent(m[1]), tab: m[2] || 'overview' } : { name: 'home' };
 }
 let routedAt = location.hash;  // (two quick changes send two events that both read the last address: handle each address once, or the page and its terminal are built twice)
-window.addEventListener('hashchange', () => { if (location.hash === routedAt) return; routedAt = location.hash; route = parseRoute(); if (!(route.name === 'session' && route.tab === 'term') && route.name !== 'gterm') closeTerm(); for (const k in sig) delete sig[k]; build(); render(); });
+window.addEventListener('hashchange', () => { if (location.hash === routedAt) return; routedAt = location.hash; route = parseRoute(); if (!(route.name === 'session' && route.tab === 'term') && route.name !== 'gterm') { closeTerm(); phoneFull = null; } for (const k in sig) delete sig[k]; build(); render(); });
 const go = (id, tab) => { location.hash = `#/s/${encodeURIComponent(id)}${tab && tab !== 'overview' ? '/' + tab : ''}`; };
 
 function build() {  // (the frame of a view; render() fills it)
@@ -684,7 +903,20 @@ function build() {  // (the frame of a view; render() fills it)
     $('#todo').addEventListener('submit', e => { e.preventDefault(); todoAsk(); });
     $('#tText').addEventListener('keydown', e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); todoAsk(); } });
   };
-  if (route.name === 'home') {  // (all workspaces)
+  if (route.name === 'home' && phone()) {  // (a phone: one list, the rest in the menu)
+    crumb('总览');
+    $('#view').innerHTML = `<div class="page ph-home"><section id="phNeed"></section><section id="phDoing"></section><section id="phMore"></section>${todo}</div>`;
+    wireTodo();
+  } else if (route.name === 'session' && phone()) {  // (a phone: its head and a reply line fixed, the middle scrolling)
+    sessTab = route.tab;
+    $('#view').innerHTML = `<div class="ph-sess"><div class="ph-head" id="phHead"></div><div class="ph-scroll" id="sess"><div id="tabBody"></div></div>
+      <div class="ph-prompt" id="phPrompt" hidden></div>
+      <form class="ph-reply" id="phReply" autocomplete="off"><div class="ph-hint" id="phHint" hidden></div>
+        <div class="ph-line"><textarea id="phText" rows="1"></textarea><span id="phMic"></span><button class="ph-send" id="phSend" type="submit" aria-label="${t('发送')}">${I.arrow}</button></div></form></div>`;
+    const ta = $('#phText');
+    ta.addEventListener('input', () => { ta.style.height = 'auto'; ta.style.height = Math.min(120, ta.scrollHeight) + 'px'; });
+    $('#phReply').addEventListener('submit', e => { e.preventDefault(); phSay(false); });
+  } else if (route.name === 'home') {  // (all workspaces)
     crumb('总览');
     $('#view').innerHTML = `<div class="page">
       <section class="entry"><div class="h-title"><h2>${t('需要你')}</h2><span class="sub" id="attnSub"></span></div><div id="attn"></div></section>
@@ -780,8 +1012,8 @@ function render() {
   draw('status', [S.summarizer, S.about && S.about.model, Math.floor(Date.now() / 5000), S.version], drawStatus);
   drawRail();
   drawSide();
-  ({ home: renderHome, ws: renderWs, workspaces: renderWorkspaces, gterm: () => drawTerm({ id: `g:${route.group}:${route.pane}`, group: route.group, pane: route.pane, loc: (S.groups || {})[route.group] }), talk: renderTalk, tasks: renderTasks, reports: renderReports, queue: renderQueue,
-     project: renderProject, board: renderBoardPage, boards: () => (route.key ? renderBoardPage() : renderBoards()) }[route.name] || renderSession)();
+  ({ home: phone() ? renderPhoneHome : renderHome, ws: renderWs, workspaces: renderWorkspaces, gterm: () => drawTerm({ id: `g:${route.group}:${route.pane}`, group: route.group, pane: route.pane, loc: (S.groups || {})[route.group] }), talk: renderTalk, tasks: renderTasks, reports: renderReports, queue: renderQueue,
+     project: renderProject, board: renderBoardPage, boards: () => (route.key ? renderBoardPage() : renderBoards()) }[route.name] || (phone() ? renderPhoneSession : renderSession))();
   if (!$('#palette').hidden) drawPalette();
 }
 
@@ -2019,7 +2251,7 @@ function drawPalette() {
       <div class="t"><b>${esc(titleOf(s))}</b><div>${esc(s.name)} · ${esc(s.summary || standing(s)[1])}</div></div>
       <span class="loc">${s.loc ? `${esc(groupName(s.loc.session))}:${esc(s.loc.pane)}` : esc(folder(s.cwd))}</span></div>`).join('') : `<div class="p-sec">${t('没有匹配的工作区、项目或会话')}</div>`;
 }
-function closeOverlays() { for (const id of ['#palette', '#settings', '#newSess', '#taskPanel']) $(id).hidden = true; }
+function closeOverlays() { for (const id of ['#palette', '#settings', '#newSess', '#taskPanel', '#phoneMenu']) $(id).hidden = true; }
 
 // ---------- new session ----------
 let NS = null;
@@ -2314,6 +2546,22 @@ document.addEventListener('click', async e => {
   if ((el = q('[data-bclose]'))) { if (confirm(t('结束这场讨论？之后就不能再往里发言了。'))) { await post('topic_close', { key: BD.key, topic: el.dataset.bclose }); boardFetch(); } return; }
   if ((el = q('[data-bcall]'))) { const ta = $('#bText'), at = ta.selectionStart ?? ta.value.length, w = `@${el.dataset.bcall} `; ta.value = ta.value.slice(0, at) + w + ta.value.slice(at); ta.focus(); ta.selectionStart = ta.selectionEnd = at + w.length; return; }
   if ((el = q('[data-tab-go]'))) { go(route.id, el.dataset.tabGo); return; }
+  if ((el = q('[data-pa]'))) { el.closest('.ph-acts').querySelectorAll('button').forEach(b => { b.disabled = true; }); phoneAnswer(el.dataset.pa, el.dataset.pc, el.dataset.ps); return; }
+  if ((el = q('[data-phreply]'))) { go(el.dataset.phreply, 'chat'); setTimeout(() => $('#phText') && $('#phText').focus(), 60); return; }
+  if (q('[data-phnow]')) { phSay(true); return; }
+  if (q('[data-phmore]')) { const s = S.sessions.find(x => x.id === route.id); if (s) openMenu(s); return; }
+  if (q('[data-scrwrap]')) { scrWrap = !scrWrap; store.set('deck.scrWrap', scrWrap); delete sig.scrFor; delete sig.scr; render(); return; }
+  if (q('[data-phfull]')) { if (confirm(t('接管后可以在这里打字，但电脑上这个 Zellij 会话的布局会缩小到手机的大小，直到你离开这一页。接管吗？'))) { phoneFull = route.id; delete sig.scrFor; render(); } return; }
+  if ((el = q('[data-pm]'))) {
+    const what = el.dataset.pm, s = route.name === 'session' && S.sessions.find(x => x.id === route.id);
+    closeOverlays();
+    if (what === 'search') openPalette(); else if (what === 'new') openNew(''); else if (what === 'asst') asstToggle(true); else if (what === 'settings') openSettings();
+    else if (what === 'jump' && s) post('jump', { id: s.id });
+    else if (what === 'full' && s) { if (confirm(t('接管后可以在这里打字，但电脑上这个 Zellij 会话的布局会缩小到手机的大小，直到你离开这一页。接管吗？'))) { phoneFull = s.id; if (route.tab === 'term') { delete sig.scrFor; render(); } else go(s.id, 'term'); } }
+    return;
+  }
+  if ((el = q('[data-pm-theme]'))) { store.set('deck.theme', el.dataset.pmTheme); applyTheme(); document.querySelectorAll('[data-pm-theme]').forEach(b => b.classList.toggle('on', b === el)); return; }
+  if (q('#phoneMenu .pm-row[href]')) { closeOverlays(); return; }
   if ((el = q('[data-turn]'))) {  // (a topic's time: its turn in the timeline, on the report tab)
     const st = STORY[route.id], n = +el.dataset.turn;
     wantTurn = n;
@@ -2442,6 +2690,7 @@ document.addEventListener('change', async e => {
   }
 });
 $('#searchBtn').onclick = openPalette;
+$('#menuBtn').onclick = () => openMenu();
 $('#asstBtn').onclick = () => asstToggle();
 $('#newBtn').onclick = () => openNew('');
 $('#settingsBtn').onclick = openSettings;
@@ -2455,7 +2704,7 @@ $('#paletteQ').addEventListener('keydown', e => {
 });
 document.addEventListener('keydown', e => {
   const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
-  const overlay = ['#palette', '#settings', '#newSess', '#taskPanel'].some(id => !$(id).hidden);
+  const overlay = ['#palette', '#settings', '#newSess', '#taskPanel', '#phoneMenu'].some(id => !$(id).hidden);
   if (e.key === 'Escape') { if (overlay) closeOverlays(); else if (route.name === 'session' && !typing) location.hash = '#/'; return; }
   if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && document.activeElement.id === 'rText') { const b = document.querySelector('[data-act="say"]:not([disabled])'); if (b) b.click(); return; }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openPalette(); return; }
@@ -2469,6 +2718,7 @@ document.addEventListener('keydown', e => {
 });
 
 route = parseRoute();
+applyPhone();
 applyLang();
 applyTheme();
 applyFold();

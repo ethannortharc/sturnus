@@ -4182,6 +4182,18 @@ def term_argv(loc):
     return ['zellij', 'attach', loc['session']]
 
 
+def pane_screen(loc):
+    """(ok, what the pane shows now with its colours, its width or 0): read only, with no client attached, so a phone can look
+    at an agent's pane without Zellij shrinking the desktop's layout to the phone, and sees that pane, not the tab the
+    desktop happens to show."""
+    if loc['mux'] == 'tmux':
+        r = TMUX.tm(loc['sock'], 'capture-pane', '-p', '-e', '-t', loc['pane'])
+        w = TMUX.tm(loc['sock'], 'display', '-p', '-t', loc['pane'], '#{pane_width}').stdout.strip()
+        return r.returncode == 0, r.stdout, int(w) if w.isdigit() else 0
+    r = zj(loc['session'], 'action', 'dump-screen', '--pane-id', str(loc['pane']), '--ansi', timeout=5)
+    return r.returncode == 0, r.stdout, 0
+
+
 def term_bridge(rfile, conn, loc, cols, rows):
     """The pseudo-terminal and the websocket, joined both ways; the browser sends keys as binary, its size as text."""
     before = clients_of(loc['session']) if loc['mux'] == 'zellij' and loc.get('pane') else None
@@ -4370,6 +4382,14 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith('/api/state'):
             with DECK.lock:
                 return self.send_json(DECK.state)
+        if self.path.startswith('/api/screen'):  # (a pane as it looks now, read only: the phone's terminal tab)
+            from urllib.parse import urlparse, parse_qs
+            s = DECK.find((parse_qs(urlparse(self.path).query).get('id') or [''])[0])
+            loc = s and s.get('loc')
+            if not loc or not loc.get('pane'):
+                return self.send_json({'ok': False, 'msg': tx('它不在 Zellij 或 tmux 的窗格里', 'It is in no Zellij or tmux pane')}, 404)
+            ok, text, cols = pane_screen(loc)
+            return self.send_json({'ok': ok, 'text': text[-200000:], 'cols': cols, **({} if ok else {'msg': tx('读不到它的窗格', 'Its pane could not be read')})})
         if self.path.split('?')[0] in ('/api/phone/summary', '/api/phone/inbox'):  # (Columba, the iPhone app)
             _REQ.lang = 'en' if self.headers.get('X-Lang') == 'en' else 'zh'
             try:
