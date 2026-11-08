@@ -226,6 +226,10 @@ class Answers(unittest.TestCase):
         self.assertEqual(self.answer(d, 'reply', '2')[0], 409)
         self.assertEqual(d.said, [])
 
+    def test_after_a_deny_words_go_though_amails_record_still_says_waiting(self):
+        d = Deck([session(needs_you='What should I do instead?')], registry='idle', board={'state': 'waiting', 'asking': BASH})
+        self.assertEqual(self.answer(d, 'reply', 'Use the other folder')[0], 200)
+
 
 class Hooks(unittest.TestCase):
     """amail keeps what a permission prompt is for, and lets go of it once the prompt is answered."""
@@ -257,6 +261,17 @@ class Hooks(unittest.TestCase):
         self.assertIn('asking', e, 'the end of another call leaves this one')
         e = self.event('Stop')
         self.assertNotIn('asking', e)
+
+    def test_a_question_ends_by_its_call_though_its_end_carries_the_answers(self):
+        self.event('UserPromptSubmit', prompt='ask me')
+        q = {'questions': [{'question': 'Which?', 'options': [{'label': 'A'}, {'label': 'B'}]}]}
+        self.event('PreToolUse', tool_name='AskUserQuestion', tool_input=q, tool_use_id='toolu_q')
+        self.event('PermissionRequest', tool_name='AskUserQuestion', tool_input=q)
+        e = self.event('PostToolUse', tool_name='AskUserQuestion', tool_input={**q, 'answers': {'Which?': 'B'}}, tool_use_id='toolu_q')
+        self.assertNotIn('asking', e)
+        self.event('PreToolUse', tool_name='Bash', tool_input={'command': 'ls'}, tool_use_id='toolu_n')
+        e = self.event('PermissionRequest', tool_name='Bash', tool_input={'command': 'ls'})
+        self.assertFalse(e['asking']['many'], 'the next prompt in the turn is the only one open')
 
     def test_long_input_is_cut_and_a_huge_one_kept_small(self):
         self.assertEqual(len(A.clip_input({'command': 'x' * 5000})['command']), 1501)

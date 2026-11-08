@@ -1070,7 +1070,9 @@ def on_event(kind, ev, p):
     # (a prompt is over when its own tool call ends, or with the turn; not when another call starts: a sub-agent's may
     # start while one is still on screen. A denied one gets no end of its own and goes with the turn)
     ask = e.get('asking')
-    if ask and (ev in ('prompt', 'stop') or ev == 'post' and (p.get('tool_name'), clip_input(p.get('tool_input') or {})) == (ask['tool'], ask['input'])):
+    ended = ev == 'post' and ((ask or {}).get('use') and p.get('tool_use_id') == ask['use']  # (by its call, which a question's end
+                              or (p.get('tool_name'), clip_input(p.get('tool_input') or {})) == ((ask or {}).get('tool'), (ask or {}).get('input')))  # carries with its answers)
+    if ask and (ev in ('prompt', 'stop') or ended):
         e.pop('asking', None)
     if ev in ('stop', 'said'):
         s = last_said(p)

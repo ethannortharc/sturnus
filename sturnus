@@ -3939,8 +3939,9 @@ def phone_answer(deck, iid, choice, text=''):
         text = (text or '').strip()
         if not text:
             return 400, tx('先写要说的话', 'Write what to say first')
-        if (reg and reg.get('status') == 'waiting') or raw.get('state') == 'waiting':
-            # (it has just stopped at a prompt: typed words and Enter would answer that)
+        if (reg.get('status') == 'waiting') if reg else raw.get('state') == 'waiting':
+            # (it has just stopped at a prompt: typed words and Enter would answer that. Claude Code's own registry says so
+            # for a session it lists; amail's record stays 'waiting' after a deny by Esc, which ends no call)
             return 409, tx('它刚停在一个提示上，先处理那个', 'It has just stopped at a prompt; answer that first')
         ok, msg = deck.act('say', {'id': s['id'], 'text': text})
         msg = msg.get('msg') if isinstance(msg, dict) else msg
