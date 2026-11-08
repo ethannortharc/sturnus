@@ -6,6 +6,7 @@ is (its Zellij session and pane), what they say to each other. Jump to one, writ
                                    plugin, a user service serving http://127.0.0.1:7788 (and, with Tailscale,
                                    https://<machine>.<tailnet>.ts.net:7443 for the owner's own devices)
   sturnus token [--rotate]         the sign-in token every browser needs once (--rotate: a new one, all signed out)
+  sturnus pair                     a code to pair the Sturnus phone app with this machine (also in Settings → Access)
   sturnus upgrade [--force] [--release]
                                    the newest version: a git clone it was installed from is pulled first; one installed
                                    from a release archive (or --release) takes the newest release on GitHub
@@ -2255,6 +2256,7 @@ class Deck:
         self.origins = {}  # (pid -> how it was started: the process tree above it does not change)
         self.talk = Talk()
         self.state = {'sessions': [], 'talk': [], 'groups': {}, 'locks': [], 'at': 0}
+        self.changed = threading.Condition()  # (told after every collect: the phone app's calls wait on it for news)
         self.events = deque(maxlen=50)
         self.titles = A.get(os.path.join(CACHE, 'titles.json'), {}) or {}
         self.failed = {}
@@ -2525,6 +2527,8 @@ class Deck:
                                     'listen': f'{self.cfg["host"]}:{self.cfg["port"]}', 'model': model_label(self.cfg, 'summary'),
                                     'assist': model_label(self.cfg, 'assist'),
                                     'summaries': len(self.sums.data)}}
+        with self.changed:
+            self.changed.notify_all()
         if self.cfg.get('pane_titles', True):
             self.retitle(sessions, zs)
 
@@ -3260,6 +3264,10 @@ class Deck:
         if what == 'queue':
             return self.queue_act(body)
         if what == 'type':
+            if 'seen' in body and s and phone_prompt(self, s) != str(body.get('seen') or ''):
+                # (a phone's keys, sent for the prompt it showed, or for none: a prompt that came or went since would
+                # take them as its answer)
+                return False, tx('它的提示刚变了：看一眼屏幕再按', 'Its prompt has just changed: look at the screen, then press')
             return self.type_in(s, body.get('text') or '', bool(body.get('enter', True)))
         if what == 'models':
             try:
@@ -3892,6 +3900,111 @@ def phone_view(deck, what):
     return phone_summary(sessions, items) if what == 'summary' else {'items': public}
 
 
+# ---------- the Sturnus phone app: this machine's sessions, small enough to merge with other machines' on a phone ----------
+
+def app_attention(s):
+    """As the page's attention(): what a session needs of the person, or None."""
+    if s['state'] in ('gone', 'ended') or s.get('stale') or (s.get('unknown') and not s.get('starting') and not s.get('summary')):
+        return None
+    asking = s.get('tool') in ASKS and s['state'] == 'working' and (s.get('tool_at') or 0) > (s.get('tool_end') or 0)
+    if s['state'] == 'waiting' or s.get('status') == 'waiting_user' or asking:
+        return 'decide'
+    if s.get('status') in ('blocked', 'review'):
+        return s['status']
+    return 'decide' if s.get('needs_you') or s.get('asks') else None
+
+
+def app_standing(s):
+    """As the page's standing(): asking (works on, and waits on you) · waiting · blocked · review · working · idle."""
+    if s['state'] in ('gone', 'ended'):
+        return s['state']
+    a = app_attention(s)
+    if a == 'decide':
+        return 'asking' if s['state'] == 'working' and not at_menu(s) else 'waiting'
+    return a or ('working' if s['state'] == 'working' else 'idle')
+
+
+def app_title(s):
+    if s.get('title'):
+        return s['title']
+    first = re.split(r'[，。；,;：:]', s.get('summary') or '')[0][:18]
+    return first or (tx('还认不出在做什么', 'Can’t tell yet what it is doing') if s.get('unknown') else s['name'])
+
+
+APP_RANK = {'waiting': 0, 'asking': 1, 'blocked': 2, 'review': 3, 'working': 4, 'idle': 5}
+
+
+def app_view(deck):
+    """What the phone app shows of this machine: its live sessions with how each stands (a sub-agent another session
+    started names it as `parent`), and what waits on the person with the answers a phone may give. `rev` changes whenever
+    any of it does, except a session's last stir alone."""
+    with deck.lock:
+        sessions, groups = list(deck.state['sessions']), dict(deck.state.get('groups') or {})
+        spaces = {w['key']: w['name'] for w in deck.state.get('workspaces') or []}
+        dirs = list(deck.state.get('dirs') or [])[:30]
+    pname = lambda s: (deck.projects.known.get(s.get('project')) or {}).get('name') or ''
+    live = [s for s in sessions if not (s.get('hidden') or s.get('stale') or s['state'] in ('gone', 'ended'))]
+    kids = Counter(s['parent_id'] for s in live if s.get('parent_id'))
+    rows = []
+    for s in live:
+        st = app_standing(s)
+        need = s.get('needs_you') or ((s.get('asks') or [{}])[0].get('what')) or (s.get('waiting_for') if st == 'waiting' else '') or ''
+        rows.append({'id': s['id'], 'name': s['name'], 'kind': s['kind'], 'title': app_title(s), 'summary': (s.get('summary') or '')[:400],
+                     'standing': st, 'need': str(need)[:400], 'project': pname(s), 'workspace': spaces.get(s.get('workspace')) or '',
+                     'branch': s.get('branch') or '', 'since': s.get('since'), 'at': s.get('at'),
+                     'born': s.get('born'), 'say': say_how(s), 'pane': bool((s.get('loc') or {}).get('pane')), 'kids': kids.get(s['id'], 0),
+                     'group': ('tmux:' if (s.get('loc') or {}).get('mux') == 'tmux' else '') + ((s.get('loc') or {}).get('session') or ''),
+                     'parent': s.get('parent_id') or ''})
+    rows.sort(key=lambda r: (APP_RANK.get(r['standing'], 9), r['born'] or 0))  # (within a standing, by when it began: rows keep their places)
+    items = [{k: v for k, v in i.items() if k != 'asks'} for i in phone_items(sessions, pname, groups)]
+    name, _ = tailnet_self()
+    # (and where a new session can start: the groups there are, the folders sessions ran in lately)
+    made = sorted(('tmux:' if (z or {}).get('mux') == 'tmux' else '') + g for g, z in groups.items())
+    view = {'machine': {'name': (name or socket.gethostname()).split('.')[0], 'version': VERSION}, 'sessions': rows, 'inbox': items,
+            'groups': made, 'dirs': dirs}
+    # (a working session stirs every few seconds; that alone is no news worth waking every phone for)
+    steady = {**view, 'sessions': [{k: v for k, v in r.items() if k != 'at'} for r in rows]}
+    view['rev'] = hashlib.sha1(json.dumps(steady, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()[:16]
+    return view
+
+
+def phone_prompt(deck, s):
+    """The id of the prompt a session is stopped at, as a phone is shown it ('' at none), or '?' while its records this
+    moment differ from the last look round (it is changing): keys from a phone go only to the prompt it saw."""
+    reg, raw = phone_now(s)
+    waits = (reg.get('status') == 'waiting') if reg else raw.get('state') == 'waiting'
+    if not at_menu(s):
+        return '?' if waits else ''
+    if s['kind'] == 'claude' and ((raw.get('asking') or {}) != (s.get('asking') or {}) or (reg and not waits)):
+        return '?'
+    with deck.lock:
+        groups = dict(deck.state.get('groups') or {})
+    it = next(iter(phone_items([s], groups=groups)), None)
+    return it['id'] if it else ''
+
+
+def app_state(deck, after, wait):
+    """app_view as soon as it differs from the one the phone has (`after`), or after `wait` seconds as it is."""
+    end = time.time() + max(0, min(25, wait))
+    while True:
+        v = app_view(deck)
+        left = end - time.time()
+        if v['rev'] != after or left <= 0:
+            return v
+        with deck.changed:
+            deck.changed.wait(min(left, 5))
+
+
+def pair_link(cfg, code):
+    """What the phone opens to pair: this deck's tailnet address (https when it has one) and the code."""
+    from urllib.parse import quote
+    name, _ = tailnet_self()
+    if not name or not cfg.get('tailnet', True):
+        return '', ''
+    url = f'https://{name}:{cfg.get("https_port", 7443)}' if cfg.get('https') else f'http://{name.split(".")[0]}:{cfg["port"]}'
+    return url, f'sturnus://pair?url={quote(url, safe="")}&code={code}&name={quote(name.split(".")[0], safe="")}'
+
+
 PHONE_LOCK = threading.Lock()  # (one answer at a time: two taps arriving together must not both type)
 PHONE_DONE = {}  # (item id → when it was answered: the state seen is up to a collect old, so a repeat is refused meanwhile)
 
@@ -3961,23 +4074,68 @@ OPEN = re.compile(r'^/(fonts/[A-Za-z0-9._-]+|login\.html|style\.css|icon\.svg|ic
 
 # ---------- access: a login token, then a session cookie per browser ----------
 
-ACCESS = os.path.join(os.path.dirname(CONF), 'access.json')  # (0600: the token and the signed-in browsers)
+ACCESS = os.path.join(os.path.dirname(CONF), 'access.json')  # (0600: the token, the signed-in browsers, the paired phones)
 DAY = 86400
+PAIR_ABC, PAIR_LIFE = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789', 600  # (no 0/O, 1/I/L: a code read off a screen and typed)
 
 
 def write_private(path, data):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    os.write(fd, json.dumps(data).encode())
-    os.close(fd)
+    """All of it or none: written beside the file (0600), then put in its place, so no reader sees half a file."""
+    d = os.path.dirname(path)
+    os.makedirs(d, exist_ok=True)
+    tmp = os.path.join(d, f'.{os.path.basename(path)}.{os.getpid()}.{threading.get_ident()}.tmp')
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, json.dumps(data).encode())
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(tmp, path)
+
+
+@contextlib.contextmanager
+def access_locked():
+    """The access file's read-change-write, one process at a time: the service, `sturnus token`, `sturnus pair`."""
+    os.makedirs(os.path.dirname(ACCESS), exist_ok=True)
+    fd = os.open(ACCESS + '.lock', os.O_WRONLY | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def access_read():
+    """The access file ({} when there is none). One that cannot be read is an error, never a reason for a new token:
+    that would sign out every browser and phone."""
+    try:
+        with open(ACCESS) as f:
+            d = json.load(f)
+    except FileNotFoundError:
+        return {}
+    if not isinstance(d, dict):
+        raise ValueError(f'{ACCESS} is not an object')
+    return d
 
 
 def access_data(rotate=False):
-    d = A.get(ACCESS, {}) or {}
-    if rotate or not d.get('token'):
-        d = {'token': secrets.token_urlsafe(24), 'sessions': {}}  # (a new token signs every browser out)
-        write_private(ACCESS, d)
-    return d
+    with access_locked():
+        try:
+            d = {} if rotate else access_read()
+        except ValueError as e:
+            raise SystemExit(f'{ACCESS} cannot be read ({e}); `sturnus token --rotate` makes a new one (everyone signs in again)')
+        if rotate or not d.get('token'):
+            d = {'token': secrets.token_urlsafe(24), 'sessions': {}}  # (a new token signs every browser and phone out)
+            write_private(ACCESS, d)
+        return d
+
+
+def access_mtime():
+    try:
+        return os.stat(ACCESS).st_mtime_ns
+    except OSError:
+        return 0
 
 
 class Access:
@@ -3985,21 +4143,41 @@ class Access:
 
     def __init__(self):
         self.lock = threading.Lock()
-        self.fails = deque(maxlen=20)
-        self.d, self.mtime = access_data(), os.path.getmtime(ACCESS)
+        self.fails = {}  # (who → when they tried a wrong token or code: each caller its own count)
+        self.d, self.mtime = access_data(), access_mtime()
 
-    def fresh(self):  # (`sturnus token --rotate` writes the file under the running service)
-        m = os.path.getmtime(ACCESS) if os.path.exists(ACCESS) else 0
-        if m != self.mtime:
-            self.d, self.mtime = access_data(), os.path.getmtime(ACCESS)
+    def fresh(self, force=False):  # (`sturnus token --rotate` and `sturnus pair` write the file under the running service)
+        m = access_mtime()
+        if force or m != self.mtime:
+            try:
+                d = access_read()
+            except ValueError:
+                return  # (kept as it was; read again next time)
+            if d.get('token'):
+                self.d, self.mtime = d, m
+
+    @contextlib.contextmanager
+    def changing(self):
+        """Read, change and save the file with no other thread or process in between."""
+        with self.lock, access_locked():
+            self.fresh(force=True)
+            yield
 
     def save(self):
         write_private(ACCESS, self.d)
-        self.mtime = os.path.getmtime(ACCESS)
+        self.mtime = access_mtime()
 
     @staticmethod
     def key(sid):
         return hashlib.sha256(sid.encode()).hexdigest()  # (what is kept is a hash: the file holds no live cookie)
+
+    def tries(self, who, now):
+        return sum(1 for t in self.fails.get(who) or () if now - t < 600)
+
+    def wrong(self, who, now):
+        if len(self.fails) > 200:
+            self.fails = {k: v for k, v in self.fails.items() if v and now - v[-1] < 600}
+        self.fails.setdefault(who, deque(maxlen=20)).append(now)
 
     def check(self, sid):
         with self.lock:
@@ -4009,12 +4187,11 @@ class Access:
 
     def login(self, token, who):
         now = time.time()
-        with self.lock:
-            self.fresh()
-            if sum(1 for t in self.fails if now - t < 600) >= 8:
+        with self.changing():
+            if self.tries(who, now) >= 8:
                 return None, tx('试错太多次，10 分钟后再试', 'Too many wrong tries; try again in 10 minutes')
             if not hmac.compare_digest(token.encode(), self.d['token'].encode()):
-                self.fails.append(now)
+                self.wrong(who, now)
                 return None, tx('令牌不对', 'Wrong token')
             sid = secrets.token_urlsafe(32)
             self.d['sessions'] = {k: v for k, v in self.d['sessions'].items() if now - v['at'] < 30 * DAY}
@@ -4023,10 +4200,57 @@ class Access:
             return sid, ''
 
     def drop(self, key):
+        with self.changing():
+            if self.d['sessions'].pop(key, None) or (self.d.get('devices') or {}).pop(key, None):
+                self.save()
+
+    # (the phone app: a pairing code made here, typed or scanned on the phone, buys that phone a key of its own; the key
+    # is sent as "Authorization: Bearer", kept as a hash, and holds until the phone is taken out or the token rotated)
+
+    def pair_code(self):
+        """A new code; any earlier one stops working (a code once shown on a screen may have been seen)."""
+        code = ''.join(secrets.choice(PAIR_ABC) for _ in range(8))
+        with self.changing():
+            self.d['codes'] = {self.key(code): time.time() + PAIR_LIFE}
+            self.save()
+        return code
+
+    def pair(self, code, device, who):
+        now, code = time.time(), re.sub(r'[^A-Z0-9]', '', str(code).upper())
+        with self.changing():
+            if self.tries(who, now) >= 8:
+                return None, tx('试错太多次，10 分钟后再试', 'Too many wrong tries; try again in 10 minutes')
+            codes = self.d.get('codes') or {}
+            if codes.pop(self.key(code), 0) < now:  # (used once: a code that worked is gone, as is one that ran out)
+                self.wrong(who, now)
+                return None, tx('配对码不对，或者已经过期：在电脑上的设置 → 访问里再生成一个', 'Wrong or expired pairing code: make a new one in Settings → Access on the computer')
+            key = secrets.token_urlsafe(32)
+            name = re.sub(r'\s+', ' ', str(device or '')).strip()[:60] or 'iPhone'
+            self.d.setdefault('devices', {})[self.key(key)] = {'name': name, 'at': now, 'seen': now, 'who': who}
+            self.save()
+            return key, ''
+
+    def device(self, key):
+        """The paired phone a key belongs to, or None."""
+        if not key:
+            return None
+        h = self.key(key)
         with self.lock:
             self.fresh()
-            if self.d['sessions'].pop(key, None):
-                self.save()
+            d = (self.d.get('devices') or {}).get(h)
+        if d and time.time() - d.get('seen', 0) > 3600:  # (when it was last seen, to the hour: not a write per call)
+            with self.changing():
+                d = (self.d.get('devices') or {}).get(h)
+                if d:
+                    d['seen'] = time.time()
+                    self.save()
+        return d
+
+    def devices(self):
+        with self.lock:
+            self.fresh()
+            return [{'key': k, 'name': v['name'], 'at': v['at'], 'seen': v.get('seen'), 'who': v.get('who')} for k, v in
+                    sorted((self.d.get('devices') or {}).items(), key=lambda kv: -kv[1]['at'])]
 
     def listing(self, mine):
         with self.lock:
@@ -4314,7 +4538,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({'ok': False, 'msg': 'forbidden'}, 403)
             return False
         bare = self.path.split('?')[0]
-        if ACCESS_.check(self.cookie('deck')) or (self.command == 'GET' and OPEN.match(bare)) or (self.command == 'POST' and bare == '/api/login'):
+        auth = self.headers.get('Authorization') or ''
+        if (ACCESS_.check(self.cookie('deck')) or (auth.startswith('Bearer ') and ACCESS_.device(auth[7:].strip()))
+                or (self.command == 'GET' and OPEN.match(bare)) or (self.command == 'POST' and bare in ('/api/login', '/api/app/pair'))):
             return True
         if self.command == 'GET' and bare in ('/', '/index.html'):
             self.static('login.html')
@@ -4390,6 +4616,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({'ok': False, 'msg': tx('它不在 Zellij 或 tmux 的窗格里', 'It is in no Zellij or tmux pane')}, 404)
             ok, text, cols = pane_screen(loc)
             return self.send_json({'ok': ok, 'text': text[-200000:], 'cols': cols, **({} if ok else {'msg': tx('读不到它的窗格', 'Its pane could not be read')})})
+        if self.path.startswith('/api/app/state'):  # (the Sturnus phone app: news from this machine, as soon as there is some)
+            from urllib.parse import urlparse, parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            wait = (q.get('wait') or ['0'])[0]
+            _REQ.lang = 'en' if self.headers.get('X-Lang') == 'en' else 'zh'
+            try:
+                return self.send_json(app_state(DECK, (q.get('after') or [''])[0], int(wait) if wait.isdigit() else 0))
+            finally:
+                _REQ.lang = None
         if self.path.split('?')[0] in ('/api/phone/summary', '/api/phone/inbox'):  # (Columba, the iPhone app)
             _REQ.lang = 'en' if self.headers.get('X-Lang') == 'en' else 'zh'
             try:
@@ -4455,7 +4690,10 @@ class Handler(BaseHTTPRequestHandler):
         # (only this page: a cross-site form cannot set this header)
         if self.headers.get('X-Deck') != '1':
             return self.send_json({'ok': False, 'msg': 'forbidden'}, 403)
-        if self.path.endswith('/api/stt'):  # (a recording, as it is: to text)
+        # (everything below goes by the path without its query: the gate let it in by that path, and a query such as
+        # "/api/login?/say" must not reach another action than the one let in)
+        bare = self.path.split('?')[0].split('#')[0]
+        if bare == '/api/stt':  # (a recording, as it is: to text)
             n = int(self.headers.get('Content-Length') or 0)
             v = voice_cfg(DECK.cfg)
             if not v['on']:
@@ -4471,12 +4709,20 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(int(self.headers.get('Content-Length') or 0)) or b'{}')
         except ValueError:
             body = {}
-        if self.path.startswith('/api/phone/actions/'):  # (an answer from Columba, to the item it showed)
-            code, msg = phone_answer(DECK, self.path.split('?')[0].rsplit('/', 1)[-1], str(body.get('choice') or ''), str(body.get('text') or ''))
+        if bare.startswith('/api/phone/actions/'):  # (an answer from a phone app, to the item it showed)
+            code, msg = phone_answer(DECK, bare.rsplit('/', 1)[-1], str(body.get('choice') or ''), str(body.get('text') or ''))
             if code == 200:
                 DECK.note(tx(f'手机上：{msg}', f'From the phone: {msg}'))
             return self.send_json({'ok': code == 200, 'msg': msg}, code)
-        what = self.path.rsplit('/', 1)[-1]
+        if bare == '/api/app/pair':  # (a phone with a pairing code: its own key from now on)
+            key, msg = ACCESS_.pair(str(body.get('code') or ''), str(body.get('device') or ''), self.via)
+            if not key:
+                return self.send_json({'ok': False, 'msg': msg}, 401)
+            DECK.note(tx(f'手机 App 配对了：{body.get("device") or "iPhone"}（{self.via}）', f'Phone app paired: {body.get("device") or "iPhone"} ({self.via})'), True)
+            return self.send_json({'ok': True, 'key': key, 'machine': app_view(DECK)['machine']})
+        if not bare.startswith('/api/') or bare.count('/') != 2:
+            return self.send_json({'ok': False, 'msg': 'not found'}, 404)
+        what = bare.rsplit('/', 1)[-1]
         secure = '; Secure' if self.https else ''  # (plain http on the tailnet is WireGuard's; a Secure cookie needs https)
         if what == 'login':
             sid, msg = ACCESS_.login(str(body.get('token') or '').strip(), self.via)
@@ -4485,13 +4731,20 @@ class Handler(BaseHTTPRequestHandler):
             DECK.note(tx(f'新登录：{self.via}', f'New sign-in: {self.via}'), True)
             return self.send_json({'ok': True}, cookie=f'deck={sid}; HttpOnly; SameSite=Strict; Path=/; Max-Age={30 * DAY}{secure}')
         if what == 'access':  # (the signed-in browsers: list, sign one out, or this one)
+            if not ACCESS_.check(self.cookie('deck')):  # (a browser's settings: a phone's key manages no access)
+                return self.send_json({'ok': False, 'msg': 'forbidden'}, 403)
             mine = Access.key(self.cookie('deck'))
+            if body.get('do') == 'pair':  # (a code for a phone, and the link a camera opens the app with)
+                code = ACCESS_.pair_code()
+                url, link = pair_link(DECK.cfg, code)
+                return self.send_json({'ok': True, 'code': code, 'url': url, 'link': link, 'life': PAIR_LIFE,
+                                       **({} if url else {'msg': tx('这台机器没连 Tailscale，手机够不着它', 'This machine is not on Tailscale, so a phone cannot reach it')})})
             if body.get('do') == 'drop':
                 key = mine if body.get('key') == 'me' else str(body.get('key') or '')
                 ACCESS_.drop(key)
                 if key == mine:
                     return self.send_json({'ok': True}, cookie=f'deck=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0{secure}')
-            return self.send_json({'ok': True, 'sessions': ACCESS_.listing(mine), 'local': f'http://127.0.0.1:{DECK.cfg["port"]}',
+            return self.send_json({'ok': True, 'sessions': ACCESS_.listing(mine), 'devices': ACCESS_.devices(), 'local': f'http://127.0.0.1:{DECK.cfg["port"]}',
                                    'tailnet': tailnet_urls(DECK.cfg)})
         try:
             ok, msg = DECK.act(what, body)
@@ -4878,8 +5131,14 @@ def main(argv):
     elif c == 'token':  # (the sign-in token, for the person at this terminal; --rotate signs every browser out)
         d = access_data('--rotate' in argv)
         if '--rotate' in argv:
-            print('new token; every browser signed out')
+            print('new token; every browser and paired phone signed out')
         print(d['token'])
+    elif c == 'pair':  # (a pairing code for the phone app, for a machine reached only by ssh)
+        cfg = config()
+        code = Access().pair_code()
+        url, _ = pair_link(cfg, code)
+        print(f'In the Sturnus app: + → type it in\naddress: {url or "(this machine is not on Tailscale: a phone cannot reach it)"}\n'
+              f'code:    {code[:4]}-{code[4:]}   (good for {PAIR_LIFE // 60} minutes, once)')
     elif c == 'version':
         print(VERSION)
     elif c == 'check':

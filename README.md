@@ -147,6 +147,14 @@ Ordinary posts reach the project's sessions at the start of their next turn; on 
 
 On a screen under 640 px wide (a phone) the page has a layout of its own: one list on the home page (what needs you, with a prompt's Allow and Deny right there; what is under way, by workspace; idle sessions, open tasks and all workspaces folded), every other place in a menu, and a session page with its head and a reply line fixed. Its terminal tab only looks: it shows the agent's own pane as it is, refreshed every two seconds, with no client attached, so the desktop's layout keeps its size; taking the terminal over to type is a separate step that says so.
 
+### Pairing a phone app with several machines
+
+Each machine runs its own Sturnus, which sees every session on that machine. A phone app can join several of them into one list. **Settings → Access → Pair a phone** shows a QR code and an eight-letter code, good for ten minutes and once; on a machine reached only by ssh, `sturnus pair` prints the code and the address. The app sends the code to `POST /api/app/pair` and gets a key of its own, which it sends as `Authorization: Bearer` from then on.
+
+- The key is kept as a hash beside the signed-in browsers, listed in Settings → Access, and can be removed there; `sturnus token --rotate` signs out phones as well as browsers. Only your own Tailscale devices are let in, as for the page.
+- A phone's key reaches what a phone needs (the app's view, the screen, the conversation, the actions) but not the access settings.
+- `GET /api/app/state?after=<rev>&wait=25` answers as soon as anything it shows changes, or after 25 seconds unchanged: the live sessions (not sub-agents started by another session) with how each stands, what waits on you with the answers a phone may give, the groups and recent folders for starting a new session.
+
 ## Models, data, and access
 
 Sturnus runs on your machine and reads local agent activity and Git state. **Summaries, reports, and assistant requests send relevant context to the model you configure**, which may be a remote service. Model sources include Claude Code, Codex, pi, and OpenAI-compatible APIs. Optional voice input sends recordings to the transcription provider you choose.

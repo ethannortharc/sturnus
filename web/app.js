@@ -592,6 +592,17 @@ const originT = o => { if (LANG !== 'en' || !o) return o; const m = o.match(/^�
 const mlabel = s => (LANG === 'en' ? String(s || '').replace('OpenAI 兼容接口', 'OpenAI-compatible API').replace('默认模型', 'default model') : String(s || ''));
 
 Object.assign(EN, {  // (the phone's page)
+"手机 App": "Phone app",
+"Sturnus 的 iPhone App 能同时连几台机器，把它们的会话放在一个列表里。用手机的相机扫下面的码，或者在 App 里点 + 输入地址和配对码。": "The Sturnus iPhone app connects to several machines at once and lists their sessions together. Scan the code below with the phone’s camera, or tap + in the app and type the address and pairing code.",
+"连一台手机": "Pair a phone",
+"配对于 {t}": "Paired {t}",
+"最近用过 {t}": "last used {t}",
+"地址": "Address",
+"配对码": "Pairing code",
+"换一个码": "New code",
+"这个码过期了。": "This code has expired.",
+"再生成一个": "Make another",
+"{m} 分 {s} 秒内有效，只能用一次。配好后会出现在下面。": "Good for {m} min {s} s, once. The phone shows up below when it is paired.",
 "{n} 个工作区": "{n} workspaces",
 "不折行": "No wrap",
 "折行": "Wrap",
@@ -2490,7 +2501,34 @@ async function drawAccess() {
     ${j.tailnet ? `<p class="hint" style="margin-top:8px">${t('Tailnet 地址只放行你自己账号下的设备。')}</p>` : ''}
     <h4 style="margin-top:22px">${t('已登录的浏览器')}</h4>
     <div class="acc-list">${j.sessions.map(x => `<div class="acc-row"><div><div><b>${esc(x.who === '本机' ? t('本机') : x.who)}</b>${x.me ? `<span class="acc-me">${t('这个浏览器')}</span>` : ''}</div><div class="hint">${t('登录于 {t}', { t: new Date(x.at * 1000).toLocaleString(LANG === 'en' ? 'en-GB' : 'zh-CN') })}</div></div>
-      <button class="btn" data-acc="${x.me ? 'me' : esc(x.key)}">${x.me ? t('退出登录') : t('移出')}</button></div>`).join('')}</div>`;
+      <button class="btn" data-acc="${x.me ? 'me' : esc(x.key)}">${x.me ? t('退出登录') : t('移出')}</button></div>`).join('')}</div>
+    <h4 style="margin-top:22px">${t('手机 App')}</h4>
+    <p class="hint">${t('Sturnus 的 iPhone App 能同时连几台机器，把它们的会话放在一个列表里。用手机的相机扫下面的码，或者在 App 里点 + 输入地址和配对码。')}</p>
+    <div id="pairBox" class="pair-box"><button class="btn primary" data-pair>${t('连一台手机')}</button></div>
+    ${(j.devices || []).length ? `<div class="acc-list">${j.devices.map(x => `<div class="acc-row"><div><div><b>${esc(x.name)}</b></div><div class="hint">${t('配对于 {t}', { t: new Date(x.at * 1000).toLocaleString(LANG === 'en' ? 'en-GB' : 'zh-CN') })}${x.seen ? ' · ' + t('最近用过 {t}', { t: ago(x.seen) }) : ''}</div></div>
+      <button class="btn" data-acc="${esc(x.key)}">${t('移出')}</button></div>`).join('')}</div>` : ''}`;
+}
+// a pairing code for the phone app, as a QR code the camera opens the app with, and as text to type
+function loadQr() {
+  return window.qrcode ? Promise.resolve() : new Promise((ok, bad) => { const e = Object.assign(document.createElement('script'), { src: 'vendor/qrcode.js' }); e.onload = ok; e.onerror = bad; document.head.appendChild(e); });
+}
+async function drawPair() {
+  const box = $('#pairBox'), j = await api('access', { do: 'pair' }).catch(() => null);
+  if (!box || !j || !j.ok) return;
+  if (!j.url) { box.innerHTML = `<p class="hint">${esc(j.msg || '')}</p>`; return; }
+  await loadQr().catch(() => null);
+  let svg = '';
+  if (window.qrcode) { const q = qrcode(0, 'M'); q.addData(j.link); q.make(); svg = q.createSvgTag({ cellSize: 4, margin: 2, scalable: true }); }
+  const until = Date.now() + j.life * 1000, code = j.code.slice(0, 4) + '-' + j.code.slice(4);
+  box.innerHTML = `<div class="pair-qr">${svg}</div><dl class="kv"><dt>${t('地址')}</dt><dd>${esc(j.url)}</dd><dt>${t('配对码')}</dt><dd><b class="pair-code">${esc(code)}</b></dd></dl>
+    <p class="hint" id="pairLeft"></p><button class="btn" data-pair>${t('换一个码')}</button>`;
+  const left = () => { const el = $('#pairLeft'); if (!el) return clearInterval(tm); const s = Math.round((until - Date.now()) / 1000);
+    if (s <= 0) { clearInterval(tm); box.innerHTML = `<p class="hint">${t('这个码过期了。')}</p><button class="btn primary" data-pair>${t('再生成一个')}</button>`; return; }
+    el.textContent = t('{m} 分 {s} 秒内有效，只能用一次。配好后会出现在下面。', { m: Math.floor(s / 60), s: s % 60 }); };
+  const tm = setInterval(left, 1000); left();
+  const was = (await api('access', {}).catch(() => ({}))).devices || [];
+  const watch = setInterval(async () => { if (!$('#pairBox') || Date.now() > until) return clearInterval(watch);
+    const n = ((await api('access', {}).catch(() => ({}))).devices || []).length; if (n > was.length) { clearInterval(watch); clearInterval(tm); drawAccess(); } }, 2000);
 }
 function readModel(role) {
   const b = document.querySelector(`.mblock[data-role="${role}"]`);
@@ -2649,6 +2687,7 @@ document.addEventListener('click', async e => {
   if ((el = q('[data-quiet]'))) { toggle(quietOpen, 'deck.quietOpen', el.dataset.quiet); return; }
   if ((el = q('[data-side-show]'))) { sideShow = el.dataset.sideShow; store.set('deck.sideShow', sideShow); drawSide(); return; }
   if ((el = q('[data-report]'))) { e.stopPropagation(); el.disabled = true; el.textContent = t('正在写…'); post('report', { id: el.dataset.report }); return; }
+  if ((el = q('[data-pair]'))) { drawPair(); return; }
   if ((el = q('[data-acc]'))) { const key = el.dataset.acc; await api('access', { do: 'drop', key }); if (key === 'me') location.reload(); else drawAccess(); return; }
   if ((el = q('[data-work-lang]'))) { await post('work_lang', { lang: el.dataset.workLang }); drawSettings(); return; }
   if ((el = q('[data-lang-set]'))) { store.set('deck.lang', el.dataset.langSet); applyLang(); applyTheme(); applyFold(); conn(); for (const k in sig) delete sig[k]; build(); render(); drawSettings(); return; }
