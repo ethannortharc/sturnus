@@ -1191,6 +1191,7 @@ html.phone .toast { max-width: 100%; }
 
 /* a session's page */
 .ph-sess { display: flex; flex-direction: column; height: 100%; }
+.ph-sess [hidden] { display: none !important; }  /* (the prompt card and the hint set display, which would show them empty) */
 .ph-head { flex: none; padding: 0 10px; border-bottom: 1px solid var(--hair); background: var(--panel); }
 .ph-hrow { display: flex; align-items: center; height: 44px; }
 .ph-hrow .sp { flex: 1; }
