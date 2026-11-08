@@ -1053,7 +1053,12 @@ def on_event(kind, ev, p):
     if ev == 'ask':
         e['waiting_for'] = (p.get('message') or p.get('tool_name') or '')[:200]
         if isinstance(p.get('tool_input'), dict):  # (a permission request says what it is for, the notification after it does not)
-            e['asking'] = {'tool': p.get('tool_name') or '', 'input': clip_input(p['tool_input']), 'use': e.get('tool_use'), 'at': now}
+            ask = {'tool': p.get('tool_name') or '', 'input': clip_input(p['tool_input']), 'use': e.get('tool_use'), 'at': now}
+            old = e.get('asking')
+            # (one still open: sub-agents running side by side can each be stopped at a prompt, and which one the
+            # terminal shows cannot be told from here, so a phone may then only open it)
+            ask['many'] = bool(old and (old['tool'], old['input']) != (ask['tool'], ask['input'])) or bool(old and old.get('many'))
+            e['asking'] = ask
     if state and e.get('state') != state:
         e['state'], e['since'] = state, now
     if ev == 'pre':
@@ -1062,6 +1067,10 @@ def on_event(kind, ev, p):
         e['tool_end'] = now  # (a question or plan it put to the person is answered by now)
     if ev in ('pre', 'post', 'prompt', 'stop'):
         e.pop('waiting_for', None)
+    # (a prompt is over when its own tool call ends, or with the turn; not when another call starts: a sub-agent's may
+    # start while one is still on screen. A denied one gets no end of its own and goes with the turn)
+    ask = e.get('asking')
+    if ask and (ev in ('prompt', 'stop') or ev == 'post' and (p.get('tool_name'), clip_input(p.get('tool_input') or {})) == (ask['tool'], ask['input'])):
         e.pop('asking', None)
     if ev in ('stop', 'said'):
         s = last_said(p)

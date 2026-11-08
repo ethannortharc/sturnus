@@ -142,7 +142,7 @@ Ordinary posts reach the project's sessions at the start of their next turn; on 
 
 - A permission prompt shows what it is for (the command, the file, the address) and can be allowed or denied: Allow presses `1` (always the first choice, Yes), Deny presses Esc. Choices that change lasting rules, such as always allowing or switching to auto mode, stay in the terminal.
 - A question with one answer offers its options; several questions, several answers, a plan to approve and Codex prompts can only be opened.
-- An answer names the very prompt it was shown. Once that prompt is answered or replaced, the answer is refused, so a late tap types nothing.
+- Keys are offered only while Claude Code itself says the session waits, in the pane its process runs in now, with one prompt open. An answer names the very prompt it was shown and is checked again the moment before the keys go; once that prompt is answered (here or in the terminal) or replaced, the answer is refused, and so is a second answer to the same item, so a late tap types nothing.
 - Words for a waiting session go the way the page sends them: typed when it is idle, held while it works, mailed when it is in no pane.
 
 ## Models, data, and access

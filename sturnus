@@ -2301,15 +2301,21 @@ class Deck:
                  'parent': (e.get('parent') or {}).get('name'), 'parent_pid': (e.get('parent') or {}).get('pid'),
                  'from': place_from(e['from']) if isinstance(e.get('from'), dict) else None}  # (a headless run: the pane it was started from)
             r = raw.get(name) or {}
-            if r.get('state') == 'waiting' and (r.get('at') or 0) >= (s['at'] - 1):
-                s['state'], s['waiting_for'], s['asking'] = 'waiting', r.get('waiting_for'), r.get('asking')
+            listed = kind == 'claude' and name in reg  # (Claude Code's own registry says whether it waits: that is taken as it is)
+            if r.get('state') == 'waiting' and (r.get('at') or 0) >= (s['at'] - 1) and not listed and s['state'] not in ('gone', 'ended'):
+                s['state'] = 'waiting'
+            if s['state'] == 'waiting' and r.get('state') == 'waiting':
+                s['waiting_for'], s['asking'] = r.get('waiting_for'), r.get('asking')
+            if listed:
+                s['cc_status'], s['cc_since'] = reg[name].get('status'), (reg[name].get('statusUpdatedAt') or 0) / 1000
             s['prompting'] = s['state'] == 'waiting'  # (at a permission or choice prompt: typed text would answer it)
             # (the folder it was opened in: Claude Code's own record while it runs, else where its conversation began,
             # else the one amail saw first — Cursor's, its workspace; its hooks report the folder each command runs in)
             s['home'] = (reg[name].get('cwd') if kind == 'claude' and name in reg else None) \
                 or (kind != 'cursor' and began_in(transcript_of(s))) or e.get('home') or s['cwd']
             if kind == 'claude' and name in reg:
-                s['loc'] = place_of(reg[name]['pid']) or s['loc']
+                live = place_of(reg[name]['pid'])
+                s['loc'], s['loc_live'] = live or s['loc'], bool(live)  # (a phone types only into a pane found now)
             if kind == 'codex':
                 s['loc'] = None  # (set below, from the Codex window showing it)
             sessions.append(s)
@@ -3809,7 +3815,17 @@ def phone_question(inp):
     return {'question': str(qs[0].get('question') or ''), 'options': opts} if 2 <= len(opts) <= 9 and all(opts) else None
 
 
-def phone_items(sessions, project_of=lambda s: ''):
+def phone_keys_reach(s, groups):
+    """Whether keys typed for a phone would reach this session's prompt: Claude Code itself says it waits, the pane is
+    the one its process runs in now, the prompt on record began with this wait and is the only one open, and a Zellij
+    pane has a client (the deck's plugin types through one)."""
+    ask, loc = s.get('asking') or {}, s.get('loc') or {}
+    return (s['kind'] == 'claude' and s.get('cc_status') == 'waiting' and bool(s.get('loc_live')) and bool(ask) and not ask.get('many')
+            and (ask.get('at') or 0) >= (s.get('cc_since') or 0) - 5
+            and (loc.get('mux') != 'zellij' or bool((groups.get(loc.get('session')) or {}).get('clients'))))
+
+
+def phone_items(sessions, project_of=lambda s: '', groups=None):
     """What waits on the person, most pressing first: prompts an agent is stopped at, then what summaries say it needs."""
     from urllib.parse import quote
     out = []
@@ -3819,10 +3835,11 @@ def phone_items(sessions, project_of=lambda s: ''):
         who = s.get('title') or s['name']
         meta = ' · '.join(x for x in (project_of(s), s['name'] if s.get('title') else '') if x)
         ask = s.get('asking') or {}
-        here = bool(s.get('loc'))  # (answered by keys into its pane: no pane, nothing to answer with)
         if at_menu(s):
+            here = phone_keys_reach(s, groups or {})
             tool, inp = ask.get('tool') or s.get('tool') or '', ask.get('input') or {}
-            key = f'{s["id"]}|menu|{ask.get("use") or ask.get("at") or s.get("since")}'
+            # (the id names this very prompt: its tool call, and what it is for)
+            key = f'{s["id"]}|menu|{ask.get("use") or ask.get("at") or s.get("since")}|{tool}|{json.dumps(inp, sort_keys=True, ensure_ascii=False)}'
             q = phone_question(inp) if s['kind'] == 'claude' and tool == 'AskUserQuestion' else None
             if q:
                 item = {'kind': 'question', 'title': tx(f'{who} 问你', f'{who} asks you'), 'body': q['question'],
@@ -3845,7 +3862,7 @@ def phone_items(sessions, project_of=lambda s: ''):
             if asks:
                 acts.append({'id': 'done', 'label': tx('已处理', 'Handled')})
             item = {'kind': 'needs', 'title': tx(f'{who} 在等你', f'{who} is waiting for you'), 'body': need, 'actions': acts,
-                    'level': 'attention', 'at': s.get('summary_at') or s.get('at')}
+                    'level': 'attention', 'at': s.get('summary_at') or s.get('at'), 'asks': [a['id'] for a in asks]}
         else:
             continue
         item.update(id=hashlib.sha1(key.encode()).hexdigest()[:16], meta=meta, session=s['id'], open_url='/#/s/' + quote(s['id'], safe=''))
@@ -3864,41 +3881,72 @@ def phone_summary(sessions, items):
             'needs_me': n}
 
 
+PHONE_HIDDEN = ('kind', 'session', 'asks')  # (for answering only, not shown)
+
+
 def phone_view(deck, what):
     with deck.lock:
-        sessions = list(deck.state['sessions'])
-    items = phone_items(sessions, lambda s: (deck.projects.known.get(s.get('project')) or {}).get('name') or '')
-    public = [{k: v for k, v in i.items() if k not in ('kind', 'session')} for i in items]
+        sessions, groups = list(deck.state['sessions']), dict(deck.state.get('groups') or {})
+    items = phone_items(sessions, lambda s: (deck.projects.known.get(s.get('project')) or {}).get('name') or '', groups)
+    public = [{k: v for k, v in i.items() if k not in PHONE_HIDDEN} for i in items]
     return phone_summary(sessions, items) if what == 'summary' else {'items': public}
+
+
+PHONE_LOCK = threading.Lock()  # (one answer at a time: two taps arriving together must not both type)
+PHONE_DONE = {}  # (item id → when it was answered: the state seen is up to a collect old, so a repeat is refused meanwhile)
+
+
+def phone_now(s):
+    """What Claude Code's registry and amail's board say of a session this moment, not at the last collect."""
+    reg = next((x for x in A.claude_sessions() if x.get('name') == s['name']), None) if s['kind'] == 'claude' else None
+    return reg, (A.board() or {}).get(s['name']) or {}
 
 
 def phone_answer(deck, iid, choice, text=''):
     """(http status, message): the person's answer from the phone, to the very item it showed."""
-    with deck.lock:
-        sessions = list(deck.state['sessions'])
-    it = next((i for i in phone_items(sessions) if i['id'] == iid), None)
-    if not it:
-        return 409, tx('这件事已经变了，刷新看看现在的样子', 'This has changed; refresh to see where it stands')
-    if choice not in {a['id'] for a in it['actions']}:
-        return 400, tx('这里没有这个选项', 'That is not a choice here')
-    s = deck.find(it['session'])
-    if not s:
-        return 409, tx('这个会话已经不在了', 'That session is gone')
-    if it['kind'] in ('permission', 'question'):
-        keys = {'allow': '1', 'deny': '\x1b'}.get(choice) or choice[1:]
-        ok, msg = deck.type_in(s, keys, False)
-        done = {'allow': tx('已允许', 'Allowed'), 'deny': tx('已拒绝', 'Denied')}.get(choice) or tx(f'已选「{next(a["label"] for a in it["actions"] if a["id"] == choice)}」', 'Chosen')
-        return (200, done) if ok else (502, msg)
-    if choice == 'done':
-        for a in s.get('asks') or []:
-            deck.sums.ask_done(a['id'])
-        return 200, tx('记下了：已处理', 'Marked as handled')
-    text = (text or '').strip()
-    if not text:
-        return 400, tx('先写要说的话', 'Write what to say first')
-    ok, msg = deck.act('say', {'id': s['id'], 'text': text})
-    msg = msg.get('msg') if isinstance(msg, dict) else msg
-    return (200 if ok else 502), msg or (tx('发出去了', 'Sent') if ok else tx('没发出去', 'Not sent'))
+    gone = tx('这件事已经变了，刷新看看现在的样子', 'This has changed; refresh to see where it stands')
+    with PHONE_LOCK:
+        now = time.time()
+        for k in [k for k, at in PHONE_DONE.items() if now - at > 60]:
+            del PHONE_DONE[k]
+        if iid in PHONE_DONE:
+            return 409, tx('这件已经回答过了', 'This has been answered already')
+        with deck.lock:
+            sessions, groups = list(deck.state['sessions']), dict(deck.state.get('groups') or {})
+        it = next((i for i in phone_items(sessions, groups=groups) if i['id'] == iid), None)
+        if not it:
+            return 409, gone
+        if choice not in {a['id'] for a in it['actions']}:
+            return 400, tx('这里没有这个选项', 'That is not a choice here')
+        s = deck.find(it['session'])
+        if not s:
+            return 409, tx('这个会话已经不在了', 'That session is gone')
+        reg, raw = phone_now(s)
+        if it['kind'] in ('permission', 'question'):
+            # (still at the same prompt this moment: Claude Code says it waits, and the prompt on record is this one)
+            if not reg or reg.get('status') != 'waiting' or raw.get('state') != 'waiting' or (raw.get('asking') or {}) != (s.get('asking') or {}):
+                return 409, gone
+            keys = {'allow': '1', 'deny': '\x1b'}.get(choice) or choice[1:]
+            ok, msg = deck.type_in(s, keys, False)
+            if not ok:
+                return 502, msg
+            PHONE_DONE[iid] = now
+            return 200, {'allow': tx('已允许', 'Allowed'), 'deny': tx('已拒绝', 'Denied')}.get(choice) or tx(f'已选「{next(a["label"] for a in it["actions"] if a["id"] == choice)}」', 'Chosen')
+        if choice == 'done':
+            ticked = sum(1 for a in it['asks'] if deck.sums.ask_done(a)[0])  # (only those the card showed)
+            PHONE_DONE[iid] = now
+            return (200, tx('记下了：已处理', 'Marked as handled')) if ticked else (409, tx('这件已经处理过了', 'This one is already handled'))
+        text = (text or '').strip()
+        if not text:
+            return 400, tx('先写要说的话', 'Write what to say first')
+        if (reg and reg.get('status') == 'waiting') or raw.get('state') == 'waiting':
+            # (it has just stopped at a prompt: typed words and Enter would answer that)
+            return 409, tx('它刚停在一个提示上，先处理那个', 'It has just stopped at a prompt; answer that first')
+        ok, msg = deck.act('say', {'id': s['id'], 'text': text})
+        msg = msg.get('msg') if isinstance(msg, dict) else msg
+        if ok:
+            PHONE_DONE[iid] = now
+        return (200 if ok else 502), msg or (tx('发出去了', 'Sent') if ok else tx('没发出去', 'Not sent'))
 
 
 # ---------- the web server ----------
