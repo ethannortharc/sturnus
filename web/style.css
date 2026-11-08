@@ -255,7 +255,7 @@ code { font: 12px var(--font-mono); background: var(--panel-2); border: 1px soli
 .s-body { padding: 26px 34px 60px; max-width: 1100px; }
 .s-body.full { max-width: none; padding: 0; height: calc(100vh - 56px - 30px - 160px); }
 .s-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 22px; }
-@media (max-width: 1100px) { .s-grid { grid-template-columns: 1fr; } }
+@media (max-width: 1100px) { .s-grid { grid-template-columns: minmax(0, 1fr); } }  /* (minmax: a long path must not widen the column) */
 .panel { background: var(--panel); border: 1px solid var(--hair); border-radius: 16px; box-shadow: var(--shadow-1); padding: 18px 20px; margin-bottom: 18px; }
 .panel h4 { margin: 0 0 12px; font-size: 11px; font-weight: 650; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); display: flex; align-items: center; gap: 8px; }
 .panel h4 .r { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 500; }
@@ -1113,3 +1113,21 @@ table.works .when { color: var(--muted); white-space: nowrap; font-variant-numer
   .h-title { flex-wrap: wrap; }
 }
 @media (max-width: 640px) { .task-new { flex-wrap: wrap; } .task-new select { flex: 1 1 100%; order: 2; } .task-bar .field { max-width: none; margin-left: 0; flex-basis: 100%; } .task { padding: 11px 12px; } .task-head { flex-wrap: wrap; } }
+
+/* ---------- a phone: Columba, the iPhone app, opens these pages about 390 wide ---------- */
+@media (max-width: 640px) {
+  .s-hero { padding: 18px 16px 0; }
+  .s-hero .row { align-items: flex-start; gap: 12px; }
+  .s-hero .sub > *, .ws-head .sub > * { min-width: 0; overflow-wrap: anywhere; }
+  .tabs { flex-wrap: wrap; margin-top: 14px; }
+  .tabs > button { white-space: nowrap; padding: 10px 10px 12px; }
+  .tabs .acts { margin-left: 0; flex-basis: 100%; flex-wrap: wrap; padding: 2px 0 12px; }
+  .s-body { padding: 18px 14px 80px; }
+  .ws-head { flex-wrap: wrap; }
+  .ws-head .t { flex: 1 1 0; }
+  .ws-head .right { margin-left: 0; flex-basis: 100%; justify-content: flex-start; }
+  .panel h4 { white-space: nowrap; }  /* (the title keeps its line; a note beside it wraps in the room left) */
+  .panel h4 .r { white-space: normal; min-width: 0; flex: 1 1 0; text-align: right; }
+  .asst-fab { top: auto; bottom: 64px; margin-top: 0; width: 34px; height: 48px; }
+  .asst-fab:hover { width: 34px; }
+}
