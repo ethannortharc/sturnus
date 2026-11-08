@@ -138,14 +138,14 @@ Ordinary posts reach the project's sessions at the start of their next turn; on 
 
 ## Answering from a phone
 
-`/api/phone/summary` and `/api/phone/inbox` list what waits on you: a session stopped at a permission prompt, at a question, or waiting for your words. `POST /api/phone/actions/<id>` with `{"choice": …, "text": …}` answers one of them, with the same sign-in as the page (the [Columba](https://git.giomni.com/ethan/columba) iPhone app uses these).
+`/api/phone/summary` and `/api/phone/inbox` list what waits on you: a session stopped at a permission prompt, at a question, or waiting for your words. `POST /api/phone/actions/<id>` with `{"choice": …, "text": …}` answers one of them, with the same sign-in as the page, so a phone app that opens the page can also list and answer them on its own screen.
 
 - A permission prompt shows what it is for (the command, the file, the address) and can be allowed or denied: Allow presses `1` (always the first choice, Yes), Deny presses Esc. Choices that change lasting rules, such as always allowing or switching to auto mode, stay in the terminal.
 - A question with one answer offers its options; several questions, several answers, a plan to approve and Codex prompts can only be opened.
 - Keys are offered only while Claude Code itself says the session waits, in the pane its process runs in now, with one prompt open. An answer names the very prompt it was shown and is checked again the moment before the keys go; once that prompt is answered (here or in the terminal) or replaced, the answer is refused, and so is a second answer to the same item, so a late tap types nothing.
 - Words for a waiting session go the way the page sends them: typed when it is idle, held while it works, mailed when it is in no pane.
 
-On a screen under 640 px wide (a phone, as Columba opens it) the page has a layout of its own: one list on the home page (what needs you, with a prompt's Allow and Deny right there; what is under way, by workspace; idle sessions, open tasks and all workspaces folded), every other place in a menu, and a session page with its head and a reply line fixed. Its terminal tab only looks: it shows the agent's own pane as it is, refreshed every two seconds, with no client attached, so the desktop's layout keeps its size; taking the terminal over to type is a separate step that says so.
+On a screen under 640 px wide (a phone) the page has a layout of its own: one list on the home page (what needs you, with a prompt's Allow and Deny right there; what is under way, by workspace; idle sessions, open tasks and all workspaces folded), every other place in a menu, and a session page with its head and a reply line fixed. Its terminal tab only looks: it shows the agent's own pane as it is, refreshed every two seconds, with no client attached, so the desktop's layout keeps its size; taking the terminal over to type is a separate step that says so.
 
 ## Models, data, and access
 
