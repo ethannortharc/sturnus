@@ -3939,9 +3939,11 @@ def app_view(deck):
     started names it as `parent`), and what waits on the person with the answers a phone may give. `rev` changes whenever
     any of it does, except a session's last stir alone."""
     with deck.lock:
-        sessions, groups = list(deck.state['sessions']), dict(deck.state.get('groups') or {})
-        spaces = {w['key']: w['name'] for w in deck.state.get('workspaces') or []}
-        dirs = list(deck.state.get('dirs') or [])[:30]
+        state = dict(deck.state)  # (each collect puts new values in: these stay as they are while read)
+        sessions, groups = list(state['sessions']), dict(state.get('groups') or {})
+        spaces = {w['key']: w['name'] for w in state.get('workspaces') or []}
+        dirs = list(state.get('dirs') or [])[:30]
+    current = dict(getattr(deck, 'tasks_current', None) or {})  # (the task each session is on: the one it touched last)
     pname = lambda s: (deck.projects.known.get(s.get('project')) or {}).get('name') or ''
     live = [s for s in sessions if not (s.get('hidden') or s.get('stale') or s['state'] in ('gone', 'ended'))]
     kids = Counter(s['parent_id'] for s in live if s.get('parent_id'))
@@ -3951,6 +3953,7 @@ def app_view(deck):
         need = s.get('needs_you') or ((s.get('asks') or [{}])[0].get('what')) or (s.get('waiting_for') if st == 'waiting' else '') or ''
         rows.append({'id': s['id'], 'name': s['name'], 'kind': s['kind'], 'title': app_title(s), 'summary': (s.get('summary') or '')[:400],
                      'standing': st, 'need': str(need)[:400], 'project': pname(s), 'workspace': spaces.get(s.get('workspace')) or '',
+                     'pkey': s.get('project') or '', 'wkey': s.get('workspace') or '', 'task': current.get(s['name']) or '',
                      'branch': s.get('branch') or '', 'since': s.get('since'), 'at': s.get('at'),
                      'born': s.get('born'), 'say': say_how(s), 'pane': bool((s.get('loc') or {}).get('pane')), 'kids': kids.get(s['id'], 0),
                      'group': ('tmux:' if (s.get('loc') or {}).get('mux') == 'tmux' else '') + ((s.get('loc') or {}).get('session') or ''),
@@ -3960,12 +3963,103 @@ def app_view(deck):
     name, _ = tailnet_self()
     # (and where a new session can start: the groups there are, the folders sessions ran in lately)
     made = sorted(('tmux:' if (z or {}).get('mux') == 'tmux' else '') + g for g, z in groups.items())
-    view = {'machine': {'name': (name or socket.gethostname()).split('.')[0], 'version': VERSION}, 'sessions': rows, 'inbox': items,
-            'groups': made, 'dirs': dirs}
-    # (a working session stirs every few seconds; that alone is no news worth waking every phone for)
-    steady = {**view, 'sessions': [{k: v for k, v in r.items() if k != 'at'} for r in rows]}
-    view['rev'] = hashlib.sha1(json.dumps(steady, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()[:16]
+    view = {'machine': {'name': (name or socket.gethostname()).split('.')[0], 'version': VERSION, 'me': ME_NAME}, 'sessions': rows, 'inbox': items,
+            'groups': made, 'dirs': dirs, **app_places(state, {r['id'] for r in rows})}
+    # (a working session stirs every few seconds, and the project and workspace it is in with it: that alone is no
+    # news worth waking every phone for)
+    view['rev'] = hashlib.sha1(json.dumps(no_stir(view), sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()[:16]
     return view
+
+
+def no_stir(v):
+    """A view without its last-stirred times ('at'), at every depth."""
+    if isinstance(v, dict):
+        return {k: no_stir(x) for k, x in v.items() if k != 'at'}
+    return [no_stir(x) for x in v] if isinstance(v, list) else v
+
+
+APP_PROJECTS, APP_WORKS = 30, 6  # (a workspace's projects on the phone, those with sessions first; a project's work items besides its main)
+
+
+def app_places(st, on):
+    """Where the work is, for the phone: each workspace with the overview its dashboard keeps, its projects (each with its
+    work items: the main checkout and its newest worktrees) and how much is new in their channels; the tasks; the
+    channels; mail to the person; push locks left behind. `on` is the sessions the phone is shown: an overview names no other."""
+    projects, digests, boards = st.get('projects') or {}, st.get('digests') or {}, st.get('boards') or {}
+    hour = lambda t: int((t or 0) // 3600)  # (the order moves with the hour things last moved in, not with every stir)
+
+    def board(k):
+        b = boards.get(k)
+        return {'unread': b.get('unread') or 0, 'calls': b.get('calls') or 0, 'open': sum(1 for t in b.get('topics') or [] if not t.get('closed'))} if b else None
+
+    def project(k):
+        p, f = projects[k], projects[k].get('facts') or {}
+        works = [{'branch': w.get('branch') or '', 'main': bool(w.get('main')), 'dirty': w.get('dirty') or 0, 'ahead': w.get('ahead'),
+                  'behind': w.get('behind'), 'subject': w.get('subject') or '', 'at': w.get('at') or 0} for w in f.get('works') or []]
+        works = [w for w in works if w['main']] + sorted((w for w in works if not w['main']), key=lambda w: -w['at'])[:APP_WORKS]
+        return {'key': k, 'name': p.get('name') or k, 'path': tilde(p.get('path') or ''), 'git': bool(p.get('git')), 'live': p.get('live') or 0, 'at': p.get('at') or 0,
+                'main': f.get('main') or '', 'tag': f.get('tag') or '', 'ahead': f.get('ahead'), 'behind': f.get('behind'),
+                'works': works, 'board': board(k)}
+
+    spaces = []
+    for w in st.get('workspaces') or []:
+        d = digests.get(w['key']) or {}
+        keys = sorted((k for k in w.get('projects') or [] if k in projects),
+                      key=lambda k: (-(projects[k].get('live') or 0), -hour(projects[k].get('at')), str(projects[k].get('name')).lower()))
+        things = [{'thing': x.get('thing') or '', 'now': x.get('now') or '', 'sessions': [i for i in x.get('sessions') or [] if i in on]}
+                  for x in d.get('items') or []]
+        spaces.append({'key': w['key'], 'name': w.get('name') or w['key'], 'live': w.get('live') or 0, 'at': w.get('at') or 0,
+                       'headline': d.get('headline') or '', 'things': [x for x in things if x['sessions']],
+                       'projects': [project(k) for k in keys[:APP_PROJECTS]], 'board': board(w['key'])})
+    spaces.sort(key=lambda w: (-w['live'], -hour(w['at']), w['name'].lower()))
+    brief = lambda t: {'id': t['id'], 'scope': t.get('scope') or '', 'scope_name': t.get('scope_name') or '', 'title': t.get('title') or '',
+                       'status': t.get('status') or '', 'shown': t.get('shown') or t.get('status') or '', 'now': (t.get('now') or '')[:300],
+                       'next': (t.get('next') or '')[:300], 'at': t.get('at') or 0, 'closed': t.get('closed'),
+                       'sessions': [{'name': x.get('name') or '', 'sid': x.get('sid') or '', 'live': bool(x.get('live')), 'st': x.get('st') or ''}
+                                    for x in t.get('sessions') or []][:6]}
+    tasks, closed = st.get('tasks') or [], ('done', 'dropped')
+    shut = sorted((t for t in tasks if t.get('status') in closed), key=lambda t: -(t.get('closed') or 0))
+    tasks = [brief(t) for t in tasks if t.get('status') not in closed][:150] + [brief(t) for t in shut[:30]]
+    chans = [{'key': k, 'name': b.get('name') or k, 'kind': b.get('kind') or 'project', 'unread': b.get('unread') or 0, 'calls': b.get('calls') or 0,
+              'last': {'from': b['last'].get('from') or '', 'text': (b['last'].get('text') or '')[:200], 'at': b['last'].get('at') or 0} if b.get('last') else None,
+              'topics': [{'id': t.get('id') or '', 'title': t.get('title') or '', 'n': t.get('n') or 0, 'at': t.get('at') or 0}
+                         for t in b.get('topics') or [] if not t.get('closed')][:8]} for k, b in boards.items()]
+    # (newest post first: the time of a post, not a stir, so it moves only when someone writes)
+    chans.sort(key=lambda c: (-(c['unread'] > 0), -((c['last'] or {}).get('at') or 0)))
+    mail = [{'id': m.get('id') or '', 'from': m.get('from') or '', 'text': (m.get('text') or '')[:1500], 'at': m.get('at') or 0}
+            for m in st.get('inbox') or []][:30]
+    locks = [{'key': l.get('key') or '', 'holder': l.get('holder') or '', 'branch': l.get('branch') or '', 'repo': os.path.basename(l.get('repo') or ''),
+              'since': l.get('since') or 0, 'why': l.get('why') or '', 'waiters': list(l.get('waiters') or [])} for l in st.get('lock_issues') or []]
+    return {'workspaces': spaces, 'tasks': tasks, 'boards': chans[:60], 'mail': mail, 'locks': locks}
+
+
+def app_session(deck, sid):
+    """One session as its page on the phone shows it beyond the list: what it asked of the person (each to tick off),
+    its report, the tasks it is on, the sub-agents it started, and the messages to and from it. None when it is gone."""
+    s = deck.find(sid)
+    if not s:
+        return None
+    with deck.lock:
+        st = deck.state
+        rep, talk, tasks = (st.get('reports') or {}).get(sid) or {}, list(st.get('talk') or []), list(st.get('tasks') or [])
+        reporting, sessions = sid in (st.get('reporting') or []), list(st['sessions'])
+        mail = [m for m in st.get('inbox') or [] if m.get('from') == s['name']]
+    mine = [t for t in tasks if any(x.get('sid') == sid or x.get('name') == s['name'] for x in t.get('sessions') or [])]
+    kids = [{'id': k['id'], 'name': k['name'], 'kind': k['kind'], 'title': app_title(k), 'standing': app_standing(k),
+             'running': bool(k.get('pid')) and k['state'] not in ('gone', 'ended')} for k in sessions if k.get('parent_id') == sid]
+    msgs = sorted(({'from': m.get('from') or '', 'to': m.get('to') or '', 'text': (m.get('text') or '')[:2000], 'at': m.get('at') or 0}
+                   for m in talk if s['name'] in (m.get('from'), m.get('to'))), key=lambda m: m['at'])[-80:]
+    return {'ok': True, 'id': sid, 'asks': [{k: a.get(k) for k in ('id', 'what', 'quote', 'at')} for a in s.get('asks') or []],
+            'report': rep.get('r'), 'report_at': rep.get('at') or 0, 'reporting': reporting,
+            'tasks': [{k: t.get(k) for k in ('id', 'title', 'status', 'shown', 'now', 'next', 'scope', 'scope_name', 'at')} for t in mine][:20],
+            'kids': kids, 'msgs': msgs, 'mail': [{'id': m.get('id'), 'text': (m.get('text') or '')[:1500], 'at': m.get('at')} for m in mail],
+            'cwd': tilde(s.get('home') or s.get('cwd') or ''), 'pane': (s.get('loc') or {}).get('pane') or ''}
+
+
+def tilde(p):
+    """A folder as a person writes it: the home folder as ~."""
+    h = os.path.expanduser('~')
+    return '~' + p[len(h):] if p == h or p.startswith(h + '/') else p
 
 
 def phone_prompt(deck, s):
@@ -4625,6 +4719,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(app_state(DECK, (q.get('after') or [''])[0], int(wait) if wait.isdigit() else 0))
             finally:
                 _REQ.lang = None
+        if self.path.startswith('/api/app/session'):  # (one session's page on the phone: its asks, report, tasks, sub-agents, messages)
+            from urllib.parse import urlparse, parse_qs
+            v = app_session(DECK, (parse_qs(urlparse(self.path).query).get('id') or [''])[0])
+            return self.send_json(v or {'ok': False, 'msg': tx('这个会话已经不在了', 'That session is gone')}, 200 if v else 404)
         if self.path.split('?')[0] in ('/api/phone/summary', '/api/phone/inbox'):  # (Columba, the iPhone app)
             _REQ.lang = 'en' if self.headers.get('X-Lang') == 'en' else 'zh'
             try:

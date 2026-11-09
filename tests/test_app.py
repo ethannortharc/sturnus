@@ -49,6 +49,30 @@ class FakeDeck:
         self.state = {'sessions': sessions, 'groups': {'work': {'clients': 1}}, 'workspaces': [{'key': 'w1', 'name': 'software'}]}
         self.projects = type('P', (), {'known': {'p1': {'name': 'sturnus'}}})()
 
+    def find(self, sid):
+        return next((s for s in self.state['sessions'] if s['id'] == sid), None)
+
+
+def places(**kw):
+    """A deck's state beyond its sessions, as a collect leaves it: workspace w1 with projects p1 and p2, a channel, tasks."""
+    works = [{'path': '/r/sturnus', 'branch': 'main', 'main': True, 'dirty': 0, 'at': 100, 'subject': 'Release 0.22'},
+             {'path': '/r/wt/old', 'branch': 'old', 'main': False, 'dirty': 0, 'ahead': 1, 'behind': 9, 'at': 50, 'subject': 'Old'},
+             {'path': '/r/wt/app', 'branch': 'app-workspaces', 'main': False, 'dirty': 2, 'ahead': 3, 'behind': 0, 'at': 200, 'subject': 'A view'}]
+    st = {'workspaces': [{'key': 'w1', 'name': 'software', 'live': 1, 'at': 300, 'projects': ['p2', 'p1']}],
+          'projects': {'p1': {'key': 'p1', 'name': 'sturnus', 'git': True, 'live': 1, 'at': 300, 'facts': {'main': 'main', 'tag': 'v0.21.1', 'works': works}},
+                       'p2': {'key': 'p2', 'name': 'columba', 'git': True, 'live': 0, 'at': 10, 'facts': None}},
+          'digests': {'w1': {'at': 290, 'headline': 'One thing moves', 'items': [{'thing': 'Phone app', 'now': 'a view', 'sessions': ['claude:abc', 'gone:1']},
+                                                                                 {'thing': 'Old', 'now': '', 'sessions': ['gone:2']}]}},
+          'boards': {'p1': {'key': 'p1', 'name': 'sturnus', 'kind': 'project', 'unread': 2, 'calls': 1, 'last': {'from': 'x', 'text': 'hi', 'at': 280},
+                            'topics': [{'id': 't1', 'title': 'Pairing', 'closed': False, 'n': 4, 'at': 270}, {'id': 't2', 'title': 'Done', 'closed': True}]}},
+          'tasks': [{'id': 't-1', 'scope': 'p1', 'scope_name': 'sturnus', 'title': 'Phone app', 'status': 'doing', 'shown': 'working', 'now': 'n', 'next': 'x',
+                     'at': 300, 'sessions': [{'name': 'work-1', 'sid': 'claude:abc', 'live': True, 'st': 'working', 'title': 'T'}]},
+                    {'id': 't-2', 'scope': 'p1', 'scope_name': 'sturnus', 'title': 'Shipped', 'status': 'done', 'at': 10, 'closed': 20, 'sessions': []}],
+          'inbox': [{'id': 'abcdef123456', 'from': 'work-1', 'to': 'ethan', 'text': 'Look at this', 'at': 250}],
+          'lock_issues': [{'key': '0123456789ab', 'holder': 'gone-1', 'branch': 'main', 'repo': '/r/sturnus', 'since': 100, 'why': 'gone-1 已经退出'}]}
+    st.update(kw)
+    return st
+
 
 class Pairing(unittest.TestCase):
     def setUp(self):
@@ -174,6 +198,64 @@ class View(unittest.TestCase):
         self.assertNotEqual(v['rev'], rev)
         self.assertLess(time.time() - t, 3)
         self.assertEqual(S.app_state(deck, 'old', 20)['rev'], v['rev'])  # (a phone behind gets it at once)
+
+    def placed(self, sessions, **kw):
+        deck = FakeDeck(sessions)
+        deck.state.update(places(**kw))
+        deck.tasks_current = {'work-1': 't-1'}
+        return S.app_view(deck)
+
+    def test_a_workspace_comes_with_its_projects_their_work_items_and_its_overview(self):
+        v = self.placed([session(project='p1', workspace='w1', state='working', branch='app-workspaces')])
+        [w] = v['workspaces']
+        self.assertEqual((w['key'], w['name'], w['headline']), ('w1', 'software', 'One thing moves'))
+        self.assertEqual([x['thing'] for x in w['things']], ['Phone app'], 'an overview names only sessions the phone is shown')
+        self.assertEqual(w['things'][0]['sessions'], ['claude:abc'])
+        self.assertEqual([p['name'] for p in w['projects']], ['sturnus', 'columba'], 'the one with sessions on it first')
+        p = w['projects'][0]
+        self.assertEqual([x['branch'] for x in p['works']], ['main', 'app-workspaces', 'old'], 'main, then the newest worktrees')
+        self.assertEqual((p['tag'], p['works'][1]['ahead'], p['works'][1]['dirty']), ('v0.21.1', 3, 2))
+        self.assertEqual(p['board'], {'unread': 2, 'calls': 1, 'open': 1})
+        self.assertEqual(w['projects'][1]['works'], [])
+        [r] = v['sessions']
+        self.assertEqual((r['pkey'], r['wkey'], r['task'], r['branch']), ('p1', 'w1', 't-1', 'app-workspaces'))
+
+    def test_tasks_channels_mail_and_locks(self):
+        v = self.placed([session()])
+        self.assertEqual([(t['id'], t['shown']) for t in v['tasks']], [('t-1', 'working'), ('t-2', 'done')], 'open first, then the closed')
+        self.assertEqual(v['tasks'][0]['sessions'], [{'name': 'work-1', 'sid': 'claude:abc', 'live': True, 'st': 'working'}])
+        [b] = v['boards']
+        self.assertEqual((b['key'], b['unread'], [t['title'] for t in b['topics']]), ('p1', 2, ['Pairing']), 'open discussions only')
+        self.assertEqual([(m['id'], m['from']) for m in v['mail']], [('abcdef123456', 'work-1')])
+        self.assertEqual([(l['key'], l['repo']) for l in v['locks']], [('0123456789ab', 'sturnus')])
+
+    def test_a_project_stirring_is_no_news_but_a_new_commit_is(self):
+        a = self.placed([session()])['rev']
+        self.assertEqual(a, self.placed([session()], projects={**places()['projects'], 'p1': {**places()['projects']['p1'], 'at': 301}})['rev'])
+        moved = places()['projects']['p1']
+        moved = {**moved, 'facts': {**moved['facts'], 'works': moved['facts']['works'][:2] + [{**moved['facts']['works'][2], 'ahead': 4, 'subject': 'More'}]}}
+        self.assertNotEqual(a, self.placed([session()], projects={**places()['projects'], 'p1': moved})['rev'])
+        self.assertNotEqual(a, self.placed([session()], inbox=[])['rev'])
+
+    def test_a_state_without_places_still_makes_a_view(self):
+        v = self.view([session()])
+        self.assertEqual((v['tasks'], v['boards'], v['mail'], v['locks']), ([], [], [], []))
+        self.assertEqual([(w['key'], w['projects']) for w in v['workspaces']], [('w1', [])])
+
+    def test_a_session_page_has_its_asks_report_tasks_kids_and_messages(self):
+        deck = FakeDeck([session(asks=[{'id': 'a1', 'what': 'Pick a colour', 'quote': 'red or blue?', 'at': 5}], home=os.path.expanduser('~/x')),
+                         session(id='claude:kid', name='kid-1', parent_id='claude:abc', pid=42, state='working', title='Review')])
+        deck.state.update(places(reports={'claude:abc': {'at': 9, 'r': {'goal': 'Ship it', 'next': ['test']}}}, reporting=[],
+                                 talk=[{'from': 'work-1', 'to': 'other', 'text': 'later', 'at': 3}, {'from': 'x', 'to': 'y', 'text': 'no', 'at': 2},
+                                       {'from': 'other', 'to': 'work-1', 'text': 'first', 'at': 1}]))
+        v = S.app_session(deck, 'claude:abc')
+        self.assertEqual([a['id'] for a in v['asks']], ['a1'])
+        self.assertEqual((v['report']['goal'], v['reporting'], v['cwd']), ('Ship it', False, '~/x'))
+        self.assertEqual([t['id'] for t in v['tasks']], ['t-1'])
+        self.assertEqual([(k['name'], k['running'], k['standing']) for k in v['kids']], [('kid-1', True, 'working')])
+        self.assertEqual([m['text'] for m in v['msgs']], ['first', 'later'], 'its own, oldest first')
+        self.assertEqual([m['id'] for m in v['mail']], ['abcdef123456'])
+        self.assertIsNone(S.app_session(deck, 'nobody'))
 
 
 class Keys(unittest.TestCase):
@@ -325,7 +407,11 @@ class OverHttp(unittest.TestCase):
         self.assertTrue(j['machine']['version'])
         st, v = self.call('/api/app/state', key=key)
         self.assertEqual(st, 200)
-        self.assertEqual(set(v), {'machine', 'sessions', 'inbox', 'rev', 'groups', 'dirs'})
+        self.assertEqual(set(v), {'machine', 'sessions', 'inbox', 'rev', 'groups', 'dirs', 'workspaces', 'tasks', 'boards', 'mail', 'locks'})
+        st, j = self.call('/api/app/session?id=claude:none', key=key)  # (a session's page: none by that id)
+        self.assertEqual((st, j['ok']), (404, False))
+        st, _ = self.call('/api/app/session?id=claude:none')  # (and nothing without a key)
+        self.assertEqual(st, 401)
         t = time.time()
         st, w = self.call(f'/api/app/state?after={v["rev"]}&wait=2', key=key)
         self.assertEqual((st, w['rev']), (200, v['rev']))

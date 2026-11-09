@@ -153,7 +153,8 @@ Each machine runs its own Sturnus, which sees every session on that machine. A p
 
 - The key is kept as a hash beside the signed-in browsers, listed in Settings → Access, and can be removed there; `sturnus token --rotate` signs out phones as well as browsers. Only your own Tailscale devices are let in, as for the page.
 - A phone's key reaches what a phone needs (the app's view, the screen, the conversation, the actions) but not the access settings.
-- `GET /api/app/state?after=<rev>&wait=25` answers as soon as anything it shows changes, or after 25 seconds unchanged: the live sessions (not sub-agents started by another session) with how each stands, what waits on you with the answers a phone may give, the groups and recent folders for starting a new session.
+- `GET /api/app/state?after=<rev>&wait=25` answers as soon as anything it shows changes, or after 25 seconds unchanged: the live sessions with how each stands (a sub-agent names the session that started it), what waits on you with the answers a phone may give, the groups and recent folders for starting a new session; each workspace with its dashboard overview and its projects, each project with its work items; the tasks; the channels with what is new in them; mail to you; push locks left behind. A session stirring alone is no news.
+- `GET /api/app/session?id=<id>` is one session's page: what it asked of you, its report, the tasks it is on, the sub-agents it started, the messages to and from it.
 
 ## Models, data, and access
 
