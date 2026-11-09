@@ -3956,13 +3956,13 @@ def app_view(deck):
                      'pkey': s.get('project') or '', 'wkey': s.get('workspace') or '', 'task': current.get(s['name']) or '',
                      'branch': s.get('branch') or '', 'since': s.get('since'), 'at': s.get('at'),
                      'born': s.get('born'), 'say': say_how(s), 'pane': bool((s.get('loc') or {}).get('pane')), 'kids': kids.get(s['id'], 0),
-                     'group': ('tmux:' if (s.get('loc') or {}).get('mux') == 'tmux' else '') + ((s.get('loc') or {}).get('session') or ''),
+                     'group': (s.get('loc') or {}).get('session') or '',  # (a tmux group's name carries its tmux: already)
                      'parent': s.get('parent_id') or ''})
     rows.sort(key=lambda r: (APP_RANK.get(r['standing'], 9), r['born'] or 0))  # (within a standing, by when it began: rows keep their places)
     items = [{k: v for k, v in i.items() if k != 'asks'} for i in phone_items(sessions, pname, groups)]
     name, _ = tailnet_self()
     # (and where a new session can start: the groups there are, the folders sessions ran in lately)
-    made = sorted(('tmux:' if (z or {}).get('mux') == 'tmux' else '') + g for g, z in groups.items())
+    made = sorted(groups)
     view = {'machine': {'name': (name or socket.gethostname()).split('.')[0], 'version': VERSION, 'me': ME_NAME}, 'sessions': rows, 'inbox': items,
             'groups': made, 'dirs': dirs, **app_places(state, {r['id'] for r in rows})}
     # (a working session stirs every few seconds, and the project and workspace it is in with it: that alone is no

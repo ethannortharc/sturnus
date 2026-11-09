@@ -165,6 +165,12 @@ class View(unittest.TestCase):
         [r] = self.view([session(project='p1', workspace='w1', state='working')])['sessions']
         self.assertEqual((r['project'], r['workspace'], r['say'], r['pane']), ('sturnus', 'software', 'queue', True))
 
+    def test_groups_are_named_as_a_new_session_takes_them(self):
+        deck = FakeDeck([session(loc={'mux': 'tmux', 'session': 'tmux:t', 'pane': '%0'})])
+        deck.state['groups'] = {'work': {'mux': 'zellij'}, 'tmux:t': {'mux': 'tmux', 'name': 't'}}
+        v = S.app_view(deck)
+        self.assertEqual((v['groups'], v['sessions'][0]['group']), (['tmux:t', 'work'], 'tmux:t'))
+
     def test_a_prompt_comes_with_its_answers_and_its_session(self):
         bash = {'tool': 'Bash', 'input': {'command': 'touch x'}, 'use': 'toolu_1', 'at': 100}
         v = self.view([session(state='waiting', prompting=True, asking=bash, cc_status='waiting', loc_live=True)])
