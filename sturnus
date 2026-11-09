@@ -3229,6 +3229,8 @@ class Deck:
             if not re.fullmatch(r'[0-9a-f]{12}', key) or not os.path.exists(f):
                 return False, tx('这把锁已经不在了', 'This lock is already gone')
             l = A.get(f) or {}
+            if body.get('holder') and l.get('holder') != body['holder']:  # (a phone's view a collect old: someone else holds it now)
+                return False, tx(f'这把锁现在是 {l.get("holder")} 的了：不释放', f'{l.get("holder")} holds this lock now: not released')
             os.remove(f)
             return True, tx(f'释放了 {l.get("holder")} 在 {os.path.basename(l.get("repo") or "")} 上的 {l.get("branch")} 推送锁', f'Released the push lock of {l.get("holder")} on {l.get("branch")} in {os.path.basename(l.get("repo") or "")}')
         if what == 'ask_done':  # (something a session asked of the person: handled)
@@ -3965,16 +3967,18 @@ def app_view(deck):
     made = sorted(groups)
     view = {'machine': {'name': (name or socket.gethostname()).split('.')[0], 'version': VERSION, 'me': ME_NAME}, 'sessions': rows, 'inbox': items,
             'groups': made, 'dirs': dirs, **app_places(state, {r['id'] for r in rows})}
-    # (a working session stirs every few seconds, and the project and workspace it is in with it: that alone is no
-    # news worth waking every phone for)
-    view['rev'] = hashlib.sha1(json.dumps(no_stir(view), sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()[:16]
+    # (a working session stirs every few seconds, and the project and workspace it is in with it; a window no hook saw
+    # has its file's time as `since`; the recent folders reorder as sessions take turns: none of that is news worth
+    # waking every phone for. A phone gets it with the next news, or at the end of its wait.)
+    view['rev'] = hashlib.sha1(json.dumps(no_stir({k: v for k, v in view.items() if k != 'dirs'}), sort_keys=True, ensure_ascii=False,
+                                          default=str).encode()).hexdigest()[:16]
     return view
 
 
 def no_stir(v):
-    """A view without its last-stirred times ('at'), at every depth."""
+    """A view without its times of the last stir ('at') and of the last change of state ('since'), at every depth."""
     if isinstance(v, dict):
-        return {k: no_stir(x) for k, x in v.items() if k != 'at'}
+        return {k: no_stir(x) for k, x in v.items() if k not in ('at', 'since')}
     return [no_stir(x) for x in v] if isinstance(v, list) else v
 
 
@@ -4027,7 +4031,7 @@ def app_places(st, on):
     # (newest post first: the time of a post, not a stir, so it moves only when someone writes)
     chans.sort(key=lambda c: (-(c['unread'] > 0), -((c['last'] or {}).get('at') or 0)))
     mail = [{'id': m.get('id') or '', 'from': m.get('from') or '', 'text': (m.get('text') or '')[:1500], 'at': m.get('at') or 0}
-            for m in st.get('inbox') or []][:30]
+            for m in (st.get('inbox') or [])[-30:]]  # (oldest first: the newest 30)
     locks = [{'key': l.get('key') or '', 'holder': l.get('holder') or '', 'branch': l.get('branch') or '', 'repo': os.path.basename(l.get('repo') or ''),
               'since': l.get('since') or 0, 'why': l.get('why') or '', 'waiters': list(l.get('waiters') or [])} for l in st.get('lock_issues') or []]
     return {'workspaces': spaces, 'tasks': tasks, 'boards': chans[:60], 'mail': mail, 'locks': locks}
@@ -4044,7 +4048,7 @@ def app_session(deck, sid):
         rep, talk, tasks = (st.get('reports') or {}).get(sid) or {}, list(st.get('talk') or []), list(st.get('tasks') or [])
         reporting, sessions = sid in (st.get('reporting') or []), list(st['sessions'])
         mail = [m for m in st.get('inbox') or [] if m.get('from') == s['name']]
-    mine = [t for t in tasks if any(x.get('sid') == sid or x.get('name') == s['name'] for x in t.get('sessions') or [])]
+    mine = [t for t in tasks if any(x.get('sid') == sid if x.get('sid') else x.get('name') == s['name'] for x in t.get('sessions') or [])]
     kids = [{'id': k['id'], 'name': k['name'], 'kind': k['kind'], 'title': app_title(k), 'standing': app_standing(k),
              'running': bool(k.get('pid')) and k['state'] not in ('gone', 'ended')} for k in sessions if k.get('parent_id') == sid]
     msgs = sorted(({'from': m.get('from') or '', 'to': m.get('to') or '', 'text': (m.get('text') or '')[:2000], 'at': m.get('at') or 0}

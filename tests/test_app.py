@@ -184,6 +184,11 @@ class View(unittest.TestCase):
         self.assertEqual(a, self.view([session(at=9999)])['rev'])
         self.assertNotEqual(a, self.view([session(state='working')])['rev'])
         self.assertNotEqual(a, self.view([session(title='Fix the build')])['rev'])
+        # (a window no hook saw has its file's time as `since`, moving while it works; the recent folders reorder)
+        self.assertEqual(a, self.view([session(since=51)])['rev'])
+        deck = FakeDeck([session()])
+        deck.state['dirs'] = ['~/b', '~/a']
+        self.assertEqual(a, S.app_view(deck)['rev'])
 
     def test_a_wait_ends_at_news_or_at_its_time(self):
         deck = FakeDeck([session()])
@@ -234,6 +239,23 @@ class View(unittest.TestCase):
         self.assertEqual((b['key'], b['unread'], [t['title'] for t in b['topics']]), ('p1', 2, ['Pairing']), 'open discussions only')
         self.assertEqual([(m['id'], m['from']) for m in v['mail']], [('abcdef123456', 'work-1')])
         self.assertEqual([(l['key'], l['repo']) for l in v['locks']], [('0123456789ab', 'sturnus')])
+
+    def test_the_newest_letters_when_there_are_many(self):
+        v = self.placed([session()], inbox=[{'id': f'{i:012x}', 'from': 'x', 'text': str(i), 'at': i} for i in range(40)])
+        self.assertEqual([m['text'] for m in v['mail']][-1], '39')
+        self.assertEqual(len(v['mail']), 30)
+
+    def test_a_lock_that_changed_hands_is_not_let_go(self):
+        os.makedirs(S.A.path('locks'), exist_ok=True)
+        f = S.A.path('locks', 'abcdefabcdef.json')
+        S.A.put(f, {'holder': 'new-1', 'branch': 'main', 'repo': '/r', 'since': 1})
+        ok, msg = S.Deck.act(FakeDeck([]), 'unlock', {'key': 'abcdefabcdef', 'holder': 'gone-1'})
+        self.assertFalse(ok)
+        self.assertIn('new-1', msg)
+        self.assertTrue(os.path.exists(f))
+        ok, _ = S.Deck.act(FakeDeck([]), 'unlock', {'key': 'abcdefabcdef', 'holder': 'new-1'})
+        self.assertTrue(ok)
+        self.assertFalse(os.path.exists(f))
 
     def test_a_project_stirring_is_no_news_but_a_new_commit_is(self):
         a = self.placed([session()])['rev']
