@@ -7,8 +7,8 @@
 'use strict';
 const OLD = { parseRoute, build, render, drawRail, drawSide, palPlaces, palItems, drawSettings };
 const KV = { view: store.get('deck.kView', 'space'), open: new Set(store.get('deck.kOpen', [])), places: store.get('deck.kPlaces', false), info: store.get('deck.kInfo', true),
-  full: {}, all: null, allAt: 0, chatAt: 0, menu: false, rename: false, blind: !S, spTab: {}, allShow: 'open', allQ: '', hand: null, hits: [], hitsQ: '', hitsT: 0 };
-const KN = { kind: store.get('deck.newKind', 'claude'), space: store.get('deck.kSpace', null), dir: '' };  // (space: null until the person has picked one, or none)
+  full: {}, all: null, allAt: 0, chatAt: 0, menu: false, rename: false, blind: !S, spTab: {}, allShow: 'open', allQ: '', hand: null, hits: [], hitsQ: '', hitsT: 0, side: 'info', diff: { id: '', at: 0, data: null, files: {} } };
+const KN = { kind: store.get('deck.newKind', 'claude'), space: store.get('deck.kSpace', null), dir: '', wt: store.get('deck.kWt', false) };  // (space: null until the person has picked one, or none)
 const KI = {
   side: '<svg viewBox="0 0 20 20"><rect x="3.5" y="4.5" width="13" height="11" rx="2"/><path d="M8 4.5v11"/></svg>',
   find: '<svg viewBox="0 0 20 20"><circle cx="8.8" cy="8.8" r="5.6"/><path d="m13 13 4 4"/></svg>',
@@ -19,7 +19,9 @@ const KI = {
   play: '<svg viewBox="0 0 20 20"><path d="M7.5 5v10l8-5z"/></svg>',
   gear: '<svg viewBox="0 0 20 20"><path d="M8.6 2.8h2.8l.4 2 1.6.9 1.9-.7 1.4 2.4-1.5 1.3v1.8l1.5 1.3-1.4 2.4-1.9-.7-1.6.9-.4 2H8.6l-.4-2-1.6-.9-1.9.7-1.4-2.4 1.5-1.3V9.1L3.3 7.8l1.4-2.4 1.9.7 1.6-.9z"/><circle cx="10" cy="10" r="2.3"/></svg>',
   x: '<svg viewBox="0 0 20 20"><path d="m5.5 5.5 9 9M14.5 5.5l-9 9"/></svg>',
+  clock: '<svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="6.5"/><path d="M10 6.5V10l2.5 1.5"/></svg>',
 };
+const KNOT = { on: store.get('deck.kNotify', false), sound: store.get('deck.kSound', false), was: null };
 const KWAY = { 'zellij-tab': ['Zellij：工作区那一组里的一个标签', 'Zellij: a tab in the workspace’s group'], 'tmux-window': ['tmux：工作区那一组里的一个窗口', 'tmux: a window in the workspace’s group'],
   'tmux-own': ['tmux：每条会话一个自己的 tmux 会话', 'tmux: a tmux session of its own for each session'] };
 const KWHY = { restart: ['机器重启', 'the machine restarted'], closed: ['它的终端被关掉了', 'its terminal was closed'], exited: ['agent 退出了，窗格还在', 'the agent quit, its pane is still there'],
@@ -68,6 +70,7 @@ window.parseRoute = function () {
   if (phone()) return OLD.parseRoute();
   if (h === '/need') return { name: 'need' };
   if (h === '/all') return { name: 'all' };
+  if (h === '/plans') return { name: 'plans' };
   if ((m = h.match(/^\/k\/([^/]+)(?:\/(chat|overview|report|term|msgs))?$/))) return kRoute(decodeURIComponent(m[1]), m[2]);
   if ((m = h.match(/^\/w\/([^/]+)(?:\/(sessions|dash|tasks|boards|folders|projects|works))?$/))) {
     const key = decodeURIComponent(m[1]);
@@ -124,8 +127,8 @@ function kDrawSide() {
       <div class="ks-top"><a class="ks-new${at === 'home' ? ' on' : ''}" href="#/">${I.plus}<span>${tt('新会话', 'New session')}</span><kbd>N</kbd></a>
         <button class="ks-find" id="ksFind">${KI.find}<span>${tt('搜索会话、工作区', 'Search sessions, workspaces')}</span><kbd>⌘K</kbd></button></div>
       <nav class="ks-nav">${nav('#/need', at === 'need', KI.bell, tt('等你处理', 'Needs you'), need, true)}${nav('#/tasks', at === 'tasks', I.check, tt('任务', 'Tasks'), tNeed, true)}${nav('#/boards', at === 'boards' || at === 'board', I.chat, tt('讨论', 'Discussions'), bCalls || bNew, bCalls > 0)}
-        ${KV.places || ['talk', 'reports', 'queue'].includes(at) ? nav('#/talk', at === 'talk', I.mail, tt('消息', 'Messages')) + nav('#/reports', at === 'reports', I.doc, tt('报告', 'Reports')) + nav('#/queue', at === 'queue', I.list, tt('排队', 'Queue'), qReady, true) : ''}
-        <button class="ks-more" data-kplaces>${chev(KV.places)}${KV.places ? tt('收起', 'Fold') : tt('消息、报告、排队', 'Messages, reports, queue')}</button></nav>
+        ${KV.places || ['talk', 'reports', 'queue', 'plans'].includes(at) ? nav('#/talk', at === 'talk', I.mail, tt('消息', 'Messages')) + nav('#/reports', at === 'reports', I.doc, tt('报告', 'Reports')) + nav('#/queue', at === 'queue', I.list, tt('排队', 'Queue'), qReady, true) + nav('#/plans', at === 'plans', KI.clock, tt('定时', 'By the clock'), (S.plans || []).filter(x => x.live).length) : ''}
+        <button class="ks-more" data-kplaces>${chev(KV.places)}${KV.places ? tt('收起', 'Fold') : tt('消息、报告、排队、定时', 'Messages, reports, queue, by the clock')}</button></nav>
       <div class="ks-h"><span>${tt('会话', 'Sessions')}</span><div class="ks-seg" role="group" aria-label="${tt('会话怎么排', 'How sessions are listed')}"><button data-kview="space" class="${KV.view === 'space' ? 'on' : ''}">${tt('按工作区', 'By workspace')}</button><button data-kview="flat" class="${KV.view === 'flat' ? 'on' : ''}">${tt('不分组', 'One list')}</button></div></div>
       <div class="ks-list" id="ksList">${list}
         <a class="ks-more" href="#/w/+">${I.plus}${tt('新建工作区', 'New workspace')}</a>
@@ -165,10 +168,12 @@ function kDrawHome() {
       ${other ? `<input class="field" id="knCwd" list="knDirs" value="${esc(keep)}" placeholder="~/projects/…" aria-label="${tt('目录', 'Folder')}"><datalist id="knDirs">${(S.dirs || []).map(d => `<option value="${esc(d)}">`).join('')}</datalist>` : ''}
       <span id="knMic">${micBtn('knText')}</span><span class="sp"></span><button class="btn primary" type="submit" id="knGo">${tt('开始', 'Start')}${I.arrow}</button>`;
   });
-  draw('knopts', [KN.kind, kinds, S.terminal, LANG], () => {
+  draw('knopts', [KN.kind, KN.wt, kinds, S.terminal, LANG], () => {
     const way = (S.terminal || {}).way;
     $('#knOpts').innerHTML = `<span class="l">${tt('用哪个', 'With')}</span><div class="kn-ch">${kinds.map(k => `<button type="button" data-knkind="${k}" aria-pressed="${KN.kind === k}" class="${KN.kind === k ? 'on' : ''}">${mark(k, '', 'xs')}${FULL[k]}</button>`).join('')}
         <span class="hint">${tt('各自用自己的命令行和登录，Sturnus 不代它们说话', 'Each runs its own CLI with its own sign-in; Sturnus never speaks for them')}</span></div>
+      <span class="l">${tt('在哪改', 'Where')}</span><div class="kn-ch"><button type="button" data-knwt="0" aria-pressed="${!KN.wt}" class="${KN.wt ? '' : 'on'}">${tt('直接在这个目录里', 'Right in this folder')}</button><button type="button" data-knwt="1" aria-pressed="${!!KN.wt}" class="${KN.wt ? 'on' : ''}">${tt('新开一个 worktree', 'A worktree of its own')}</button>
+        <span class="hint">${tt('worktree：在仓库的 .claude/worktrees/ 下给这条会话单开一个分支和目录，它只改自己的那份；做完在会话页的「改动」里合并进 main 并清掉。目录要在 git 仓库里。', 'A worktree: a branch and folder of its own under the repository’s .claude/worktrees/, so it changes only its own copy; when done, merge it into main and clear it away from the session’s Changes. The folder must be in a git repository.')}</span></div>
       <span class="l">${tt('终端', 'Terminal')}</span><div class="kn-term"><b>${esc(tt(...(KWAY[way] || [way, way])))}</b><button type="button" class="lnk" data-kset="terminal">${tt('换一种', 'Change')}</button>
         <span class="hint">${tt('会话在自己的终端里跑，在这台机器上随时能进去：sturnus open。终端关了、机器重启了，会话都还在，继续的时候换一个新终端。', 'A session runs in a terminal of its own; get to it on this machine at any time: sturnus open. Closed, or the machine restarted, the session stays, and goes on in a new terminal.')}</span></div>`;
   });
@@ -185,10 +190,10 @@ async function kStart() {
   const cwd = other ? ($('#knCwd') ? $('#knCwd').value.trim() : '') : KN.dir;
   if (!cwd) { toast(tt('先选一个目录', 'Pick a folder first'), false); if ($('#knCwd')) $('#knCwd').focus(); return; }
   $('#knGo').disabled = true;
-  const j = await kDo('new', { kind: KN.kind, cwd, prompt: $('#knText').value.trim(), space: sp ? sp.id : '' });
+  const j = await kDo('new', { kind: KN.kind, cwd, prompt: $('#knText').value.trim(), space: sp ? sp.id : '', worktree: !!KN.wt });
   if ($('#knGo')) $('#knGo').disabled = false;
   if (!j.ok) return;
-  store.set('deck.newKind', KN.kind); store.set('deck.kSpace', KN.space); if (other) store.set('deck.newCwd', cwd);
+  store.set('deck.newKind', KN.kind); store.set('deck.kSpace', KN.space); store.set('deck.kWt', !!KN.wt); if (other) store.set('deck.newCwd', cwd);
   if ($('#knText')) $('#knText').value = '';
   if (j.kept) location.hash = `#/k/${encodeURIComponent(j.kept)}`;
 }
@@ -319,17 +324,56 @@ function kDrawFoot(k, s, tab) {
   });
   if (mode === 'live') drawSay(s);
 }
+// (what a session changed in its folder: the files against where its branch left main, each one's diff on asking)
+const kDiffHtml = d => esc(d).split('\n').map(l => `<span class="${l.startsWith('+') && !l.startsWith('+++') ? 'a' : l.startsWith('-') && !l.startsWith('---') ? 'd' : l.startsWith('@@') ? 'h' : ''}">${l || ' '}</span>`).join('');
+async function kDiffLoad(k, force) {
+  const D = KV.diff;
+  if (D.id !== k.id) Object.assign(D, { id: k.id, at: 0, data: null, files: {} });
+  if (D.busy || (!force && Date.now() - D.at < 8000)) return;
+  D.busy = true;
+  try { D.data = await (await fetch('/api/diff?kept=' + encodeURIComponent(k.id), { cache: 'no-store' })).json(); } catch { }
+  D.busy = false; D.at = Date.now();
+  if (route.kept === k.id) render();
+}
+function kDrawDiff(k, s, box) {
+  kDiffLoad(k);
+  const d = KV.diff.id === k.id ? KV.diff.data : null;
+  draw('kinfo', ['diff', k.id, d && [d.ok, d.branch, d.ahead, d.own, (d.files || []).map(f => [f.path, f.add, f.del, f.state, f.loose])], !!s, LANG], () => {
+    const open = new Set([...box.querySelectorAll('details.kdf[open]')].map(x => x.dataset.kdf)), keep = $('#kDiffSay') ? $('#kDiffSay').value : '';
+    const files = (d && d.files) || [], add = files.reduce((n, f) => n + f.add, 0), del = files.reduce((n, f) => n + f.del, 0);
+    box.innerHTML = kSideTabs() + (!d ? `<p class="hint">${tt('读取中……', 'Loading…')}</p>` : !d.ok ? `<p class="hint">${esc(d.msg || '')}</p>` : `
+      <section><h3>${d.branch === d.main ? tt(`${d.branch} 上还没提交的改动`, `Changes not committed on ${d.branch}`) : tt(`分支 ${d.branch} 相对 ${d.main} 的改动`, `Branch ${d.branch} against ${d.main}`)}</h3>
+        <p class="hint">${files.length ? tt(`${files.length} 个文件`, `${files.length} file${files.length > 1 ? 's' : ''}`) + ` <b class="ka">+${add}</b> <b class="kd">−${del}</b>` + (d.ahead ? tt(`，${d.ahead} 个提交`, `, ${d.ahead} commit${d.ahead > 1 ? 's' : ''}`) : '') : tt('没有改动。', 'No changes.')}</p>
+        ${files.map(f => `<details class="kdf" data-kdf="${esc(f.path)}"${open.has(f.path) ? ' open' : ''}><summary>${chev(false)}<span class="p" title="${esc(f.path)}">${esc(f.path)}</span>${f.state === 'new' ? `<em>${tt('新文件', 'new')}</em>` : `<b class="ka">+${f.add}</b><b class="kd">−${f.del}</b>`}${f.loose ? `<em title="${tt('上次提交后又改过', 'Changed again since its last commit')}">${tt('未提交', 'loose')}</em>` : ''}</summary>
+          <pre class="kdiffp">${KV.diff.files[f.path] !== undefined ? kDiffHtml(KV.diff.files[f.path]) : tt('读取中……', 'Loading…')}</pre></details>`).join('')}${d.more ? `<p class="hint">${tt(`还有 ${d.more} 个文件没列出`, `${d.more} more files not listed`)}</p>` : ''}</section>
+      <section><h3>${tt('对这些改动有话说', 'Something to say about these')}</h3><textarea id="kDiffSay" class="area" rows="3" aria-label="${tt('对改动的意见', 'Words about the changes')}" placeholder="${s ? tt('写下来，发给这条会话', 'Write it down and send it to this session') : tt('写下来：发送后它先新开终端，再接着做', 'Write it down: it gets a new terminal first, then goes on')}">${esc(keep)}</textarea>
+        <button class="btn" data-kdiffsay>${I.arrow}${tt('发给它', 'Send to it')}</button></section>
+      ${d.own ? `<section><h3>${tt('它自己的 worktree', 'Its own worktree')}</h3><p class="hint mono">${esc(d.show)}</p>
+        <p class="hint">${tt(`做完以后：把 ${d.branch} 合进 ${d.main}（只做快进合并），再把这个 worktree 和分支清掉。要先停止会话，改动要都提交了。`, `When it is done: merge ${d.branch} into ${d.main} (fast-forward only), then clear this worktree and branch away. Stop the session first, with everything committed.`)}</p>
+        <button class="btn" data-kmerge ${s ? 'disabled' : ''}>${I.branch}${tt(`合并进 ${d.main} 并清理`, `Merge into ${d.main} and clear`)}</button></section>` : ''}`);
+    for (const el of box.querySelectorAll('details.kdf[open]')) kDiffFile(k, el);
+  });
+}
+async function kDiffFile(k, el) {
+  const path = el.dataset.kdf, D = KV.diff;
+  if (D.files[path] !== undefined && Date.now() - (D.filesAt || 0) < 8000) return;
+  try { const j = await (await fetch(`/api/diff?kept=${encodeURIComponent(k.id)}&file=${encodeURIComponent(path)}`, { cache: 'no-store' })).json(); D.files[path] = j.ok ? j.diff + (j.cut ? tt('\n……太长，后面的没显示', '\n… too long, the rest is not shown') : '') : (j.msg || ''); D.filesAt = Date.now(); } catch { return; }
+  const pre = el.querySelector('pre');
+  if (pre && D.id === k.id) pre.innerHTML = kDiffHtml(D.files[path]);
+}
+const kSideTabs = () => `<div class="seg kside" role="group"><button data-kside="info" class="${KV.side === 'info' ? 'on' : ''}">${tt('会话信息', 'About it')}</button><button data-kside="diff" class="${KV.side === 'diff' ? 'on' : ''}">${tt('改动', 'Changes')}</button></div>`;
 function kDrawInfo(k, s) {
   const box = $('#kpInfo');
   if (!box || !KV.info || (document.activeElement && box.contains(document.activeElement))) return;
+  if (KV.side === 'diff') return kDrawDiff(k, s, box);
   const full = (KV.full[k.id] || {}).kept, sp = kSpace(k.space), a = s && attention(s);
   const tasks = (S.tasks || []).filter(x => taskOpen(x) && x.sessions.some(l => (s && l.sid === s.id) || (k.name && l.name === k.name)));
   const kids = s ? kidsOf(s).length + (s.subs || []).length : 0, terms = full ? (full.terms || []).slice().sort((x, y) => y.n - x.n) : [];
-  draw('kinfo', [k.id, k.space, k.spaced, k.kind, k.show, k.branch, k.name, k.note, k.conv, a, s && [s.id, s.summary, needOf(s), asksSig(s), kids, s.loc], tasks.map(x => [x.id, x.title]),
+  draw('kinfo', ['info', k.id, k.space, k.spaced, k.kind, k.show, k.branch, k.name, k.note, k.conv, a, s && [s.id, s.summary, needOf(s), asksSig(s), kids, s.loc], tasks.map(x => [x.id, x.title]),
     (S.spaces || []).map(w => [w.id, w.name]), terms.map(t => [t.n, t.ended, t.why, t.pane]), full && (full.segs || []).length, Math.floor(Date.now() / 60000), LANG], () => {
     const title = kTitle(k), cmd = `sturnus open ${/^[^\s"'$`\\!]+$/.test(title) ? title : /["$`\\!]/.test(title) ? k.id : `"${title}"`}`;
     const open = terms.find(t => !t.ended);
-    box.innerHTML = (a ? `<div class="need-box ${ATT[a][1]}"><div class="k">${standing(s)[0] === 'asking' ? t('工作中 · 等你确认') : t(ATT[a][0])}</div><p>${esc(needOf(s) || s.summary || (s.prompting ? tt('它停在终端里的一个提示上：进终端看一眼。', 'It is stopped at a prompt in its terminal: take a look there.') : ''))}</p></div>` : '')
+    box.innerHTML = kSideTabs() + (a ? `<div class="need-box ${ATT[a][1]}"><div class="k">${standing(s)[0] === 'asking' ? t('工作中 · 等你确认') : t(ATT[a][0])}</div><p>${esc(needOf(s) || s.summary || (s.prompting ? tt('它停在终端里的一个提示上：进终端看一眼。', 'It is stopped at a prompt in its terminal: take a look there.') : ''))}</p></div>` : '')
       + `<section><h3>${tt('这条会话', 'This session')}</h3><dl class="kv">
           <dt>${tt('工作区', 'Workspace')}</dt><dd><select class="sel" data-kspace="${esc(k.id)}" aria-label="${tt('它在哪个工作区', 'Which workspace it is in')}"><option value="">${k.spaced ? tt('改回按目录归', 'Back to where its folder puts it') : esc(sp ? sp.name : tt('未归入（目录不在任何工作区里）', 'None (its folder is in no workspace)'))}</option>
             ${(S.spaces || []).filter(w => !w.archived).map(w => `<option value="${esc(w.id)}"${k.spaced && k.space === w.id ? ' selected' : ''}>${tt('放到 ', 'Put in ')}${esc(w.name)}</option>`).join('')}</select></dd>
@@ -474,6 +518,69 @@ function kDrawAll() {
   });
 }
 
+// ---------- what runs by the clock ----------
+const kEvery = e => { const m = String(e).match(/^(daily|weekdays|hours) (.+)$/) || []; return m[1] === 'hours' ? tt(`每隔 ${m[2]} 小时`, `every ${m[2]} h`) : m[1] === 'weekdays' ? tt(`工作日 ${m[2]}`, `weekdays at ${m[2]}`) : tt(`每天 ${m[2]}`, `every day at ${m[2]}`); };
+function kBuildPlans() {
+  const spaces = (S && S.spaces || []).filter(w => !w.archived), kinds = Object.keys((S && S.launch) || {}).filter(k => FULL[k]);
+  $('#view').innerHTML = `<div class="page narrow"><div class="h-title"><h2>${tt('定时', 'By the clock')}</h2><span class="sub">${tt('到点就开一条新会话去做一件事。做完歇十分钟，它的终端会停掉；会话留着，随时能看、能继续。', 'When its time comes, a new session is started to do one thing. Ten minutes after it comes to rest its terminal is stopped; the session stays, to read and to go on with.')}</span></div>
+    <form class="pl-new" id="plNew" autocomplete="off"><input class="field" id="plTitle" aria-label="${tt('名字', 'Name')}" placeholder="${tt('名字，比如：每天早上看一眼构建', 'A name: Look at the build every morning, say')}">
+      <textarea class="area" id="plPrompt" rows="3" aria-label="${tt('到点时交给它的话', 'What it is told when the time comes')}" placeholder="${tt('到点时交给它的话', 'What it is told when the time comes')}"></textarea>
+      <div class="row"><select class="sel" id="plWhere" aria-label="${tt('在哪个目录做', 'In which folder')}">${spaces.flatMap(w => w.places.map(p => `<option value="${esc(w.id)}|${esc(p.path)}">${esc(w.name)} · ${esc(p.show)}</option>`)).join('') || `<option value="">${tt('先建一个工作区', 'Make a workspace first')}</option>`}</select>
+        <select class="sel" id="plKind" aria-label="Agent">${kinds.map(k => `<option value="${k}">${FULL[k]}</option>`).join('')}</select>
+        <select class="sel" id="plType" aria-label="${tt('什么时候做', 'When')}"><option value="daily">${tt('每天', 'Every day')}</option><option value="weekdays">${tt('工作日', 'Weekdays')}</option><option value="hours">${tt('每隔几小时', 'Every few hours')}</option></select>
+        <input class="field" id="plTime" type="time" value="09:00" aria-label="${tt('几点', 'At')}"><input class="field" id="plHours" type="number" min="1" max="999" value="6" hidden aria-label="${tt('几小时一次', 'Hours between')}">
+        <span class="sp"></span><button class="btn primary" type="submit">${I.plus}${tt('加上', 'Add')}</button></div></form>
+    <div id="plList"></div></div>`;
+  $('#plType').addEventListener('change', e => { $('#plHours').hidden = e.target.value !== 'hours'; $('#plTime').hidden = e.target.value === 'hours'; });
+  $('#plNew').addEventListener('submit', async e => {
+    e.preventDefault();
+    const [space, folder] = ($('#plWhere').value || '|').split('|'), type = $('#plType').value;
+    const j = await kDo('plan', { do: 'add', title: $('#plTitle').value.trim(), prompt: $('#plPrompt').value.trim(), kind: $('#plKind').value, space, folder, every: type === 'hours' ? `hours ${parseInt($('#plHours').value, 10) || 0}` : `${type} ${$('#plTime').value}` });
+    if (j.ok) { $('#plTitle').value = ''; $('#plPrompt').value = ''; }
+  });
+}
+function kDrawPlans() {
+  const plans = S.plans || [];
+  draw('plans', [plans, (S.kept || []).map(k => [k.id, k.title]), LANG, Math.floor(Date.now() / 60000)], () => {
+    $('#plList').innerHTML = plans.length ? `<div class="wk-rows">${plans.map(p => `<div class="wk-row pl${p.live ? '' : ' off'}"><span class="mark sm pj">${KI.clock}</span>
+      <div class="t"><b>${esc(p.title)}</b><small>${esc(kEvery(p.every))} · ${esc(FULL[p.kind] || p.kind)} · <span class="mono">${esc(home(p.folder))}</span></small>
+        <small>${p.live && p.next ? tt('下一次：', 'Next: ') + esc(kDay(p.next)) : tt('已关掉', 'Switched off')}${p.runs.length ? tt('；做过的：', '; runs: ') + p.runs.slice(0, 5).map(r => kOf(r.kept) ? `<a class="lnk" href="#/k/${encodeURIComponent(r.kept)}">${esc(kDay(r.at))}</a>` : esc(kDay(r.at))).join(tt('、', ', ')) : ''}</small></div>
+      <label class="check"><input type="checkbox" data-plon="${esc(p.id)}" ${p.live ? 'checked' : ''}> ${tt('开着', 'On')}</label>
+      <button class="btn" data-plrun="${esc(p.id)}">${KI.play}${tt('现在做一次', 'Run now')}</button>
+      <button class="ks-ib" data-pldel="${esc(p.id)}" title="${tt('删除', 'Delete')}" aria-label="${tt(`删除「${p.title}」`, `Delete “${p.title}”`)}">${KI.x}</button></div>`).join('')}</div>`
+      : `<div class="calm">${KI.clock}${tt('还没有定时的事。', 'Nothing is set by the clock yet.')}</div>`;
+  });
+}
+
+// ---------- telling the person, when the page is not in front: a session needs them, or has finished its turn ----------
+function kBeep() {
+  try {
+    const ac = new (window.AudioContext || window.webkitAudioContext)(), o = ac.createOscillator(), g = ac.createGain();
+    o.connect(g); g.connect(ac.destination); o.frequency.value = 660; g.gain.setValueAtTime(.0001, ac.currentTime);
+    g.gain.exponentialRampToValueAtTime(.12, ac.currentTime + .02); g.gain.exponentialRampToValueAtTime(.0001, ac.currentTime + .35);
+    o.start(); o.stop(ac.currentTime + .4); o.onended = () => ac.close();
+  } catch {}
+}
+function kNotify() {
+  const now = {}, first = !KNOT.was;
+  for (const k of S.kept || []) now[k.id] = kStand(k)[0];
+  const was = KNOT.was || {};
+  KNOT.was = now;
+  if (first || !KNOT.on || !('Notification' in window) || Notification.permission !== 'granted') return;
+  const NEED = ['waiting', 'asking', 'blocked', 'review'];
+  for (const k of S.kept || []) {
+    const a = was[k.id], b = now[k.id], s = kLive(k);
+    if (!a || a === b || (document.hasFocus() && route.kept === k.id)) continue;
+    const title = NEED.includes(b) && !NEED.includes(a) ? tt(`${kTitle(k)}：等你`, `${kTitle(k)}: needs you`) : a === 'working' && b === 'idle' ? tt(`${kTitle(k)}：这一轮做完了`, `${kTitle(k)}: finished its turn`) : '';
+    if (!title) continue;
+    try {
+      const n = new Notification(title, { body: (s && (needOf(s) || s.summary)) || '', tag: k.id, icon: 'icon-180.png' });
+      n.onclick = () => { window.focus(); location.hash = kHref(k); n.close(); };
+    } catch {}
+    if (KNOT.sound) kBeep();
+  }
+}
+
 // ---------- the frame ----------
 window.drawRail = function () { if (phone()) OLD.drawRail(); };
 window.drawSide = function () { if (phone()) OLD.drawSide(); };
@@ -486,6 +593,7 @@ window.build = function () {
   else if (r.name === 'session' && r.kept) kBuildKept();
   else if (r.name === 'space') kBuildSpace();
   else if (r.name === 'all') kBuildAll();
+  else if (r.name === 'plans') kBuildPlans();
   else OLD.build();
 };
 window.render = function () {
@@ -493,12 +601,14 @@ window.render = function () {
   if (phone()) return OLD.render();
   if (KV.blind) { KV.blind = false; for (const k in sig) delete sig[k]; route = parseRoute(); build(); }
   kDrawSide();
+  kNotify();
   const r = route;
   if (r.name === 'home') kDrawHome();
   else if (r.name === 'need') { drawAttn(''); drawTodoProjects((S.workspaces || []).flatMap(w => w.projects.filter(k => S.sessions.some(s => s.project === k)))); }
   else if (r.name === 'session' && r.kept) kDrawKept();
   else if (r.name === 'space') kDrawSpace();
   else if (r.name === 'all') kDrawAll();
+  else if (r.name === 'plans') kDrawPlans();
   else return OLD.render();
   if (ASST.open) draw('asst-head', [S.models && S.models.assist && S.models.assist.label, S.voice && S.voice.on], () => drawAsst(true));
   if (!$('#palette').hidden) drawPalette();
@@ -530,8 +640,18 @@ $('#paletteQ').addEventListener('input', () => {  // (what was said in any sessi
 window.palItems = function () { return phone() ? OLD.palItems() : []; };
 // (settings: the way new terminals are opened, a pane of its own)
 window.drawSettings = function () {
-  if (pane !== 'terminal') return OLD.drawSettings();
+  for (const [x, zh, en] of [['terminal', '终端', 'Terminals'], ['notify', '通知', 'Notifications']]) { const b = document.querySelector(`#settingsNav [data-pane="${x}"]`); if (b) b.textContent = tt(zh, en); }
+  if (pane !== 'terminal' && pane !== 'notify') return OLD.drawSettings();
   document.querySelectorAll('#settingsNav button').forEach(b => b.classList.toggle('on', b.dataset.pane === pane));
+  if (pane === 'notify') {
+    const can = 'Notification' in window, perm = can ? Notification.permission : 'denied';
+    $('#settingsBody').innerHTML = `<h3>${tt('通知', 'Notifications')}</h3>
+      <p class="lead">${tt('这个页面不在眼前时，有会话等你、或者做完了一轮，浏览器会弹一条通知；点它就回到那条会话。只对这一个浏览器生效。', 'While this page is not in front of you, the browser tells you when a session needs you or has finished its turn; clicking it takes you to that session. This browser only.')}</p>
+      <label class="check"><input type="checkbox" id="kNotOn" ${KNOT.on && perm === 'granted' ? 'checked' : ''} ${can && perm !== 'denied' ? '' : 'disabled'}> ${tt('弹通知', 'Show notifications')}</label>
+      <label class="check"><input type="checkbox" id="kNotSound" ${KNOT.sound ? 'checked' : ''}> ${tt('同时响一声', 'With a sound')}</label>
+      <p class="hint">${!can ? tt('这个浏览器不支持通知。', 'This browser has no notifications.') : perm === 'denied' ? tt('浏览器里已经拒绝了这个页面的通知：在浏览器的网站设置里改回来。', 'Notifications are blocked for this page in the browser: allow them in its site settings.') : !window.isSecureContext ? tt('通知要在 https 或本机（127.0.0.1）打开的页面上才有。', 'Notifications need the page opened over https or on this machine (127.0.0.1).') : ''}</p>`;
+    return;
+  }
   const cur = (S.terminal || {}).way, usable = (S.terminal || {}).usable || [];
   $('#settingsBody').innerHTML = `<h3>${tt('终端', 'Terminals')}</h3>
     <p class="lead">${tt('一条会话在自己的终端里跑。这里定的是新终端怎么开：新会话、和停下的会话「继续」时，都按这个来。会话比终端活得久，所以随时可以换：已经开着的不动，下一个终端起按新的方式。', 'A session runs in a terminal of its own. This is how a new one is opened, for a new session and when a stopped one goes on. A session outlasts its terminals, so this can change at any time: those open stay as they are, and the next one opens the new way.')}</p>
@@ -602,6 +722,24 @@ document.addEventListener('click', async e => {
     return;
   }
   if ((el = q('[data-krecover]'))) { await kDo('recover', { do: el.dataset.krecover }); return; }
+  if ((el = q('[data-knwt]'))) { KN.wt = el.dataset.knwt === '1'; render(); return; }
+  if ((el = q('[data-plrun]'))) { const j = await kDo('plan', { do: 'run', id: el.dataset.plrun }); if (j.ok && j.kept) location.hash = `#/k/${encodeURIComponent(j.kept)}`; return; }
+  if ((el = q('[data-pldel]'))) { if (confirm(tt('删除这一项？它开过的会话都留着。', 'Delete this one? The sessions it started all stay.'))) await kDo('plan', { do: 'delete', id: el.dataset.pldel }); return; }
+  if ((el = q('[data-kside]'))) { KV.side = el.dataset.kside; delete sig.kinfo; if (document.activeElement) document.activeElement.blur(); render(); return; }
+  if (q('[data-kdiffsay]')) {
+    const k = cur(), text = $('#kDiffSay') ? $('#kDiffSay').value.trim() : '', s = k && kLive(k);
+    if (!k || !text) { if ($('#kDiffSay')) $('#kDiffSay').focus(); return; }
+    const j = s ? await kDo('say', { id: s.id, text }) : await kDo('resume', { id: k.id, text });
+    if (j.ok && $('#kDiffSay')) { $('#kDiffSay').value = ''; $('#kDiffSay').blur(); }
+    return;
+  }
+  if (q('[data-kmerge]')) {
+    const k = cur(), d = KV.diff.data || {};
+    if (!k || !confirm(tt(`把分支 ${d.branch} 合进 ${d.main}（只做快进合并），然后清掉这条会话的 worktree 和分支？`, `Merge branch ${d.branch} into ${d.main} (fast-forward only), then clear this session’s worktree and branch away?`))) return;
+    await kDo('kept', { id: k.id, do: 'merge' });
+    kDiffLoad(k, true);
+    return;
+  }
   if ((el = q('[data-spmain]'))) { await kDo('space', { do: 'place_main', id: route.key, path: el.dataset.spmain }); return; }
   if ((el = q('[data-spdrop]'))) { if (confirm(tt('把这个目录从工作区里拿掉？磁盘上什么都不动；开在里面的会话会变成「未归入工作区」。', 'Take this folder out of the workspace? Nothing on disk is touched; sessions opened in it are then in no workspace.'))) await kDo('space', { do: 'place_drop', id: route.key, path: el.dataset.spdrop }); return; }
   if (q('[data-spdel]')) { const sp = kSpace(route.key); if (sp && confirm(tt(`删除工作区「${sp.name}」？只删这个分组：目录、会话和对话都留着。`, `Delete workspace “${sp.name}”? Only the grouping goes: folders, sessions and conversations stay.`))) { const j = await kDo('space', { do: 'delete', id: sp.id }); if (j.ok) location.hash = '#/'; } return; }
@@ -611,6 +749,12 @@ document.addEventListener('change', async e => {
   if (phone()) return;
   if (e.target.id === 'knSpace') { KN.space = e.target.value; KN.dir = ''; delete sig.knrow; render(); if ($('#knText')) $('#knText').focus(); }
   if (e.target.id === 'knDir') { KN.dir = e.target.value; delete sig.knrow; render(); }
+  if (e.target.dataset.plon) { await kDo('plan', { do: 'set', id: e.target.dataset.plon, on: e.target.checked }); return; }
+  if (e.target.id === 'kNotOn') {
+    if (e.target.checked && Notification.permission !== 'granted') await Notification.requestPermission();
+    KNOT.on = e.target.checked && Notification.permission === 'granted'; store.set('deck.kNotify', KNOT.on); drawSettings(); return;
+  }
+  if (e.target.id === 'kNotSound') { KNOT.sound = e.target.checked; store.set('deck.kSound', KNOT.sound); if (KNOT.sound) kBeep(); return; }
   if (e.target.dataset.kspace) { await kDo('kept', { id: e.target.dataset.kspace, do: 'space', space: e.target.value }); delete sig.kinfo; e.target.blur(); render(); }
 });
 const kRenameDone = async (el, save) => {
@@ -638,6 +782,7 @@ document.addEventListener('keydown', e => {
   }
 }, true);
 document.addEventListener('focusout', e => { if (e.target.id === 'kTitle' || e.target.id === 'spRename') kRenameDone(e.target, true); });
+document.addEventListener('toggle', e => { const k = e.target.matches && e.target.matches('details.kdf') && e.target.open && kOf(route.kept); if (k) kDiffFile(k, e.target); }, true);
 
 // (the sidebar's place in the frame; with it hidden, a button at the corner brings it back, as ⌘B does)
 function kShowBtn() { const b = $('#ksShow'); if (b) b.hidden = !sideOff || phone(); }

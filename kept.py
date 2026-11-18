@@ -43,6 +43,9 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS said (kept TEXT NOT NULL, seg INTEGER NOT NULL, n INTEGER NOT NULL, who TEXT NOT NULL, text TEXT NOT NULL, at REAL,
     PRIMARY KEY (kept, seg, n));
 CREATE TABLE IF NOT EXISTS reads (path TEXT PRIMARY KEY, off INTEGER NOT NULL, kept TEXT NOT NULL, seg INTEGER NOT NULL, clipped INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS plans (id TEXT PRIMARY KEY, title TEXT NOT NULL, prompt TEXT NOT NULL, kind TEXT NOT NULL, folder TEXT NOT NULL, space TEXT,
+    every TEXT NOT NULL, live INTEGER NOT NULL DEFAULT 1, made REAL NOT NULL, last REAL, next REAL);
+CREATE TABLE IF NOT EXISTS plan_runs (plan TEXT NOT NULL, kept TEXT NOT NULL, at REAL NOT NULL);
 '''
 # said: what was said in a session, copied from the agents' own conversation files as they grow (reads: how far each file
 # has been read), so a session's words outlast those files, read the same whichever agent wrote them, and can be searched.
@@ -82,6 +85,20 @@ def nearest(spaces, folder):
             if (folder == p or folder.startswith(p.rstrip('/') + '/')) and len(p) > best[0]:
                 best = (len(p), sp['id'])
     return best[1]
+
+
+def next_at(every, after):
+    """When something set for EVERY comes round next after AFTER, by this machine's clock: 'daily HH:MM', 'weekdays HH:MM'
+    (Monday to Friday), 'hours N' (N hours on). None for anything else."""
+    m = re.fullmatch(r'(daily|weekdays) ([01]?\d|2[0-3]):([0-5]\d)', str(every or '').strip())
+    if m:
+        t = time.localtime(after)
+        for day in range(8):
+            at = time.mktime((t.tm_year, t.tm_mon, t.tm_mday + day, int(m.group(2)), int(m.group(3)), 0, 0, 0, -1))
+            if at > after and (m.group(1) == 'daily' or time.localtime(at).tm_wday < 5):
+                return at
+    m = re.fullmatch(r'hours ([1-9]\d{0,2})', str(every or '').strip())
+    return after + int(m.group(1)) * 3600 if m else None
 
 
 def bindable(s):
@@ -476,3 +493,57 @@ class Book:
                 like = '%' + q.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%'
                 rows = c.execute("SELECT * FROM said WHERE who IN ('user', 'assistant') AND text LIKE ? ESCAPE '\\' ORDER BY at DESC LIMIT ?", (like, limit)).fetchall()
         return [dict(r) for r in rows]
+
+    # ---------- what is set to be done again and again: each time, a new session ----------
+
+    def plans(self):
+        """Everything set to run by the clock, each with its latest runs (the sessions it started), the newest first."""
+        with self.read() as c:
+            out = [dict(r) for r in c.execute('SELECT * FROM plans ORDER BY made')]
+            for p in out:
+                p['runs'] = [dict(r) for r in c.execute('SELECT kept, at FROM plan_runs WHERE plan = ? ORDER BY at DESC LIMIT 8', (p['id'],))]
+        return out
+
+    def plan_add(self, title, prompt, kind, folder, every, space=None, now=None):
+        now = now or time.time()
+        if not line(title, 80) or not str(prompt or '').strip():
+            raise No('plan')
+        if kind not in AGENTS or next_at(every, now) is None:
+            raise No('every')
+        pid = 'p-' + uuid.uuid4().hex[:8]
+        with self.tx() as c:
+            c.execute('INSERT INTO plans (id, title, prompt, kind, folder, space, every, made, next) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                      (pid, line(title, 80), str(prompt).strip()[:8000], kind, norm(folder), space or None, every.strip(), now, next_at(every, now)))
+        return pid
+
+    def plan_set(self, pid, live=None, now=None):
+        """Switched on or off: switched on, its next time counts from now."""
+        now = now or time.time()
+        with self.tx() as c:
+            p = c.execute('SELECT * FROM plans WHERE id = ?', (pid,)).fetchone()
+            if not p:
+                raise No('plan')
+            if live is not None:
+                c.execute('UPDATE plans SET live = ?, next = ? WHERE id = ?', (int(bool(live)), next_at(p['every'], now) if live else None, pid))
+
+    def plan_drop(self, pid):
+        with self.tx() as c:
+            c.execute('DELETE FROM plans WHERE id = ?', (pid,))
+            c.execute('DELETE FROM plan_runs WHERE plan = ?', (pid,))
+
+    def plan_ran(self, pid, kid, now=None, due=True):
+        """A run noted (its session, when there is one); the next time set from now when it ran because it was due."""
+        now = now or time.time()
+        with self.tx() as c:
+            p = c.execute('SELECT * FROM plans WHERE id = ?', (pid,)).fetchone()
+            if not p:
+                return
+            if kid:
+                c.execute('INSERT INTO plan_runs (plan, kept, at) VALUES (?, ?, ?)', (pid, kid, now))
+                c.execute('DELETE FROM plan_runs WHERE plan = ? AND rowid NOT IN (SELECT rowid FROM plan_runs WHERE plan = ? ORDER BY at DESC LIMIT 40)', (pid, pid))
+            c.execute('UPDATE plans SET last = ?, next = ? WHERE id = ?', (now, next_at(p['every'], now) if due and p['live'] else p['next'], pid))
+
+    def plan_kept(self, since):
+        """The sessions the clock started since SINCE."""
+        with self.read() as c:
+            return {r['kept'] for r in c.execute('SELECT kept FROM plan_runs WHERE at > ?', (since,))}

@@ -42,7 +42,7 @@ class Sessions(unittest.TestCase):
         cls.port = free_port()
         with open(f'{cls.dir}/conf/config.json', 'w') as f:
             json.dump({'port': cls.port, 'host': '127.0.0.1', 'tailnet': False, 'pane_titles': False, 'terminal': 'tmux-window',
-                       'launch': {'claude': [sys.executable, AGENT], 'codex': ['codex'], 'cursor': ['cursor-agent']},
+                       'launch': {k: [sys.executable, AGENT] for k in ('claude', 'codex', 'cursor')},  # (never the real ones: a test starts no agent of the person's)
                        'models': {r: {'source': 'api', 'url': 'http://127.0.0.1:9/v1', 'model': 'none'} for r in ('summary', 'assist')}}, f)
         keep = {k: v for k, v in os.environ.items() if not k.startswith(('TMUX', 'ZELLIJ', 'STURNUS', 'AMAIL'))}  # (run from inside a session or not: the same)
         cls.env = {**keep, 'STURNUS_CONF': f'{cls.dir}/conf/config.json', 'STURNUS_CACHE': f'{cls.dir}/cache', 'AMAIL_HOME': f'{cls.dir}/mail',
@@ -100,7 +100,8 @@ class Sessions(unittest.TestCase):
             if v:
                 return v
             time.sleep(.4)
-        self.fail(why + '\n' + open(f'{self.dir}/deck.log').read()[-1500:])
+        with open(f'{self.dir}/deck.log') as f:
+            self.fail(why + '\n' + f.read()[-1500:])
 
     def said(self, kid):
         return [i['text'] for i in self.call(f'/api/transcript?kept={kid}')['items']]
@@ -199,12 +200,44 @@ class Sessions(unittest.TestCase):
         self.assertTrue(j['ok'], j)
         for part in ('Slow query', 'Claude Code', 'find the slow query', 'then fix it', j['file']):
             self.assertIn(part, j['note'])
-        self.assertIn('find the slow query', open(j['file']).read())
+        with open(j['file']) as f:
+            self.assertIn('find the slow query', f.read())
         self.assertTrue(self.call('/api/resume', {'id': kid, 'kind': 'codex', 'text': 'HANDOVER ' + j['note']})['ok'])
         k = self.until(lambda: (lambda k: k if k and k['live'] and not k['live'].startswith('new:') and k['nsegs'] == 2 else None)(self.kept(kid)), 'the other agent did not take it on')
         self.assertEqual(k['nterms'], 2)  # (a new conversation of its own, in a second terminal, in the same session)
         self.until(lambda: any(x.startswith('HANDOVER ') for x in self.said(kid)), 'what it was told is not in the session')
         self.assertIn('done: find the slow query', self.said(kid))  # (and what was said before is still its)
+
+    def test_a_session_in_a_worktree_of_its_own_shows_what_it_changed_and_is_merged_back(self):
+        repo = f'{self.dir}/repo'
+        os.makedirs(repo)
+        git = lambda *a, cwd=repo: subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@t', *a], cwd=cwd, capture_output=True, text=True, env=self.env)
+        git('init', '-q', '-b', 'main')
+        open(f'{repo}/a.txt', 'w').write('one\n')
+        git('add', '.'), git('commit', '-q', '-m', 'first')
+        self.assertFalse(self.call('/api/new', {'kind': 'claude', 'cwd': f'{self.dir}/elsewhere', 'worktree': True})['ok'])  # (no repository there)
+        j = self.call('/api/new', {'kind': 'claude', 'cwd': repo, 'prompt': 'add b', 'title': 'Add B file', 'worktree': True})
+        self.assertTrue(j['ok'], j)
+        kid = j['kept']
+        k = self.until(lambda: (lambda k: k if k and k['live'] and not k['live'].startswith('new:') else None)(self.kept(kid)), 'the session in a worktree did not start')
+        work = f'{repo}/.claude/worktrees/add-b-file'
+        self.assertEqual(k['folder'], work)
+        self.assertEqual(git('status', '--porcelain').stdout, '')  # (the worktrees folder is out of the repository's own view)
+        open(f'{work}/b.txt', 'w').write('two\nthree\n')
+        open(f'{work}/a.txt', 'a').write('more\n')
+        d = self.call(f'/api/diff?kept={kid}')
+        self.assertEqual((d['branch'], d['main'], d['own'], [(f['path'], f['add'], f['state']) for f in d['files']]), ('add-b-file', 'main', True, [('a.txt', 1, 'changed'), ('b.txt', 0, 'new')]))
+        self.assertIn('+more', self.call(f'/api/diff?kept={kid}&file=a.txt')['diff'])
+        self.assertIn('+three', self.call(f'/api/diff?kept={kid}&file=b.txt')['diff'])
+        self.assertFalse(self.call(f'/api/diff?kept={kid}&file=../../a.txt')['ok'])
+        self.assertFalse(self.call('/api/kept', {'id': kid, 'do': 'merge'})['ok'])  # (still running)
+        self.assertTrue(self.call('/api/kept', {'id': kid, 'do': 'stop'})['ok'])
+        self.until(lambda: (lambda k: k and not k['live'])(self.kept(kid)), 'it did not stop')
+        self.assertFalse(self.call('/api/kept', {'id': kid, 'do': 'merge'})['ok'])  # (changes not committed)
+        git('add', '.', cwd=work), git('commit', '-q', '-m', 'b', cwd=work)
+        j = self.call('/api/kept', {'id': kid, 'do': 'merge'})
+        self.assertTrue(j['ok'], j)
+        self.assertEqual((open(f'{repo}/b.txt').read(), os.path.exists(work), git('branch', '--list', 'add-b-file').stdout), ('two\nthree\n', False, ''))
 
     def test_an_agent_started_by_hand_is_a_session_too(self):
         there = f'{self.dir}/elsewhere'

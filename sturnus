@@ -681,6 +681,118 @@ def codex_convs(known):
     return out
 
 
+# ---------- a session's own worktree, and what it has changed ----------
+
+def repo_of(folder):
+    """The git repository a folder is in: (its main checkout's folder, this checkout's top, its common git folder), or None."""
+    rows = (git(folder, 'rev-parse', '--path-format=absolute', '--git-common-dir', '--show-toplevel') or '').splitlines() if folder and os.path.isdir(folder) else []
+    if len(rows) != 2:
+        return None
+    common, top = os.path.realpath(rows[0]), os.path.realpath(rows[1])
+    return (os.path.dirname(common) if common.endswith('/.git') else top), top, common
+
+
+def main_branch(root):
+    """The branch work is merged into: main, else master, else the one the main checkout is on."""
+    for b in ('main', 'master'):
+        if git(root, 'rev-parse', '--verify', '-q', f'refs/heads/{b}'):
+            return b
+    return git(root, 'symbolic-ref', '--short', '-q', 'HEAD') or 'HEAD'
+
+
+def worktree_add(folder, want):
+    """A worktree and a branch of its own for a session, off the main branch, at <repository>/.claude/worktrees/<name>
+    (kept out of the repository's own view: its local excludes say so when its ignore rules do not). Returns (True,
+    its folder, its branch) or (False, why, '')."""
+    r = repo_of(folder)
+    if not r:
+        return False, tx('这个目录不在 git 仓库里，开不了 worktree', 'This folder is in no git repository, so no worktree can be made'), ''
+    root, _, common = r
+    name = (T.slug(want, '') or f'session-{os.urandom(2).hex()}').lower()[:40].strip('-._') or f'session-{os.urandom(2).hex()}'
+    branch, n = name, 1
+    while git(root, 'rev-parse', '--verify', '-q', f'refs/heads/{branch}') or os.path.exists(os.path.join(root, '.claude', 'worktrees', branch)):
+        n += 1
+        branch = f'{name}-{n}'
+    path = os.path.join(root, '.claude', 'worktrees', branch)
+    if run(['git', '-C', root, 'check-ignore', '-q', path]).returncode != 0:
+        with contextlib.suppress(OSError):
+            os.makedirs(os.path.join(common, 'info'), exist_ok=True)
+            with open(os.path.join(common, 'info', 'exclude'), 'a') as f:
+                f.write('\n.claude/worktrees/\n')
+    made = run(['git', '-C', root, 'worktree', 'add', path, '-b', branch, main_branch(root)], timeout=60)
+    if made.returncode != 0:
+        return False, tx(f'worktree 没开成：{(made.stderr or made.stdout).strip()[:200]}', f'The worktree could not be made: {(made.stderr or made.stdout).strip()[:200]}'), ''
+    return True, path, branch
+
+
+def worktree_gone(path, branch, force=False):
+    """A session's worktree and its branch taken away again: only a clean worktree, and a branch already merged (or one
+    just made, with FORCE)."""
+    r = repo_of(path)
+    if not r:
+        return
+    run(['git', '-C', r[0], 'worktree', 'remove', *(['--force'] if force else []), path], timeout=60)
+    run(['git', '-C', r[0], 'branch', '-D' if force else '-d', branch], timeout=30)
+
+
+def worktree_done(folder):
+    """A session's worktree merged into the main branch and taken away: only by a fast-forward, only from a clean
+    worktree, only while the main checkout is on the main branch. Returns (ok, words)."""
+    r = repo_of(folder)
+    if not r or r[0] == r[1] or f'{os.sep}.claude{os.sep}worktrees{os.sep}' not in r[1] + os.sep:
+        return False, tx('这条会话不在自己的 worktree 里', 'This session is not in a worktree of its own')
+    root, top, _ = r
+    main, branch = main_branch(root), git(top, 'symbolic-ref', '--short', '-q', 'HEAD') or ''
+    if not branch or branch == main:
+        return False, tx('它的 worktree 不在自己的分支上', 'Its worktree is not on a branch of its own')
+    if (git(top, 'status', '--porcelain') or '').strip():
+        return False, tx('它的 worktree 里还有没提交的改动：先让它提交（或者丢掉），再合并', 'Its worktree has changes not committed: have them committed (or dropped) first, then merge')
+    if (git(root, 'symbolic-ref', '--short', '-q', 'HEAD') or '') != main:
+        return False, tx(f'主工作区不在 {main} 上，没有合并', f'The main checkout is not on {main}: nothing merged')
+    ahead = len((git(root, 'rev-list', f'{main}..{branch}') or '').split())
+    if ahead:
+        m = run(['git', '-C', root, 'merge', '--ff-only', branch], timeout=60)
+        if m.returncode != 0:
+            return False, tx(f'不能快进合并：先让它 rebase 到最新的 {main}。（{(m.stderr or m.stdout).strip()[:160]}）', f'It cannot be fast-forwarded: have it rebased onto the latest {main} first. ({(m.stderr or m.stdout).strip()[:160]})')
+    rm = run(['git', '-C', root, 'worktree', 'remove', top], timeout=60)
+    if rm.returncode != 0:
+        return False, tx(f'已合并，但 worktree 没清掉：{(rm.stderr or rm.stdout).strip()[:160]}', f'Merged, but the worktree was not removed: {(rm.stderr or rm.stdout).strip()[:160]}')
+    run(['git', '-C', root, 'branch', '-d', branch], timeout=30)
+    return True, tx(f'{branch} 的 {ahead} 个提交已合进 {main}，worktree 和分支都清掉了' if ahead else f'{branch} 没有新提交，worktree 和分支清掉了', f'{ahead} commit(s) of {branch} merged into {main}; its worktree and branch are gone' if ahead else f'{branch} had nothing new; its worktree and branch are gone')
+
+
+def changes(folder, one=''):
+    """What a session has changed in its folder, against where its branch left the main branch (on the main branch
+    itself: against its last commit): {top, branch, main, ahead, files: [{path, add, del, state}]}; with ONE, that file's
+    diff as text. None outside a git repository."""
+    r = repo_of(folder)
+    if not r:
+        return None
+    root, top, _ = r
+    main, branch = main_branch(root), git(top, 'symbolic-ref', '--short', '-q', 'HEAD') or ''
+    base = (git(top, 'merge-base', 'HEAD', main) if branch != main else None) or git(top, 'rev-parse', 'HEAD') or ''
+    if one:
+        f = os.path.realpath(os.path.join(top, one))
+        if not f.startswith(top + os.sep):
+            return None
+        d = run(['git', '-C', top, 'diff', base, '--', one], timeout=20).stdout if base else ''
+        if not d and os.path.isfile(f):  # (a file git does not know yet: all of it is new)
+            d = run(['git', '-C', top, 'diff', '--no-index', '--', os.devnull, one], timeout=20).stdout
+        return {'path': one, 'diff': d[:300000], 'cut': len(d) > 300000}
+    files = {}
+    for l in (git(top, 'diff', '--numstat', base) or '').splitlines() if base else []:
+        a, d, p = (l.split('\t') + ['', '', ''])[:3]
+        files[p] = {'path': p, 'add': int(a) if a.isdigit() else 0, 'del': int(d) if d.isdigit() else 0, 'state': 'changed'}
+    for l in (git(top, 'status', '--porcelain') or '').splitlines():
+        st, p = l[:2], l[3:].strip('"')
+        if st == '??':
+            files.setdefault(p, {'path': p, 'add': 0, 'del': 0, 'state': 'new'})
+        elif p in files:
+            files[p]['loose'] = True  # (changed again since its last commit)
+    return {'top': top, 'show': tilde(top), 'branch': branch, 'main': main, 'own': root != top, 'ahead': len((git(top, 'rev-list', f'{base}..HEAD') or '').split()) if base else 0,
+            'files': sorted(files.values(), key=lambda f: f['path'])[:400], 'more': max(0, len(files) - 400)}
+
+
 def agent_argv(cfg, kind, conv='', name='', prompt=''):
     """What a terminal runs for an agent: its command as set (config "launch"), on with a conversation when one is named."""
     argv = list(cfg.get('launch', DEFAULTS['launch']).get(kind) or DEFAULTS['launch'][kind])
@@ -2345,12 +2457,13 @@ class Deck:
         task_rows = self.tasks_tick(sessions)
         try:
             kept, spaces = self.kept_view(sessions)
+            plans = self.book.plans()
         except (sqlite3.Error, OSError):
-            kept, spaces = self.state.get('kept') or [], self.state.get('spaces') or []
+            kept, spaces, plans = self.state.get('kept') or [], self.state.get('spaces') or [], self.state.get('plans') or []
         with self.lock:
             self.everyone = sessions
             self.state = {'sessions': [s for s in sessions if not s['hidden']], 'talk': self.talk.all(), 'groups': zs, 'locks': locks,
-                          'tasks': task_rows, 'kept': kept, 'spaces': spaces, 'recover': self.recover_view(kept),
+                          'tasks': task_rows, 'kept': kept, 'spaces': spaces, 'recover': self.recover_view(kept), 'plans': plans,
                           'terminal': {'way': T.way(self.cfg).key, 'usable': [w.key for w in T.WAYS.values() if w.usable()]},
                           'workspaces': workspaces, 'projects': projects, 'boards': boards,
                           'muxes': [m for m in ('zellij', 'tmux') if shutil.which(m)], 'voice': self.voice_view(),
@@ -3118,6 +3231,8 @@ class Deck:
             return True, {'note': note, 'file': f}
         if what == 'recover':  # (the sessions a restart ended: all of them on again, or the offer put away)
             return self.recover(body)
+        if what == 'plan':  # (what is set to be done again and again by the clock)
+            return self.plan_act(body)
         if what == 'terminal':  # (the way new terminals are opened)
             if body.get('way') not in T.WAYS or not T.WAYS[body['way']].usable():
                 return False, tx('这台机器上用不了这种打开方式', 'That way of opening a terminal cannot be used on this machine')
@@ -3673,6 +3788,13 @@ class Deck:
                 self.book.set(kid, archived=on)
             elif do == 'delete':
                 self.book.drop(kid)
+            elif do == 'merge':  # (its own worktree merged into the main branch and taken away)
+                if s:
+                    return False, tx('它还在跑：先停止，再合并', 'It is still running: stop it first, then merge')
+                k = self.book.get(kid)
+                ok, words = worktree_done(k['work'] or k['folder'])
+                self.projects.places.clear()
+                return ok, words
             else:
                 return False, tx(f'不认识的操作 {do}', f'Unknown action {do}')
         except K.No as e:
@@ -3734,6 +3856,60 @@ class Deck:
         self.note(r['msg'])
         return True, {'msg': r['msg'], 'kept': kid, 'marker': r['marker']}
 
+    def plan_act(self, b):
+        """The person's word on what runs by the clock: one more, switched on or off, run now, deleted."""
+        do, pid = b.get('do'), str(b.get('id') or '')
+        try:
+            if do == 'add':
+                folder = os.path.realpath(os.path.expanduser(str(b.get('folder') or '').strip()))
+                if not os.path.isdir(folder):
+                    return False, tx(f'没有这个目录：{tilde(folder)}', f'No such folder: {tilde(folder)}')
+                pid = self.book.plan_add(str(b.get('title') or ''), str(b.get('prompt') or ''), b.get('kind'), folder, str(b.get('every') or ''), str(b.get('space') or '') or None)
+            elif do == 'set':
+                self.book.plan_set(pid, live=bool(b.get('on')))
+            elif do == 'delete':
+                self.book.plan_drop(pid)
+            elif do == 'run':
+                p = next((x for x in self.book.plans() if x['id'] == pid), None)
+                return self.plan_run(p, due=False) if p else (False, tx('没有这一项了', 'That one is gone'))
+            else:
+                return False, tx(f'不认识的操作 {do}', f'Unknown action {do}')
+        except K.No as e:
+            return False, {'plan': tx('要有名字，和要做的事', 'It needs a name, and what to do'), 'every': tx('选一个 agent，和什么时候做', 'Pick an agent, and when')}.get(e.code, str(e))
+        with self.lock:
+            self.state['plans'] = self.book.plans()
+        return True, {'id': pid}
+
+    def plan_run(self, p, due=True):
+        """One run of something set by the clock: a new session with what it says, in its folder."""
+        ok, r = self.new_session({'kind': p['kind'], 'cwd': p['folder'], 'prompt': p['prompt'], 'space': p['space'] or '',
+                                  'title': f'{p["title"]} · {time.strftime("%m-%d %H:%M")}'})
+        self.book.plan_ran(p['id'], r.get('kept') if ok and isinstance(r, dict) else None, due=due)
+        if not ok:
+            self.note(tx(f'定时的「{p["title"]}」没开起来：{r}', f'“{p["title"]}”, set by the clock, could not be started: {r}'), False)
+        with self.lock:
+            self.state['plans'] = self.book.plans()
+        return (True, {'kept': r.get('kept'), 'msg': r.get('msg')}) if ok else (False, r)
+
+    def plan_loop(self):
+        """What is set by the clock is started when its time comes (one that came due while the deck was down: once, late).
+        A session the clock started is stopped once it has rested ten minutes: it is still there to read and go on with."""
+        time.sleep(20)
+        while True:
+            try:
+                now = time.time()
+                for p in self.book.plans():
+                    if p['live'] and p['next'] and p['next'] <= now:
+                        self.plan_run(p)
+                mine = self.book.plan_kept(now - 3 * 86400)
+                for s in self.everyone if mine else []:
+                    k = self.kept.get(s.get('kept')) if s.get('kept') in mine else None
+                    if k and not k['pinned'] and k['live'] == s['id'] and s['state'] == 'idle' and not s.get('starting') and now - (s.get('since') or now) > 600:
+                        self.stop(s, k['id'])
+            except Exception as e:
+                self.note(tx(f'定时任务出错：{e!r}', f'The clock failed: {e!r}'), False)
+            time.sleep(30)
+
     def index_loop(self):
         """The conversations on disk, looked through now and then: one no session has yet becomes a stopped session."""
         time.sleep(8)
@@ -3783,6 +3959,14 @@ class Deck:
             prompt = prompt or self.task_brief(task)
         if prompt and kind != 'shell':
             argv.append(prompt)
+        own = None
+        if b.get('worktree') and kind != 'shell':  # (a worktree and branch of its own, off the main branch)
+            ok, where, branch = worktree_add(cwd, title or name)
+            if not ok:
+                return False, where
+            if not space and K.nearest(spaces, cwd):
+                space = K.nearest(spaces, cwd)  # (its workspace is the one of the folder it was asked for)
+            cwd, own = where, (where, branch)
         kid = None
         if kind != 'shell':
             kid = self.book.add(title=title, folder=cwd, kind=kind, space=space or None, name=name)
@@ -3801,6 +3985,8 @@ class Deck:
             if kid:  # (nothing was started for it: it never was)
                 self.book.set(kid, archived=True)
                 self.book.drop(kid)
+            if own:
+                worktree_gone(*own, force=True)
             return False, made
         return self.started({**b, 'kept': kid}, kind, name, tab, f'tmux:{group}' if way.mux == 'tmux' else group, cwd, marker, made, loc)
 
@@ -4946,6 +5132,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({'ok': True, 'kept': list(DECK.kept.values())})
             v = DECK.kept_page(kid)
             return self.send_json(v or {'ok': False, 'msg': tx('找不到这条会话', 'Session not found')}, 200 if v else 404)
+        if self.path.startswith('/api/diff'):  # (what a session has changed in its folder; with a file, that file's diff)
+            from urllib.parse import urlparse, parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            k = DECK.book.get((q.get('kept') or [''])[0])
+            v = k and changes(k['work'] if k['work'] and os.path.isdir(k['work']) else k['folder'], (q.get('file') or [''])[0])
+            return self.send_json({'ok': bool(v), **(v or {'msg': tx('它的目录不在 git 仓库里', 'Its folder is in no git repository') if k else tx('找不到这条会话', 'Session not found')})})
         if self.path.startswith('/api/search'):  # (where something was said, in any session's conversations)
             from urllib.parse import urlparse, parse_qs
             return self.send_json({'ok': True, 'hits': DECK.search((parse_qs(urlparse(self.path).query).get('q') or [''])[0].strip())})
@@ -5057,6 +5249,7 @@ def serve():
     threading.Thread(target=DECK.projects.facts_loop, args=(DECK,), daemon=True).start()
     threading.Thread(target=DECK.index_loop, daemon=True).start()
     threading.Thread(target=DECK.keep_loop, daemon=True).start()
+    threading.Thread(target=DECK.plan_loop, daemon=True).start()
     cfg = DECK.cfg
     global ACCESS_
     ACCESS_ = Access()

@@ -231,3 +231,33 @@ a.wk-row:hover, .wk-row:hover { background: var(--panel-2); }
 #allQ { display: block; width: 100%; max-width: 420px; margin-bottom: 14px; }
 .choice.kway { display: flex; flex-direction: column; gap: 8px; }
 .choice.kway button { text-align: left; }
+
+/* ---------- what a session changed ---------- */
+.kp-info .kside { align-self: stretch; display: flex; }
+.kp-info .kside button { flex: 1; }
+.ka { color: var(--ok); font-weight: 600; font-family: var(--font-mono); font-size: 11.5px; }
+.kd { color: var(--bad); font-weight: 600; font-family: var(--font-mono); font-size: 11.5px; }
+.kdf { border: 1px solid var(--hair); border-radius: 9px; background: var(--panel); overflow: hidden; }
+.kdf summary { display: flex; align-items: center; gap: 7px; min-height: 30px; padding: 0 9px 0 7px; cursor: pointer; list-style: none; font-size: 12px; }
+.kdf summary::-webkit-details-marker { display: none; }
+.kdf[open] summary .chev { transform: rotate(90deg); }
+.kdf .p { flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.kdf em { flex: none; font-style: normal; font-size: 11px; color: var(--muted); }
+.kdiffp { margin: 0; padding: 6px 0; max-height: 420px; overflow: auto; border-top: 1px solid var(--hair-2); background: var(--panel-2); font: 11px/1.5 var(--font-mono); }
+.kdiffp span { display: block; padding: 0 9px; white-space: pre; min-width: max-content; }
+.kdiffp .a { background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.kdiffp .d { background: color-mix(in srgb, var(--bad) 13%, transparent); }
+.kdiffp .h { color: var(--muted); }
+.kp-info .area { width: 100%; border: 1px solid var(--hair); border-radius: 10px; background: var(--panel); padding: 8px 10px; outline: 0; resize: vertical; font-size: 12.5px; line-height: 1.5; }
+.kp-info .area:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+
+/* ---------- what runs by the clock ---------- */
+.pl-new { display: flex; flex-direction: column; gap: 8px; margin-bottom: 18px; padding: 14px; border-radius: 14px; border: 1px solid var(--hair); background: var(--panel); box-shadow: var(--shadow-1); }
+.pl-new .field { flex: none; }
+.pl-new .area { width: 100%; border: 1px solid var(--hair); border-radius: 10px; background: var(--panel-2); padding: 9px 12px; outline: 0; resize: vertical; line-height: 1.5; }
+.pl-new .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pl-new .row .sp { flex: 1; }
+.pl-new .row .sel { height: 32px; max-width: 280px; }
+.pl-new .row .field { width: 110px; height: 32px; }
+.wk-row.pl.off .t { opacity: .6; }
+.wk-row.pl .t small { white-space: normal; }

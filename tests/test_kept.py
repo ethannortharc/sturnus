@@ -194,6 +194,44 @@ class Binding(unittest.TestCase):
         self.assertEqual((t['mux'], t['origin']), ('', '终端窗口（Ghostty）'))
 
 
+class Clock(unittest.TestCase):
+    def at(self, *ymdhm):
+        import time
+        return time.mktime((*ymdhm, 0, 0, 0, -1))
+
+    def test_the_next_time_of_each_kind(self):
+        mon, fri = self.at(2026, 11, 16, 8, 0), self.at(2026, 11, 20, 10, 0)  # (a Monday morning, a Friday after ten)
+        self.assertEqual(K.next_at('daily 09:30', mon), self.at(2026, 11, 16, 9, 30))
+        self.assertEqual(K.next_at('daily 07:00', mon), self.at(2026, 11, 17, 7, 0))
+        self.assertEqual(K.next_at('weekdays 09:30', fri), self.at(2026, 11, 23, 9, 30))  # (over the weekend)
+        self.assertEqual(K.next_at('daily 09:30', fri), self.at(2026, 11, 21, 9, 30))
+        self.assertEqual(K.next_at('hours 6', mon), mon + 6 * 3600)
+        for bad in ('', 'daily 25:00', 'hours 0', 'weekly 09:00', 'daily 9', None):
+            self.assertIsNone(K.next_at(bad, mon), bad)
+
+    def test_something_set_by_the_clock_is_kept_run_noted_and_switched(self):
+        b = book()
+        now = self.at(2026, 11, 16, 8, 0)
+        with self.assertRaises(ValueError):
+            b.plan_add('', 'do it', 'claude', '/r', 'daily 09:00')
+        with self.assertRaises(ValueError):
+            b.plan_add('Morning check', 'do it', 'claude', '/r', 'sometimes')
+        pid = b.plan_add('Morning check', 'look at the build', 'codex', '/r/x', 'daily 09:00', now=now)
+        p = b.plans()[0]
+        self.assertEqual((p['title'], p['kind'], p['folder'], p['live'], p['next'], p['runs']), ('Morning check', 'codex', '/r/x', 1, self.at(2026, 11, 16, 9, 0), []))
+        b.plan_ran(pid, 's-1', now=self.at(2026, 11, 16, 9, 0))
+        b.plan_ran(pid, 's-2', now=self.at(2026, 11, 16, 12, 0), due=False)  # (run by hand in between: its next time stays)
+        p = b.plans()[0]
+        self.assertEqual((p['next'], [r['kept'] for r in p['runs']]), (self.at(2026, 11, 17, 9, 0), ['s-2', 's-1']))
+        self.assertEqual(b.plan_kept(self.at(2026, 11, 16, 10, 0)), {'s-2'})
+        b.plan_set(pid, live=False)
+        self.assertEqual((b.plans()[0]['live'], b.plans()[0]['next']), (0, None))
+        b.plan_set(pid, live=True, now=self.at(2026, 11, 18, 10, 0))
+        self.assertEqual(b.plans()[0]['next'], self.at(2026, 11, 19, 9, 0))
+        b.plan_drop(pid)
+        self.assertEqual((b.plans(), b.plan_kept(0)), ([], set()))
+
+
 class Keeping(unittest.TestCase):
     def test_a_title_the_person_gave_stays_and_one_taken_back_follows_again(self):
         b = book()
