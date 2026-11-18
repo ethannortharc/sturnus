@@ -128,7 +128,7 @@ function kDrawSide() {
         <button class="ks-find" id="ksFind">${KI.find}<span>${tt('搜索会话、工作区', 'Search sessions, workspaces')}</span><kbd>⌘K</kbd></button></div>
       <nav class="ks-nav">${nav('#/need', at === 'need', KI.bell, tt('等你处理', 'Needs you'), need, true)}${nav('#/tasks', at === 'tasks', I.check, tt('任务', 'Tasks'), tNeed, true)}${nav('#/boards', at === 'boards' || at === 'board', I.chat, tt('讨论', 'Discussions'), bCalls || bNew, bCalls > 0)}
         ${KV.places || ['talk', 'reports', 'queue', 'plans'].includes(at) ? nav('#/talk', at === 'talk', I.mail, tt('消息', 'Messages')) + nav('#/reports', at === 'reports', I.doc, tt('报告', 'Reports')) + nav('#/queue', at === 'queue', I.list, tt('排队', 'Queue'), qReady, true) + nav('#/plans', at === 'plans', KI.clock, tt('定时', 'By the clock'), (S.plans || []).filter(x => x.live).length) : ''}
-        <button class="ks-more" data-kplaces>${chev(KV.places)}${KV.places ? tt('收起', 'Fold') : tt('消息、报告、排队、定时', 'Messages, reports, queue, by the clock')}</button></nav>
+        ${KV.places || !['talk', 'reports', 'queue', 'plans'].includes(at) ? `<button class="ks-more" data-kplaces>${chev(KV.places)}${KV.places ? tt('收起', 'Fold') : tt('消息、报告、排队、定时', 'Messages, reports, queue, by the clock')}</button>` : ''}</nav>
       <div class="ks-h"><span>${tt('会话', 'Sessions')}</span><div class="ks-seg" role="group" aria-label="${tt('会话怎么排', 'How sessions are listed')}"><button data-kview="space" class="${KV.view === 'space' ? 'on' : ''}">${tt('按工作区', 'By workspace')}</button><button data-kview="flat" class="${KV.view === 'flat' ? 'on' : ''}">${tt('不分组', 'One list')}</button></div></div>
       <div class="ks-list" id="ksList">${list}
         <a class="ks-more" href="#/w/+">${I.plus}${tt('新建工作区', 'New workspace')}</a>
@@ -522,7 +522,7 @@ function kDrawAll() {
 const kEvery = e => { const m = String(e).match(/^(daily|weekdays|hours) (.+)$/) || []; return m[1] === 'hours' ? tt(`每隔 ${m[2]} 小时`, `every ${m[2]} h`) : m[1] === 'weekdays' ? tt(`工作日 ${m[2]}`, `weekdays at ${m[2]}`) : tt(`每天 ${m[2]}`, `every day at ${m[2]}`); };
 function kBuildPlans() {
   const spaces = (S && S.spaces || []).filter(w => !w.archived), kinds = Object.keys((S && S.launch) || {}).filter(k => FULL[k]);
-  $('#view').innerHTML = `<div class="page narrow"><div class="h-title"><h2>${tt('定时', 'By the clock')}</h2><span class="sub">${tt('到点就开一条新会话去做一件事。做完后空闲半小时，它的终端会自动停掉；会话留着，随时能看、能继续。你在里面说过话、或者把它置顶了，就不会自动停。', 'When its time comes, a new session is started to do one thing. Half an hour after it comes to rest its terminal is stopped; the session stays, to read and to go on with. One you have spoken in, or pinned, is not stopped.')}</span></div>
+  $('#view').innerHTML = `<div class="page narrow"><div class="h-title"><h2>${tt('定时', 'By the clock')}</h2></div><p class="pl-lead">${tt('到点就开一条新会话去做一件事。做完后空闲半小时，它的终端会自动停掉；会话留着，随时能看、能继续。你在里面说过话、或者把它置顶了，就不会自动停。', 'When its time comes, a new session is started to do one thing. Half an hour after it comes to rest its terminal is stopped; the session stays, to read and to go on with. One you have spoken in, or pinned, is not stopped.')}</p>
     <form class="pl-new" id="plNew" autocomplete="off"><input class="field" id="plTitle" aria-label="${tt('名字', 'Name')}" placeholder="${tt('名字，比如：每天早上看一眼构建', 'A name: Look at the build every morning, say')}">
       <textarea class="area" id="plPrompt" rows="3" aria-label="${tt('到点时交给它的话', 'What it is told when the time comes')}" placeholder="${tt('到点时交给它的话', 'What it is told when the time comes')}"></textarea>
       <div class="row"><select class="sel" id="plWhere" aria-label="${tt('在哪个目录做', 'In which folder')}">${spaces.flatMap(w => w.places.map(p => `<option value="${esc(w.id)}|${esc(p.path)}">${esc(w.name)} · ${esc(p.show)}</option>`)).join('') || `<option value="">${tt('先建一个工作区', 'Make a workspace first')}</option>`}</select>
@@ -647,8 +647,8 @@ window.drawSettings = function () {
     const can = 'Notification' in window, perm = can ? Notification.permission : 'denied';
     $('#settingsBody').innerHTML = `<h3>${tt('通知', 'Notifications')}</h3>
       <p class="lead">${tt('这个页面不在眼前时，有会话等你、或者做完了一轮，浏览器会弹一条通知；点它就回到那条会话。只对这一个浏览器生效。', 'While this page is not in front of you, the browser tells you when a session needs you or has finished its turn; clicking it takes you to that session. This browser only.')}</p>
-      <label class="check"><input type="checkbox" id="kNotOn" ${KNOT.on && perm === 'granted' ? 'checked' : ''} ${can && perm !== 'denied' ? '' : 'disabled'}> ${tt('弹通知', 'Show notifications')}</label>
-      <label class="check"><input type="checkbox" id="kNotSound" ${KNOT.sound ? 'checked' : ''}> ${tt('同时响一声', 'With a sound')}</label>
+      <div class="kset-col"><label class="check"><input type="checkbox" id="kNotOn" ${KNOT.on && perm === 'granted' ? 'checked' : ''} ${can && perm !== 'denied' ? '' : 'disabled'}> ${tt('弹通知', 'Show notifications')}</label>
+      <label class="check"><input type="checkbox" id="kNotSound" ${KNOT.sound ? 'checked' : ''}> ${tt('同时响一声', 'With a sound')}</label></div>
       <p class="hint">${!can ? tt('这个浏览器不支持通知。', 'This browser has no notifications.') : perm === 'denied' ? tt('浏览器里已经拒绝了这个页面的通知：在浏览器的网站设置里改回来。', 'Notifications are blocked for this page in the browser: allow them in its site settings.') : !window.isSecureContext ? tt('通知要在 https 或本机（127.0.0.1）打开的页面上才有。', 'Notifications need the page opened over https or on this machine (127.0.0.1).') : ''}</p>`;
     return;
   }

@@ -45,6 +45,16 @@ So the page does not open its terminal, or a new tab in a Zellij session, when t
 
 To give Zellij more room, raise the limit in the shell it is started from, e.g. `ulimit -n 10240` in `~/.zshenv`, then start the Zellij session again: a running server keeps the limit it started with. On macOS, also set `zellij_max_files` to that number in the config, so the deck knows. A service does not read `~/.zshenv`, so the deck raises its own limit to that number before it starts a new Zellij session from the page, and that session has the same room.
 
+## Sessions that last
+
+A session is kept apart from the terminal it runs in and from the agent's own conversation: `~/.local/state/sturnus/sessions.db` (SQLite; `STURNUS_SESSIONS` points elsewhere, and without it the file sits beside the tasks') holds the workspaces and their folders, each session with the conversations and terminals it has had, a copy of what was said (what search reads), and what is set by the clock. Upgrades and a plain `sturnus uninstall` leave it alone; only `--purge` removes it. The agents' own conversation files are never written or deleted. A record that cannot be read as a database is set aside as `sessions.db.broken-<time>` and a new one begun.
+
+- `sturnus ls [--all]` lists the sessions (`--all`: the archived too); `sturnus open NUMBER|TITLE` takes the terminal it is run in to that session: it switches inside the same Zellij or tmux, attaches from a plain terminal, and gives a stopped session a new terminal first.
+- How a new terminal is opened is one setting, `terminal` in the config (Settings → Terminals): `zellij-tab` (a tab in the workspace's Zellij session), `tmux-window` (a window in the workspace's tmux session) or `tmux-own` (a tmux session of its own for each). Changing it moves nothing: it is used the next time a session is given a terminal.
+- A terminal sturnus opens carries `STURNUS_SESSION` (the session it is for) and `STURNUS_NEW` (a mark for that one start). Both are inherited by whatever runs there, so only the first process seen with a mark is taken for its session; an agent started by hand in the same terminal later is a session of its own.
+- A session's own worktree is `<repository>/.claude/worktrees/<name>` on a branch of the same name, off the main branch. Merging it back from the page is a fast-forward only, from a clean worktree of a stopped session, while the main checkout is on the main branch; files git ignores in it are listed and need a second yes.
+- A session the clock started is stopped once it has rested half an hour (`STURNUS_PLAN_REST`, seconds), unless someone has spoken in it or pinned it.
+
 ## Tasks
 
 Sessions come and go; a project's tasks stay. They are kept in `~/.local/state/sturnus/tasks.db` (SQLite; `STURNUS_TASKS` points elsewhere), which upgrades and a plain `sturnus uninstall` leave alone; only `--purge` removes it.
@@ -108,7 +118,7 @@ The dashboard and its state live on this machine. Model features send relevant s
 
 ## Trying a change
 
-A second instance can run beside the installed one: `STURNUS_CONF`, `STURNUS_CACHE`, `STURNUS_TASKS` and `AMAIL_HOME` point it at its own settings (with another `port`), caches, tasks and mail. `STURNUS_DRY=1` suppresses typing into panes and queueing into Codex threads; it is not a general network or filesystem sandbox.
+A second instance can run beside the installed one: `STURNUS_CONF`, `STURNUS_CACHE`, `STURNUS_TASKS` and `AMAIL_HOME` point it at its own settings (with another `port`), caches, tasks (and, beside them, its record of sessions) and mail. One that opens Zellij terminals also needs its own `ZELLIJ_SOCKET_DIR`, and one that opens tmux terminals its own `TMUX_TMPDIR`, set before it starts: otherwise its test sessions land among the real ones. `STURNUS_DRY=1` suppresses typing into panes and queueing into Codex threads; it is not a general network or filesystem sandbox.
 
 To reproduce the README media without contacting agent sessions or model services, use the [fixture capture runbook](../.demo-studio/runbook.md). That browser harness serves the unmodified frontend with fictional API responses and rejects mutating requests.
 

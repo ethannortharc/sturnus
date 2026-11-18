@@ -5584,12 +5584,12 @@ def uninstall(purge, with_service=True):
     if purge:
         for d in (os.path.dirname(CONF), CACHE, A.HOME):
             shutil.rmtree(d, ignore_errors=True)
-        for f in (A.TASKS, A.TASKS + '-journal'):
+        for f in (A.TASKS, A.TASKS + '-journal', K.PATH, K.PATH + '-wal', K.PATH + '-shm', K.PATH + '-journal'):
             if os.path.exists(f):
                 os.remove(f)
         with contextlib.suppress(OSError):
             os.rmdir(os.path.dirname(A.TASKS))
-        out.append('settings, caches, mail and tasks removed')
+        out.append('settings, caches, mail, tasks and the record of sessions removed')
     return '\n'.join(x for x in out if x)
 
 

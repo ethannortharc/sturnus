@@ -258,6 +258,10 @@ a.wk-row:hover, .wk-row:hover { background: var(--panel-2); }
 .pl-new .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .pl-new .row .sp { flex: 1; }
 .pl-new .row .sel { height: 32px; max-width: 280px; }
-.pl-new .row .field { width: 110px; height: 32px; }
+.pl-new .row .field { width: 136px; height: 32px; }
+.pl-lead { margin: -6px 0 14px; color: var(--muted); font-size: 13px; line-height: 1.6; max-width: 760px; }
 .wk-row.pl.off .t { opacity: .6; }
 .wk-row.pl .t small { white-space: normal; }
+.kset-col { display: flex; flex-direction: column; gap: 10px; margin: 14px 0 10px; }
+.kp-info { overflow-x: hidden; }
+.kp-info .hint.mono { overflow-wrap: anywhere; word-break: break-all; }
