@@ -133,8 +133,12 @@ class Sessions(unittest.TestCase):
 
         # words from the page are typed into its terminal
         self.until(lambda: (self.kept(kid) or {}).get('state') == 'idle', 'it did not come to rest')
-        self.assertTrue(self.call('/api/say', {'id': k['live'], 'text': 'second ask'})['ok'])
+        j = self.call('/api/say', {'id': k['live'], 'text': 'second ask'})
+        self.assertEqual((j['ok'], j.get('how')), (True, 'type'), j)  # (the page says beside the words how they went)
         self.until(lambda: 'done: second ask' in self.said(kid), 'the words typed did not reach it')
+        got = self.call(f'/api/transcript?kept={kid}')
+        self.assertTrue(got['sig'] and got['items'])
+        self.assertEqual(self.call(f'/api/transcript?kept={kid}&have={got["sig"]}'), {'same': True, 'sig': got['sig']})
 
         # a cleared conversation in the same terminal: the same session, a second conversation
         self.assertTrue(self.call('/api/type', {'id': self.kept(kid)['live'], 'text': '/clear', 'enter': True})['ok'])

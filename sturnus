@@ -3159,14 +3159,13 @@ class Deck:
                 return False, tx(f'{s["name"]} 已经退出了', f'{s["name"]} has exited')
             if how == 'menu':
                 return False, tx(f'{s["name"]} 停在一个授权或选择提示上，打进去的字会被当成对它的回答：先进终端处理它', f'{s["name"]} is stopped at a permission or choice prompt, and typed text would answer it: handle it in the terminal first')
-            if how == 'type':
-                return self.type_in(s, text, True)
-            if how == 'queue':
-                return self.queue_act({'do': 'add', 'text': text, 'to': s['name'], 'mode': 'plain'})
+            if how in ('type', 'queue'):
+                ok, r = self.type_in(s, text, True) if how == 'type' else self.queue_act({'do': 'add', 'text': text, 'to': s['name'], 'mode': 'plain'})
+                return (True, {**(r if isinstance(r, dict) else {'msg': r}), 'how': how}) if ok else (False, r)
             if not A.send(ME_NAME, s['name'], text, 'question'):
                 return False, tx('发不出去', 'Could not send')
             self.wake(s['name'])
-            return True, tx(f'放进了 {s["name"]} 的信箱：它不在 Zellij 或 tmux 里，下一步就会看到', f'Put in the mailbox of {s["name"]}: it is not in Zellij or tmux, and sees it next')
+            return True, {'msg': tx(f'放进了 {s["name"]} 的信箱：它不在 Zellij 或 tmux 里，下一步就会看到', f'Put in the mailbox of {s["name"]}: it is not in Zellij or tmux, and sees it next'), 'how': 'mail'}
         if what == 'attribute':  # (the person's word on which project a session works on; '' goes back to what was found)
             v = str(body.get('project') or '')
             if not s:
@@ -5229,7 +5228,12 @@ class Handler(BaseHTTPRequestHandler):
             q = parse_qs(urlparse(self.path).query)
             sid, sub = (q.get('id') or [''])[0], (q.get('sub') or [''])[0]
             if (q.get('kept') or [''])[0]:  # (a session that lasts: all its conversations, one after another)
-                return self.send_json({'items': DECK.kept_items(q['kept'][0])})
+                items = DECK.kept_items(q['kept'][0])
+                # (the page that shows it asks every second or so while it works: what it already has is not sent again)
+                sig = hashlib.sha1(json.dumps([len(items)] + [[i.get('seg'), i.get('at'), i.get('who'), len(i.get('text') or '')] for i in items[-4:]]).encode()).hexdigest()[:16]
+                if (q.get('have') or [''])[0] == sig:
+                    return self.send_json({'same': True, 'sig': sig})
+                return self.send_json({'items': items, 'sig': sig})
             s = DECK.find(sid)
             path = transcript_of(s) if s else None
             if path and sub:  # (one of its sub-agents' conversations, from beside its own)

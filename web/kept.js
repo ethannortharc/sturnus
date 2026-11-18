@@ -8,6 +8,19 @@
 const OLD = { parseRoute, build, render, drawRail, drawSide, palPlaces, palItems, drawSettings };
 const KV = { view: store.get('deck.kView', 'space'), open: new Set(store.get('deck.kOpen', [])), places: store.get('deck.kPlaces', false), info: store.get('deck.kInfo', true),
   full: {}, all: null, allAt: 0, chatAt: 0, menu: false, rename: false, blind: !S, spTab: {}, allShow: 'open', allQ: '', hand: null, hits: [], hitsQ: '', hitsT: 0, side: 'info', diff: { id: '', at: 0, data: null, files: {} } };
+KV.shut = new Set(store.get('deck.kShut', []));  // (the workspaces folded shut in the sidebar: each shows its name and its counts only)
+const KNEED = ['waiting', 'asking', 'blocked', 'review'];
+// (how the sidebar's sessions are grouped, and how they are ordered inside a group: each the person's choice, kept in this browser)
+const KGROUP = { space: ['工作区', 'Workspace'], state: ['状态', 'Status'], kind: ['Agent', 'Agent'], day: ['时间', 'Date'], flat: ['不分组', 'No groups'] };
+const KSORT = { state: ['等你的在前', 'Needs you first'], at: ['最近活动', 'Last active'], made: ['创建时间', 'Created'], name: ['名字', 'Name'] };
+if (!KGROUP[KV.view]) KV.view = 'space';
+KV.sort = store.get('deck.kSort', 'state');
+if (!KSORT[KV.sort]) KV.sort = 'state';
+KV.arr = false;  // (the menu of those two, open)
+// (what the person sent from a session's page and its conversation does not show yet: shown at once, under the conversation)
+Object.assign(KV, { sent: {}, sentN: 0, chat: { id: '', items: [], sig: '' }, chatBusy: false, chatFast: 0 });
+const KSENT = { sending: ['发送中……', 'Sending…'], type: ['已送到它的终端', 'In its terminal'], wait: ['已送到它的终端，它忙完这一步就读', 'In its terminal: read once it is through with this step'],
+  queue: ['已排上队：它空下来就送到', 'Queued: delivered once it is free'], mail: ['已放进它的信箱，它下一步就会看到', 'In its mailbox: it sees it next'], start: ['终端起来后送到', 'Delivered once its terminal is up'] };
 const KN = { kind: store.get('deck.newKind', 'claude'), space: store.get('deck.kSpace', null), dir: '', wt: store.get('deck.kWt', false) };  // (space: null until the person has picked one, or none)
 const KI = {
   side: '<svg viewBox="0 0 20 20"><rect x="3.5" y="4.5" width="13" height="11" rx="2"/><path d="M8 4.5v11"/></svg>',
@@ -20,6 +33,8 @@ const KI = {
   gear: '<svg viewBox="0 0 20 20"><path d="M8.6 2.8h2.8l.4 2 1.6.9 1.9-.7 1.4 2.4-1.5 1.3v1.8l1.5 1.3-1.4 2.4-1.9-.7-1.6.9-.4 2H8.6l-.4-2-1.6-.9-1.9.7-1.4-2.4 1.5-1.3V9.1L3.3 7.8l1.4-2.4 1.9.7 1.6-.9z"/><circle cx="10" cy="10" r="2.3"/></svg>',
   x: '<svg viewBox="0 0 20 20"><path d="m5.5 5.5 9 9M14.5 5.5l-9 9"/></svg>',
   clock: '<svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="6.5"/><path d="M10 6.5V10l2.5 1.5"/></svg>',
+  shut: '<svg viewBox="0 0 20 20"><path d="m6.5 4 3.5 3 3.5-3M6.5 16l3.5-3 3.5 3"/></svg>',
+  unshut: '<svg viewBox="0 0 20 20"><path d="m6.5 7.5 3.5-3 3.5 3M6.5 12.5l3.5 3 3.5-3"/></svg>',
 };
 const KNOT = { on: store.get('deck.kNotify', false), sound: store.get('deck.kSound', false), was: null };
 const KWAY = { 'zellij-tab': ['Zellij：工作区那一组里的一个标签', 'Zellij: a tab in the workspace’s group'], 'tmux-window': ['tmux：工作区那一组里的一个窗口', 'tmux: a window in the workspace’s group'],
@@ -37,6 +52,9 @@ const kHref = k => `#/k/${encodeURIComponent(k.id)}`;
 const kRank = st => SIDE_RANK[st] ?? (st === 'stopped' ? 8 : 9);
 // (the running ones in the order they began, so the list holds still while they work; the stopped ones, the latest first)
 const kOrder = (a, b) => { const x = kStand(a)[0], y = kStand(b)[0]; return kRank(x) - kRank(y) || (x === 'stopped' ? b.at - a.at : ((kLive(a) || {}).born || 0) - ((kLive(b) || {}).born || 0)); };
+const kAt = k => { const s = kLive(k); return (s && (s.at || s.since)) || k.at || 0; };  // (when a session last did something)
+const kSorter = () => (KV.sort === 'at' ? (a, b) => kAt(b) - kAt(a) : KV.sort === 'made' ? (a, b) => (b.made || 0) - (a.made || 0)
+  : KV.sort === 'name' ? (a, b) => kTitle(a).localeCompare(kTitle(b), LANG === 'zh' ? 'zh-Hans-CN' : 'en', { numeric: true, sensitivity: 'base' }) : kOrder);
 const kDay = ts => { const d = new Date(ts * 1000); return tt(`${d.getMonth() + 1}月${d.getDate()}日 `, `${d.getMonth() + 1}/${d.getDate()} `) + d.toLocaleTimeString(LANG === 'en' ? 'en-GB' : 'zh-CN', { hour: '2-digit', minute: '2-digit' }); };
 const kWhere = t => (t.mux ? `${t.mux} ${t.grp.replace(/^tmux:/, '')}${tt(`，窗格 ${t.pane}`, `, pane ${t.pane}`)}` : (t.origin ? originT(t.origin) : tt('不在 Zellij 或 tmux 里', 'not in Zellij or tmux')));
 const kMux = t => (t.mux === 'tmux' ? 'tmux' : t.mux === 'zellij' ? 'Zellij' : tt('别处', 'elsewhere'));
@@ -93,47 +111,105 @@ function kRow(k, two) {
   return `<a class="ks-row${on ? ' on' : ''}${two ? ' two' : ''}" href="${kHref(k)}" title="${esc(kTitle(k))} · ${esc(FULL[k.kind] || k.kind)} · ${esc(kStand(k)[1])}">${mark(k.kind, st, 'xs')}
     <span class="t"><span>${esc(kTitle(k))}</span>${two ? `<small>${esc(sp ? sp.name : tt('未归入工作区', 'In no workspace'))}</small>` : ''}</span><span class="w${need ? ' need' : ''}">${esc(when)}</span></a>`;
 }
-function kGroup(key, head, rows) {
-  rows = rows.slice().sort(kOrder);
-  const liveN = rows.filter(k => k.live).length, cap = Math.max(liveN, 6), open = KV.open.has(key);
-  const shown = open ? rows : rows.slice(0, cap);
-  return `<div class="ks-g">${head}${shown.map(k => kRow(k)).join('')}${rows.length > cap ? `<button class="ks-more" data-kopen="${esc(key)}">${chev(open)}${open ? tt('收起', 'Fold') : tt(`还有 ${rows.length - cap} 条`, `${rows.length - cap} more`)}</button>` : ''}</div>`;
+function kGroup(key, label, lead, rows, plus = '', two = false) {
+  rows = rows.slice().sort(kSorter());
+  const shut = KV.shut.has(key), liveN = rows.filter(k => k.live).length, open = KV.open.has(key);
+  const need = rows.filter(k => KNEED.includes(kStand(k)[0])).length;
+  const few = rows.filter((k, i) => i < 6 || k.live || k.id === route.kept);  // (not opened out: the first six as ordered, and whatever runs or is being looked at)
+  const shown = shut ? rows.filter(k => k.id === route.kept) : open ? rows : few;  // (shut: only the one being looked at stays in sight)
+  const say = shut ? tt(`展开 ${label}`, `Unfold ${label}`) : tt(`折叠 ${label}`, `Fold ${label}`);
+  return `<div class="ks-g${shut ? ' shut' : ''}"><div class="ks-gh" data-kshut="${esc(key)}"><button class="ks-cv" aria-expanded="${!shut}" title="${esc(say)}" aria-label="${esc(say)}">${chev(!shut)}</button>${lead}
+      ${shut ? `<span class="ks-cnt">${need ? `<span class="n hot" title="${tt('等你的', 'Need you')}">${big(need)}</span>` : ''}<span class="n" title="${liveN ? tt(`${rows.length} 条会话，${liveN} 条在跑`, `${rows.length} sessions, ${liveN} running`) : tt(`${rows.length} 条会话`, `${rows.length} sessions`)}">${big(rows.length)}</span></span>` : ''}${plus}</div>
+    ${shown.map(k => kRow(k, two)).join('')}${!shut && rows.length > few.length ? `<button class="ks-more" data-kopen="${esc(key)}">${chev(open)}${open ? tt('收起', 'Fold') : tt(`还有 ${rows.length - few.length} 条`, `${rows.length - few.length} more`)}</button>` : ''}</div>`;
 }
+// (a workspace's mark where there is room for no name: two letters of a Latin name, one character of any other)
+const kAbbr = name => { const n = String(name || '').trim(), m = n.match(/^[A-Za-z0-9][A-Za-z0-9]?/); return m ? m[0][0].toUpperCase() + m[0].slice(1).toLowerCase() : [...n][0] || '?'; };
 function kDrawSide() {
   const kept = (S.kept || []).filter(k => !k.archived), spaces = (S.spaces || []).filter(w => !w.archived);
   const need = S.sessions.filter(attention).length + (S.inbox || []).length + (S.lock_issues || []).length;
   const boards = Object.values(S.boards || {}), bNew = boards.reduce((n, b) => n + (b.unread || 0), 0), bCalls = boards.reduce((n, b) => n + (b.calls || 0), 0);
   const tNeed = (S.tasks || []).filter(x => x.shown === 'needs').length, qReady = (S.queue || []).filter(i => i.status === 'ready').length;
   const off = Date.now() - lastOk > 6000;
-  draw('ks', [route, KV.view, [...KV.open], KV.places, kept.map(k => [k.id, kTitle(k), k.space, k.pinned, k.live, k.kind, kStand(k)[0]]), spaces.map(w => [w.id, w.name, w.places.length]),
+  const narrow = sideOff && !phone();
+  $('#ks').classList.toggle('strip', narrow);  // (not 'rail': that is the old frame's, and hidden here)
+  draw('ks', [route, narrow, KV.view, KV.sort, KV.arr, KV.sort === 'at' && kept.map(kAt), [...KV.open], [...KV.shut], KV.places, kept.map(k => [k.id, kTitle(k), k.space, k.pinned, k.live, k.kind, kStand(k)[0]]), spaces.map(w => [w.id, w.name, w.places.length]),
     need, bNew, bCalls, tNeed, qReady, off, S.version, Math.floor(Date.now() / 60000), LANG, document.documentElement.dataset.theme], () => {
-    const at = route.name, nav = (href, on, icon, label, n, hot) => `<a href="${href}" class="${on ? 'on' : ''}">${icon}<span>${label}</span>${n ? `<span class="n${hot ? ' hot' : ''}">${big(n)}</span>` : ''}</a>`;
-    const pinned = kept.filter(k => k.pinned).sort(kOrder), rest = kept.filter(k => !k.pinned);
-    let list;
-    if (KV.view === 'flat') {
-      list = (pinned.length ? `<div class="ks-g"><div class="ks-sub">${tt('置顶', 'Pinned')}</div>${pinned.map(k => kRow(k, true)).join('')}</div>` : '')
-        + `<div class="ks-g"><div class="ks-sub">${tt('运行中的在前，其余按最近', 'Running first, then the latest')}</div>${rest.slice().sort(kOrder).slice(0, KV.open.has('~flat') ? 400 : 40).map(k => kRow(k, true)).join('')}
-          ${rest.length > 40 ? `<button class="ks-more" data-kopen="~flat">${chev(KV.open.has('~flat'))}${KV.open.has('~flat') ? tt('收起', 'Fold') : tt(`还有 ${rest.length - 40} 条`, `${rest.length - 40} more`)}</button>` : ''}</div>`;
-    } else {
-      const none = rest.filter(k => !kSpace(k.space) || kSpace(k.space).archived);
-      list = (pinned.length ? `<div class="ks-g"><div class="ks-sub">${tt('置顶', 'Pinned')}</div>${pinned.map(k => kRow(k)).join('')}</div>` : '')
-        + spaces.slice().sort((a, b) => (b.live > 0) - (a.live > 0) || a.name.localeCompare(b.name)).map(w => kGroup(w.id, `<div class="ks-gh"><span class="ks-tile">${esc(w.name.slice(0, 1).toUpperCase())}</span>
-            <a class="nm" href="#/w/${encodeURIComponent(w.id)}" title="${esc(w.places.map(p => p.show).join('\n'))}">${esc(w.name)}</a>
-            <a class="ks-ib" href="#/" data-knew="${esc(w.id)}" title="${esc(tt(`在 ${w.name} 里开新会话`, `New session in ${w.name}`))}" aria-label="${esc(tt(`在 ${w.name} 里开新会话`, `New session in ${w.name}`))}">${I.plus}</a></div>`, rest.filter(k => k.space === w.id))).join('')
-        + (none.length ? kGroup('~none', `<div class="ks-gh"><span class="ks-tile none"></span><span class="nm">${tt('未归入工作区', 'In no workspace')}</span></div>`, none) : '');
+    const at = route.name, more = ['talk', 'reports', 'queue', 'plans'], plans = (S.plans || []).filter(x => x.live).length;
+    const here = at === 'space' ? route.key : at === 'session' ? ((kOf(route.kept) || {}).space || '~none') : '';
+    const none = kept.filter(k => !kSpace(k.space) || kSpace(k.space).archived);
+    // (the workspaces in the order chosen for sessions: the one with the latest, or the newest, session first; by name; or those that need the person, then those at work)
+    const mineOf = w => kept.filter(k => k.space === w.id), byName = (a, b) => a.name.localeCompare(b.name);
+    const lead = new Map(spaces.map(w => [w.id, KV.sort === 'at' ? Math.max(0, ...mineOf(w).map(kAt)) : KV.sort === 'made' ? Math.max(0, ...mineOf(w).map(k => k.made || 0))
+      : KV.sort === 'name' ? 0 : (mineOf(w).some(k => KNEED.includes(kStand(k)[0])) ? 2 : 0) + (w.live > 0 ? 1 : 0)]));
+    const byLive = spaces.slice().sort((a, b) => lead.get(b.id) - lead.get(a.id) || byName(a, b));
+    if (narrow) {  // (folded to a strip of marks: every place still one click away, each workspace a tile that says whether it needs the person)
+      const rb = (href, on, icon, label, n, hot) => `<a href="${href}" class="kr-b${on ? ' on' : ''}" title="${esc(label)}" aria-label="${esc(label)}">${icon}${n ? `<span class="n${hot ? ' hot' : ''}">${big(n)}</span>` : ''}</a>`;
+      const tile = (id, name, mine, href, cls = '') => {
+        const n = mine.filter(k => KNEED.includes(kStand(k)[0])).length, live = mine.filter(k => k.live).length;
+        const say = `${name}${n ? tt(`：${n} 条等你`, `: ${n} need you`) : live ? tt(`：${live} 条在跑`, `: ${live} running`) : ''}`;
+        return `<a class="kr-b kr-w${here === id ? ' on' : ''}" href="${href}" title="${esc(say)}" aria-label="${esc(say)}"><span class="ks-tile${cls}">${cls ? '' : esc(kAbbr(name))}</span>${n ? `<span class="n hot">${big(n)}</span>` : live ? '<i></i>' : ''}</a>`;
+      };
+      $('#ks').innerHTML = `<button class="kr-b" id="ksShow" title="${tt('展开侧栏（⌘B）', 'Show the sidebar (⌘B)')}" aria-label="${tt('展开侧栏', 'Show the sidebar')}">${KI.side}</button>
+        <a class="kr-b kr-new" href="#/" title="${tt('新会话（N）', 'New session (N)')}" aria-label="${tt('新会话', 'New session')}">${I.plus}</a>
+        <button class="kr-b" id="ksFind" title="${tt('搜索会话、工作区（⌘K）', 'Search sessions, workspaces (⌘K)')}" aria-label="${tt('搜索', 'Search')}">${KI.find}</button>
+        <span class="kr-sep"></span>
+        ${rb('#/need', at === 'need', KI.bell, tt('等你处理', 'Needs you'), need, true)}${rb('#/tasks', at === 'tasks', I.check, tt('任务', 'Tasks'), tNeed, true)}${rb('#/boards', at === 'boards' || at === 'board', I.chat, tt('讨论', 'Discussions'), bCalls || bNew, bCalls > 0)}
+        ${at === 'talk' ? rb('#/talk', true, I.mail, tt('消息', 'Messages')) : at === 'reports' ? rb('#/reports', true, I.doc, tt('报告', 'Reports')) : at === 'queue' ? rb('#/queue', true, I.list, tt('排队', 'Queue'), qReady, true) : at === 'plans' ? rb('#/plans', true, KI.clock, tt('定时', 'By the clock'), plans) : ''}
+        <span class="kr-sep"></span>
+        <div class="kr-list">${byLive.map(w => tile(w.id, w.name, kept.filter(k => k.space === w.id), `#/w/${encodeURIComponent(w.id)}`)).join('')}${none.length ? tile('~none', tt('未归入工作区', 'In no workspace'), none, '#/all', ' none') : ''}</div>
+        <div class="kr-foot"><span class="ks-conn${off ? ' off' : ''}" title="${off ? tt('连接中断，重试中', 'Reconnecting') : tt('实时', 'Live')} · Sturnus ${esc(S.version || '')}"><i></i></span>
+          <button class="kr-b" id="ksAsst" title="${tt('助手：问各个会话的事（⌘J）', 'Assistant: ask about the sessions (⌘J)')}" aria-label="${tt('助手', 'Assistant')}">${I.spark}</button>
+          <button class="kr-b" id="ksSet" title="${tt('设置', 'Settings')}" aria-label="${tt('设置', 'Settings')}">${KI.gear}</button></div>`;
+      return;
     }
-    $('#ks').innerHTML = `<div class="ks-brand"><a href="#/" class="ks-logo" aria-label="Sturnus"><img class="logo" src="icon.svg" alt=""><b>Sturnus</b></a>
-        <button class="ks-ib" id="ksFold" title="${tt('收起侧栏（⌘B）', 'Hide the sidebar (⌘B)')}" aria-label="${tt('收起侧栏', 'Hide the sidebar')}">${KI.side}</button></div>
-      <div class="ks-top"><a class="ks-new${at === 'home' ? ' on' : ''}" href="#/">${I.plus}<span>${tt('新会话', 'New session')}</span><kbd>N</kbd></a>
-        <button class="ks-find" id="ksFind">${KI.find}<span>${tt('搜索会话、工作区', 'Search sessions, workspaces')}</span><kbd>⌘K</kbd></button></div>
-      <nav class="ks-nav">${nav('#/need', at === 'need', KI.bell, tt('等你处理', 'Needs you'), need, true)}${nav('#/tasks', at === 'tasks', I.check, tt('任务', 'Tasks'), tNeed, true)}${nav('#/boards', at === 'boards' || at === 'board', I.chat, tt('讨论', 'Discussions'), bCalls || bNew, bCalls > 0)}
-        ${KV.places || ['talk', 'reports', 'queue', 'plans'].includes(at) ? nav('#/talk', at === 'talk', I.mail, tt('消息', 'Messages')) + nav('#/reports', at === 'reports', I.doc, tt('报告', 'Reports')) + nav('#/queue', at === 'queue', I.list, tt('排队', 'Queue'), qReady, true) + nav('#/plans', at === 'plans', KI.clock, tt('定时', 'By the clock'), (S.plans || []).filter(x => x.live).length) : ''}
-        ${KV.places || !['talk', 'reports', 'queue', 'plans'].includes(at) ? `<button class="ks-more" data-kplaces>${chev(KV.places)}${KV.places ? tt('收起', 'Fold') : tt('消息、报告、排队、定时', 'Messages, reports, more')}</button>` : ''}</nav>
-      <div class="ks-h"><span>${tt('会话', 'Sessions')}</span><div class="ks-seg" role="group" aria-label="${tt('会话怎么排', 'How sessions are listed')}"><button data-kview="space" class="${KV.view === 'space' ? 'on' : ''}">${tt('按工作区', 'By workspace')}</button><button data-kview="flat" class="${KV.view === 'flat' ? 'on' : ''}">${tt('不分组', 'One list')}</button></div></div>
+    // (a place in one line of the sidebar: its word where words are two characters long, its mark where they are not — three English words and their counts do not fit a line)
+    const chip = (href, on, icon, label, n, hot, full) => `<a href="${href}" class="ks-chip${on ? ' on' : ''}" title="${full || label}"${LANG === 'zh' ? '' : ` aria-label="${full || label}"`}>${LANG === 'zh' ? `<span>${label}</span>` : icon}${n ? `<span class="n${hot ? ' hot' : ''}">${big(n)}</span>` : ''}</a>`;
+    const pinned = kept.filter(k => k.pinned), rest = kept.filter(k => !k.pinned);
+    const two = KV.view !== 'space', plain = x => `<span class="nm">${esc(x)}</span>`;
+    let groups = [];  // ([key, its name, what its head shows, its sessions, what follows its head])
+    if (KV.view === 'space') {
+      const loose = rest.filter(k => !kSpace(k.space) || kSpace(k.space).archived);
+      groups = byLive.map(w => [w.id, w.name, `<span class="ks-tile">${esc(w.name.slice(0, 1).toUpperCase())}</span>
+            <a class="nm" href="#/w/${encodeURIComponent(w.id)}" title="${esc(w.places.map(p => p.show).join('\n'))}">${esc(w.name)}</a>`, rest.filter(k => k.space === w.id),
+            `<a class="ks-ib" href="#/" data-knew="${esc(w.id)}" title="${esc(tt(`在 ${w.name} 里开新会话`, `New session in ${w.name}`))}" aria-label="${esc(tt(`在 ${w.name} 里开新会话`, `New session in ${w.name}`))}">${I.plus}</a>`]);
+      if (loose.length) groups.push(['~none', tt('未归入工作区', 'In no workspace'), `<span class="ks-tile none"></span>${plain(tt('未归入工作区', 'In no workspace'))}`, loose, '']);
+    } else if (KV.view === 'state') {
+      const of = k => { const st = kStand(k)[0]; return KNEED.includes(st) ? 'need' : st === 'stopped' ? 'stopped' : st === 'idle' ? 'idle' : 'working'; };
+      groups = [['need', tt('等你', 'Needs you')], ['working', tt('工作中', 'Working')], ['idle', tt('空闲', 'Idle')], ['stopped', tt('已停止', 'Stopped')]].map(([x, name]) => [`~st:${x}`, name, plain(name), rest.filter(k => of(k) === x), '']);
+    } else if (KV.view === 'kind') {
+      const kinds = [...new Set(['claude', 'codex', 'cursor', ...rest.map(k => k.kind)])];
+      groups = kinds.map(x => [`~k:${x}`, FULL[x] || x, `${mark(x, '', 'xs')}${plain(FULL[x] || x)}`, rest.filter(k => k.kind === x), '']);
+    } else if (KV.view === 'day') {  // (by the day of what the order goes by: when it was made, else when it last did something)
+      const d0 = new Date(); d0.setHours(0, 0, 0, 0);
+      const t0 = d0 / 1000, when = k => (KV.sort === 'made' ? k.made || 0 : kAt(k));
+      const of = k => { const t = when(k); return t >= t0 ? 'today' : t >= t0 - 86400 ? 'yday' : t >= t0 - 6 * 86400 ? 'week' : t >= t0 - 29 * 86400 ? 'month' : 'old'; };
+      groups = [['today', tt('今天', 'Today')], ['yday', tt('昨天', 'Yesterday')], ['week', tt('最近 7 天', 'Last 7 days')], ['month', tt('最近 30 天', 'Last 30 days')], ['old', tt('更早', 'Earlier')]].map(([x, name]) => [`~d:${x}`, name, plain(name), rest.filter(k => of(k) === x), '']);
+    }
+    if (KV.view !== 'space') groups = groups.filter(g => g[3].length);
+    if (pinned.length) groups.unshift(['~pin', tt('置顶', 'Pinned'), `<span class="nm sub">${tt('置顶', 'Pinned')}</span>`, pinned, '']);
+    const keys = KV.view === 'flat' ? [] : groups.map(g => g[0]);
+    let list = groups.map(g => kGroup(g[0], g[1], g[2], g[3], g[4], two)).join('');
+    if (KV.view === 'flat') {
+      const all = rest.slice().sort(kSorter()), wide = KV.open.has('~flat');
+      list += `<div class="ks-g">${all.slice(0, wide ? 400 : 40).map(k => kRow(k, true)).join('')}
+          ${all.length > 40 ? `<button class="ks-more" data-kopen="~flat">${chev(wide)}${wide ? tt('收起', 'Fold') : tt(`还有 ${all.length - 40} 条`, `${all.length - 40} more`)}</button>` : ''}</div>`;
+    }
+    const allShut = keys.length > 0 && keys.every(x => KV.shut.has(x));
+    $('#ks').innerHTML = `<div class="ks-top"><a href="#/" class="ks-logo" title="Sturnus" aria-label="Sturnus"><img class="logo" src="icon.svg" alt=""></a>
+        <a class="ks-new${at === 'home' ? ' on' : ''}" href="#/">${I.plus}<span>${tt('新会话', 'New session')}</span><kbd>N</kbd></a>
+        <button class="ks-ib" id="ksFind" title="${tt('搜索会话、工作区（⌘K）', 'Search sessions, workspaces (⌘K)')}" aria-label="${tt('搜索', 'Search')}">${KI.find}</button>
+        <button class="ks-ib" id="ksFold" title="${tt('收成一条图标栏（⌘B）', 'Fold to a strip of icons (⌘B)')}" aria-label="${tt('收起侧栏', 'Fold the sidebar')}">${KI.side}</button></div>
+      <nav class="ks-nav">${chip('#/need', at === 'need', KI.bell, tt('等你', 'Needs you'), need, true, tt('等你处理', 'Needs you'))}${chip('#/tasks', at === 'tasks', I.check, tt('任务', 'Tasks'), tNeed, true)}${chip('#/boards', at === 'boards' || at === 'board', I.chat, tt('讨论', 'Discussions'), bCalls || bNew, bCalls > 0)}
+        <button class="ks-chip ic${KV.places ? ' on' : ''}" data-kplaces aria-expanded="${KV.places || more.includes(at)}" title="${tt('消息、报告、排队、定时', 'Messages, reports, queue, by the clock')}" aria-label="${tt('更多：消息、报告、排队、定时', 'More: messages, reports, queue, by the clock')}">${KI.dots}</button>
+        ${KV.places || more.includes(at) ? `<span class="ks-br"></span>${chip('#/talk', at === 'talk', I.mail, tt('消息', 'Messages'))}${chip('#/reports', at === 'reports', I.doc, tt('报告', 'Reports'))}${chip('#/queue', at === 'queue', I.list, tt('排队', 'Queue'), qReady, true)}${chip('#/plans', at === 'plans', KI.clock, tt('定时', 'By the clock'), plans)}` : ''}</nav>
+      <div class="ks-h"><span>${tt('会话', 'Sessions')}</span>${keys.length ? `<button class="ks-ib" data-kshutall="${allShut ? 0 : 1}" data-keys="${esc(keys.join(' '))}" title="${allShut ? tt('全部展开', 'Unfold all') : tt('全部折叠', 'Fold all')}" aria-label="${allShut ? tt('全部展开', 'Unfold all') : tt('全部折叠', 'Fold all')}">${allShut ? KI.unshut : KI.shut}</button>` : ''}
+        <div class="ks-arr"><button class="ks-arrb" data-karr aria-haspopup="menu" aria-expanded="${KV.arr}" title="${tt('分组和排序', 'Grouping and order')}">${tt(...KGROUP[KV.view])}<i>·</i>${tt(...KSORT[KV.sort])}${chev(true)}</button>
+          ${KV.arr ? `<div class="ks-menu" role="menu" aria-label="${tt('分组和排序', 'Grouping and order')}"><div class="ks-mh">${tt('分组', 'Group by')}</div>${Object.keys(KGROUP).map(x => `<button role="menuitemradio" aria-checked="${KV.view === x}" data-kview="${x}">${KV.view === x ? I.check : '<span class="no"></span>'}${tt(...KGROUP[x])}</button>`).join('')}
+            <div class="ks-mh">${tt('排序', 'Order')}</div>${Object.keys(KSORT).map(x => `<button role="menuitemradio" aria-checked="${KV.sort === x}" data-ksort="${x}">${KV.sort === x ? I.check : '<span class="no"></span>'}${tt(...KSORT[x])}</button>`).join('')}</div>` : ''}</div></div>
       <div class="ks-list" id="ksList">${list}
         <a class="ks-more" href="#/w/+">${I.plus}${tt('新建工作区', 'New workspace')}</a>
         <a class="ks-more${at === 'all' ? ' on' : ''}" href="#/all">${I.list}${tt('查看全部会话和已归档的', 'All sessions, and the archived')}</a></div>
-      <div class="ks-foot"><span class="ks-conn${off ? ' off' : ''}"><i></i>${off ? tt('连接中断，重试中', 'Reconnecting') : tt('实时', 'Live')}</span><span class="v">${esc(S.version || '')}</span>
+      <div class="ks-foot"><span class="ks-conn${off ? ' off' : ''}"><i></i>${off ? tt('连接中断，重试中', 'Reconnecting') : tt('实时', 'Live')}</span><span class="v">Sturnus ${esc(S.version || '')}</span>
         <button class="ks-ib" id="ksAsst" title="${tt('助手：问各个会话的事（⌘J）', 'Assistant: ask about the sessions (⌘J)')}" aria-label="${tt('助手', 'Assistant')}">${I.spark}</button>
         <button class="ks-ib" id="ksTheme" title="${tt('主题', 'Theme')}" aria-label="${tt('主题', 'Theme')}">${document.documentElement.dataset.theme === 'dark' ? I.moon : I.sun}</button>
         <button class="ks-ib" id="ksSet" title="${tt('设置', 'Settings')}" aria-label="${tt('设置', 'Settings')}">${KI.gear}</button></div>`;
@@ -190,9 +266,11 @@ async function kStart() {
   const cwd = other ? ($('#knCwd') ? $('#knCwd').value.trim() : '') : KN.dir;
   if (!cwd) { toast(tt('先选一个目录', 'Pick a folder first'), false); if ($('#knCwd')) $('#knCwd').focus(); return; }
   $('#knGo').disabled = true;
-  const j = await kDo('new', { kind: KN.kind, cwd, prompt: $('#knText').value.trim(), space: sp ? sp.id : '', worktree: !!KN.wt });
+  const words = $('#knText').value.trim();
+  const j = await kDo('new', { kind: KN.kind, cwd, prompt: words, space: sp ? sp.id : '', worktree: !!KN.wt });
   if ($('#knGo')) $('#knGo').disabled = false;
   if (!j.ok) return;
+  if (j.kept && words) kSent({ id: j.kept }, words, 'start');
   store.set('deck.newKind', KN.kind); store.set('deck.kSpace', KN.space); store.set('deck.kWt', !!KN.wt); if (other) store.set('deck.newCwd', cwd);
   if ($('#knText')) $('#knText').value = '';
   if (j.kept) location.hash = `#/k/${encodeURIComponent(j.kept)}`;
@@ -289,22 +367,71 @@ function kChatHtml(k, items, full) {
   if (last && last.ended && !k.live) out += `<div class="kdiv"><span><b>${tt('终端结束了', 'Its terminal ended')}</b>${esc(kDay(last.ended))}${tt(`，${(KWHY[last.why] || KWHY.ended)[0]}。对话都还在`, `, ${(KWHY[last.why] || KWHY.ended)[1]}. The conversation is all here`)}</span></div>`;
   return out || `<div class="hint">${k.live ? tt('还没有说过话。', 'Nothing said yet.') : tt('读不到它的对话记录。', 'Its conversation cannot be read.')}</div>`;
 }
+// (what was sent from this page and the conversation does not show yet. One is let go once its words are there — once
+// more often than when it was sent, so the same words said twice count — or once it has waited as long as its way takes)
+const kNorm = x => String(x || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+const kSaidN = (items, text) => { const n = kNorm(text); return items.filter(it => it.who === 'user' && kNorm(it.text) === n).length; };
+function kPending(k) {
+  const items = KV.chat.id === k.id ? KV.chat.items : [], now = Date.now();
+  const list = (KV.sent[k.id] || []).filter(p => p.state === 'sending' || (kSaidN(items, p.text) <= p.seen && now - p.t < ({ queue: 900000, wait: 900000, start: 180000 }[p.how] || 45000)));
+  if (list.length) KV.sent[k.id] = list; else delete KV.sent[k.id];
+  return list;
+}
+function kSent(k, text, how, state = 'sent') {
+  const p = { n: ++KV.sentN, text, how, state, t: Date.now(), seen: KV.chat.id === k.id ? kSaidN(KV.chat.items, text) : 0 };
+  (KV.sent[k.id] = KV.sent[k.id] || []).push(p);
+  KV.chatFast = Date.now() + 30000;
+  return p;
+}
+function kChatPaint(k, stick) {
+  if (!$('#convo')) return;
+  const full = (KV.full[k.id] || {}).kept || {}, items = KV.chat.id === k.id ? KV.chat.items : [], pend = kPending(k);
+  if (KV.chat.id !== k.id && !pend.length) return;  // (not read yet, and nothing to show meanwhile: the line that says so stays)
+  draw('kc', [k.id, items.length, items.length && items[items.length - 1].text.slice(0, 60), (full.terms || []).map(t => [t.n, t.ended, t.why]), (full.segs || []).length, k.live, pend.map(p => [p.n, p.state, p.how]), LANG], () => {
+    const sess = $('#sess'), atEnd = sess.scrollHeight - sess.scrollTop - sess.clientHeight < 80;
+    const openTools = [...document.querySelectorAll('#convo .ktools')].map(d => d.open);
+    $('#convo').innerHTML = (items.length || !pend.length ? kChatHtml(k, items, full) : '')
+      + pend.map(p => `<div class="bub user pend${p.state === 'sending' ? ' going' : ''}">${md(p.text)}<time>${esc(tt(...KSENT[p.state === 'sending' ? 'sending' : p.how] || KSENT.type))}</time></div>`).join('');
+    document.querySelectorAll('#convo .ktools').forEach((d, i) => { if (openTools[i]) d.open = true; });
+    if (atEnd || stick || sig.kcFirst !== k.id) { sig.kcFirst = k.id; sess.scrollTop = sess.scrollHeight; }
+  });
+}
 async function kDrawChat(k, s) {
-  if (sig.kcFor !== k.id) { sig.kcFor = k.id; sig.kc = null; KV.chatAt = 0; $('#tabBody').innerHTML = `<div class="kc convo" id="convo"><div class="hint">${tt('读取对话……', 'Reading the conversation…')}</div></div>`; }
-  if (Date.now() - KV.chatAt < (s && s.state === 'working' ? 3000 : 6000)) return;
-  KV.chatAt = Date.now();
+  if (sig.kcFor !== k.id) {
+    sig.kcFor = k.id; sig.kc = null; KV.chatAt = 0; KV.chat = { id: '', items: [], sig: '' };
+    $('#tabBody').innerHTML = `<div class="kc convo" id="convo"><div class="hint">${tt('读取对话……', 'Reading the conversation…')}</div></div>`;
+    kChatPaint(k, true);
+  }
+  // (how soon it is read again: at once while something sent is still on its way, soon while it works, now and then at rest)
+  const soon = (KV.sent[k.id] || []).length || Date.now() < KV.chatFast;
+  if (KV.chatBusy || Date.now() - KV.chatAt < (soon ? 650 : s && s.state === 'working' ? 1400 : 4000)) return;
+  KV.chatAt = Date.now(); KV.chatBusy = true;
   try {
-    const j = await (await fetch('/api/transcript?kept=' + encodeURIComponent(k.id), { cache: 'no-store' })).json();
-    const items = j.items || [], full = (KV.full[k.id] || {}).kept || {};
+    const have = KV.chat.id === k.id ? KV.chat.sig : '';
+    const j = await (await fetch(`/api/transcript?kept=${encodeURIComponent(k.id)}${have ? '&have=' + have : ''}`, { cache: 'no-store' })).json();
     if (route.kept !== k.id || !$('#convo')) return;
-    draw('kc', [k.id, items.length, items.length && items[items.length - 1].text.slice(0, 60), (full.terms || []).map(t => [t.n, t.ended, t.why]), (full.segs || []).length, k.live, LANG], () => {
-      const sess = $('#sess'), atEnd = sess.scrollHeight - sess.scrollTop - sess.clientHeight < 80;
-      const openTools = [...document.querySelectorAll('#convo .ktools')].map(d => d.open);
-      $('#convo').innerHTML = kChatHtml(k, items, full);
-      document.querySelectorAll('#convo .ktools').forEach((d, i) => { if (openTools[i]) d.open = true; });
-      if (atEnd || sig.kcFirst !== k.id) { sig.kcFirst = k.id; sess.scrollTop = sess.scrollHeight; }
-    });
-  } catch {}
+    if (!j.same) KV.chat = { id: k.id, items: j.items || [], sig: j.sig || '' };
+    kChatPaint(k);
+  } catch {} finally { KV.chatBusy = false; }
+}
+// (words for a session, from its page. They are under its conversation before they have left; how they went is said
+// beside them; if they could not be sent they are back in the box)
+async function kSay(k, s, text, now) {
+  const box = $('#rText'), how = now ? 'type' : sayHow(s), p = kSent(k, text, how === 'type' && s.state === 'working' ? 'wait' : how, 'sending');
+  if (box) { box.value = ''; box.focus(); }
+  kChatPaint(k, true);
+  const j = await api('say', { id: s.id, text, now }).catch(() => ({ ok: false, msg: tt('没连上服务', 'The service could not be reached') }));
+  if (!j.ok) {
+    KV.sent[k.id] = (KV.sent[k.id] || []).filter(x => x !== p);
+    if ($('#rText') && !$('#rText').value) $('#rText').value = text;
+    toast(j.msg || tt('没发出去', 'Not sent'), false);
+  } else {
+    p.state = 'sent'; p.t = Date.now();
+    if (j.how && j.how !== 'type') p.how = j.how;
+  }
+  KV.chatAt = 0;
+  kChatPaint(k, true);
+  load();
 }
 function kDrawFoot(k, s, tab) {
   const mode = tab !== 'chat' ? 'none' : !s ? (k.archived ? 'archived' : KV.hand ? 'hand' : 'stopped') : s.starting ? 'starting' : 'live';
@@ -403,6 +530,7 @@ async function kResume(k, withText) {
   const j = await kDo('resume', { id: k.id, text });
   for (const b of document.querySelectorAll('[data-kresume]')) b.disabled = false;
   if (j.ok && $('#kText')) $('#kText').value = '';
+  if (j.ok && text) { kSent(k, text, 'start'); kChatPaint(k, true); }
   KV.chatAt = 0;
 }
 
@@ -667,15 +795,29 @@ document.addEventListener('click', async e => {
   let el;
   const cur = () => kOf((el && el.dataset.kid) || route.kept);
   if (KV.menu && !q('.kmenu')) { KV.menu = false; delete sig.khead; render(); }
-  if (q('#ksFold')) { setSide(true); kShowBtn(); return; }
-  if (q('#ksShow')) { setSide(false); kShowBtn(); return; }
+  if (KV.arr && !q('.ks-arr')) { KV.arr = false; render(); }
+  if ((el = q('[data-act="say"], [data-act="say-now"]')) && route.kept) {  // (words for a session, from its page: shown in its conversation at once)
+    const k = kOf(route.kept), s = kLive(k), text = $('#rText') ? $('#rText').value.trim() : '';
+    if (k && s && text) { e.stopPropagation(); e.preventDefault(); kSay(k, s, text, el.dataset.act === 'say-now'); return; }
+  }
+  if (q('#ksFold')) { setSide(true); render(); return; }
+  if (q('#ksShow')) { setSide(false); render(); return; }
   if (q('#ksFind')) { openPalette(); return; }
   if (q('#ksAsst')) { asstToggle(); return; }
   if (q('#ksSet')) { openSettings(); return; }
   if (q('#ksTheme')) { const o = ['auto', 'light', 'dark'], v = store.get('deck.theme', 'auto'); store.set('deck.theme', o[(o.indexOf(v) + 1) % 3]); applyTheme(); render(); return; }
+  if (q('[data-karr]')) { KV.arr = !KV.arr; render(); return; }
   if ((el = q('[data-kview]'))) { KV.view = el.dataset.kview; store.set('deck.kView', KV.view); render(); return; }
+  if ((el = q('[data-ksort]'))) { KV.sort = el.dataset.ksort; store.set('deck.kSort', KV.sort); render(); return; }
   if ((el = q('[data-kopen]'))) { const x = el.dataset.kopen; KV.open.has(x) ? KV.open.delete(x) : KV.open.add(x); store.set('deck.kOpen', [...KV.open]); render(); return; }
   if (q('[data-kplaces]')) { KV.places = !KV.places; store.set('deck.kPlaces', KV.places); render(); return; }
+  if ((el = q('[data-kshutall]'))) {  // (every group folded shut at once, or all open again)
+    for (const x of el.dataset.keys.split(' ')) el.dataset.kshutall === '1' ? KV.shut.add(x) : KV.shut.delete(x);
+    store.set('deck.kShut', [...KV.shut]); render(); return;
+  }
+  if ((el = q('[data-kshut]')) && !q('.ks-gh a')) {  // (a group's head: anywhere on it but its name and its + folds it or opens it)
+    const x = el.dataset.kshut; KV.shut.has(x) ? KV.shut.delete(x) : KV.shut.add(x); store.set('deck.kShut', [...KV.shut]); render(); return;
+  }
   if ((el = q('[data-knew]'))) { KN.space = el.dataset.knew; KN.dir = ''; delete sig.knrow; setTimeout(render, 0); return; }  // (its link goes to the new-session page)
   if ((el = q('[data-kway]'))) { await kDo('terminal', { way: el.dataset.kway }); drawSettings(); return; }
   if ((el = q('[data-knkind]'))) { KN.kind = el.dataset.knkind; render(); return; }
@@ -747,7 +889,6 @@ document.addEventListener('click', async e => {
   if ((el = q('[data-spmain]'))) { await kDo('space', { do: 'place_main', id: route.key, path: el.dataset.spmain }); return; }
   if ((el = q('[data-spdrop]'))) { if (confirm(tt('把这个目录从工作区里拿掉？磁盘上什么都不动；开在里面的会话会变成「未归入工作区」。', 'Take this folder out of the workspace? Nothing on disk is touched; sessions opened in it are then in no workspace.'))) await kDo('space', { do: 'place_drop', id: route.key, path: el.dataset.spdrop }); return; }
   if (q('[data-spdel]')) { const sp = kSpace(route.key); if (sp && confirm(tt(`删除工作区「${sp.name}」？只删这个分组：目录、会话和对话都留着。`, `Delete workspace “${sp.name}”? Only the grouping goes: folders, sessions and conversations stay.`))) { const j = await kDo('space', { do: 'delete', id: sp.id }); if (j.ok) location.hash = '#/'; } return; }
-  if (q('[data-act="say"], [data-act="say-now"]')) { setTimeout(() => { KV.chatAt = 0; render(); }, 1600); }  // (app.js sends the words; what it then says is read soon)
 }, true);
 document.addEventListener('change', async e => {
   if (phone()) return;
@@ -775,6 +916,7 @@ document.addEventListener('keydown', e => {
   if (el.id === 'kTitle' || el.id === 'spRename') { if (e.key === 'Enter' || e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); kRenameDone(el, e.key === 'Enter'); } return; }
   if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && el.id === 'kText') { e.preventDefault(); const k = kOf(route.kept); if (k) kResume(k, true); return; }
   if (e.key === 'Escape' && KV.menu) { KV.menu = false; delete sig.khead; render(); e.stopImmediatePropagation(); return; }
+  if (e.key === 'Escape' && KV.arr) { KV.arr = false; render(); e.stopImmediatePropagation(); return; }
   if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
   const overlay = ['#palette', '#settings', '#newSess', '#taskPanel'].some(id => !$(id).hidden);
   if (overlay) return;
@@ -788,15 +930,17 @@ document.addEventListener('keydown', e => {
 document.addEventListener('focusout', e => { if (e.target.id === 'kTitle' || e.target.id === 'spRename') kRenameDone(e.target, true); });
 document.addEventListener('toggle', e => { const k = e.target.matches && e.target.matches('details.kdf') && e.target.open && kOf(route.kept); if (k) kDiffFile(k, e.target); }, true);
 
-// (the sidebar's place in the frame; with it hidden, a button at the corner brings it back, as ⌘B does)
-function kShowBtn() { const b = $('#ksShow'); if (b) b.hidden = !sideOff || phone(); }
+// (the sidebar's place in the frame; folded, it is a strip of marks, and ⌘B folds and opens it)
 (function () {
   const app = document.querySelector('.app');
   app.insertAdjacentHTML('afterbegin', `<nav class="ks" id="ks" aria-label="${tt('会话', 'Sessions')}"></nav>`);
-  app.insertAdjacentHTML('beforeend', `<button class="ks-show" id="ksShow" hidden title="${tt('展开侧栏（⌘B）', 'Show the sidebar (⌘B)')}" aria-label="${tt('展开侧栏', 'Show the sidebar')}">${KI.side}</button>`);
-  PHONE.addEventListener('change', () => { for (const k in sig) delete sig[k]; route = parseRoute(); build(); render(); kShowBtn(); });
-  document.addEventListener('keydown', e => { if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') setTimeout(kShowBtn, 0); });
-  kShowBtn();
+  PHONE.addEventListener('change', () => { for (const k in sig) delete sig[k]; route = parseRoute(); build(); render(); });
+  setInterval(() => {
+    if (phone() || document.hidden || route.name !== 'session' || !route.kept || (route.tab || 'chat') !== 'chat' || !$('#convo')) return;
+    const k = kOf(route.kept);
+    if (k) kDrawChat(k, kLive(k));
+  }, 350);
+  document.addEventListener('keydown', e => { if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') setTimeout(render, 0); });
   for (const k in sig) delete sig[k];
   route = parseRoute();
   build();

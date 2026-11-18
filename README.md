@@ -127,6 +127,12 @@ terminal it runs in and the agent's own conversation.
 - **Workspaces are yours.** A workspace is a name and the folders it covers. A session belongs to the workspace whose
   folder it was opened in; the sidebar groups by workspace, or shows one list. The workspaces Sturnus used to find by
   itself are carried over once.
+- **The sidebar is yours to arrange.** Group the sessions by workspace, by how they stand, by agent or by day, or
+  not at all, and order them by who needs you, by last activity, by when they were made, or by name. A workspace folds
+  shut to its name and counts; the whole sidebar folds to a strip of icons (⌘B), never out of sight.
+- **What you send shows at once.** Words sent from a session's page are under its conversation before they have left,
+  with how they went (typed into its terminal, queued, put in its mailbox); the conversation in sight is read again
+  about every second while its agent works.
 - **A terminal is only where a session runs.** New terminals open as a tab in the workspace's Zellij group, a window in
   its tmux group, or a tmux session of its own (Settings → Terminals; change it at any time, nothing is moved).
   `sturnus ls` lists the sessions; `sturnus open NUMBER|TITLE` takes the terminal you are in to that session, and gives a
