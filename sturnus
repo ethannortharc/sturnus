@@ -55,6 +55,9 @@ ME_NAME = 'user'  # (who the person is on amail when writing from this page)
 
 DEFAULTS = {
     'host': '127.0.0.1', 'port': 7788, 'pane_titles': True,
+    # (tasks nobody touches: one that waited on the person this many days with no session on it is put aside (needs), so
+    # is one "under way" with no session (doing); an ended one is archived after `closed` days, one put aside after `backlog`)
+    'task_days': {'needs': 7, 'doing': 14, 'closed': 7, 'backlog': 30},
     'rest_days': 7,  # (a session idle this many days has its terminal closed; it goes on in a new one when taken up again. 0: never)
     # (what a new session runs; add your own flags here)
     'launch': {'claude': ['claude'], 'codex': ['codex'], 'cursor': ['cursor-agent']},
@@ -2982,7 +2985,7 @@ class Deck:
         st = {standing(s)[0] for s in live}
         if t['status'] == 'waiting' or st & {'waiting', 'asking', 'blocked', 'review'}:
             return 'needs'
-        return 'working' if 'working' in st else 'todo' if t['status'] == 'todo' else 'paused'
+        return 'working' if 'working' in st else 'backlog' if t['status'] == 'backlog' else 'todo' if t['status'] == 'todo' else 'paused'
 
     def task_row(self, t, by_sid, by_name):
         links = []
@@ -2994,7 +2997,30 @@ class Deck:
         # (a session on several tasks is on the one it touched last: the others do not light up with it)
         live = [by_sid.get(x['sid']) for x in links if x['live'] and self.tasks_current.get(x['name']) == t['id']]
         return {**{k: t[k] for k in ('id', 'scope', 'scope_name', 'title', 'status', 'now', 'next', 'at', 'made', 'closed')}, 'shown': self.task_shown(t, live),
+                'archived': t.get('archived'), 'orphan': t['status'] == 'waiting' and not any(x['live'] for x in links),  # (it waits on the person, and no session is there for the answer)
                 'sessions': links, 'decs': t['decisions'][-2:], 'nd': len(t['decisions']), 'nr': len(t['results'])}
+
+    def tasks_sweep(self, sessions, now=None):
+        """Tasks nobody has touched for long are tidied (config task_days): one that waited on the person with no session
+        left on it is put aside, as is one "under way" with no session; an ended one goes to the archive, and one put
+        aside does after longer. What the person set stays as they set it. Returns how many were put aside and archived."""
+        days = {**DEFAULTS['task_days'], **(self.cfg.get('task_days') or {})}
+        now, aside, away = now or time.time(), 0, 0
+        names = {s['name'] for s in sessions if s['state'] not in ('gone', 'ended')}
+        ids = {s['id'] for s in sessions if s['state'] not in ('gone', 'ended')}
+        for t in A.tasks_query(closed=True, limit=5000):
+            on = any(x['name'] in names or x.get('sid') in ids for x in t['sessions'])
+            age = (now - t['at']) / DAY
+            limit = days[{'waiting': 'needs', 'doing': 'doing'}.get(t['status'], 'backlog')]
+            if t['status'] in ('waiting', 'doing') and not on and limit and age > limit and 'status' not in t['held']:  # (what the person set stays theirs)
+                A.task_do({'do': 'set', 'who': 'deck', 'id': t['id'], 'status': 'backlog', 'at': now})
+                aside += 1
+            elif (t['status'] in A.TASK_CLOSED and days['closed'] and (now - (t['closed'] or t['at'])) / DAY > days['closed']) or (t['status'] == 'backlog' and days['backlog'] and age > days['backlog']):
+                A.task_do({'do': 'archive', 'who': 'deck', 'id': t['id'], 'at': now})
+                away += 1
+        if aside or away:
+            self.note(tx(f'任务整理：{aside} 件等了很久没人接的移到搁置，{away} 件归档', f'Tasks tidied: {aside} long unanswered put aside, {away} archived'))
+        return aside, away
 
     def tasks_tick(self, sessions):
         """Each collect, and after the person's changes: apply what sandboxes left, keep the store small, and the tasks as
@@ -3006,9 +3032,10 @@ class Deck:
                     self.tasks_kept = time.time()
                     A.tasks_trim()
                     self.import_tasks(sessions)
+                    self.tasks_sweep(sessions)
                 m = os.stat(A.TASKS).st_mtime_ns
                 if m != self.tasks_seen[0]:
-                    self.tasks_seen = (m, A.tasks_query(closed=time.time() - 7 * DAY, limit=300))
+                    self.tasks_seen = (m, A.tasks_query(closed=time.time() - 7 * DAY, limit=800))
                 self.tasks_error = ''
             except Exception as e:
                 if repr(e) != self.tasks_error:  # (said once, not on every pass)
@@ -3095,9 +3122,12 @@ class Deck:
             x['resume'] = None if x['live'] or not session else f'claude --resume {session}' if kind == 'claude' else f'codex resume {session}' if kind == 'codex' else None
         return {**row, 'decisions': t['decisions'], 'results': t['results'], 'log': t['log'], 'brief': self.task_brief(t)}
 
-    def tasks_find(self, q, scope, closed):
+    def tasks_find(self, q, scope, closed, archived=False):
+        """Tasks beyond the page's own list: the long-ended, those that mention something (the archived among them), or
+        the archive itself."""
         by = self.everyone
-        rows = [self.task_row(t, {s['id']: s for s in by}, {s['name']: s for s in by}) for t in A.tasks_query(scope or None, closed=closed, q=q, limit=200)]
+        rows = [self.task_row(t, {s['id']: s for s in by}, {s['name']: s for s in by})
+                for t in A.tasks_query(scope or None, closed=True if archived else closed, q=q, limit=400 if archived else 200, archived=True if archived else None if q else False)]
         return {'ok': True, 'tasks': rows}
 
     def task_act(self, b):
@@ -3116,7 +3146,17 @@ class Deck:
             if s:  # (given to a session as it is written down)
                 A.task_do({'do': 'set', 'who': A.task_who(s['name']), 'id': new, 'session': me, 'status': 'doing'})
             return True, {'id': new, 'msg': tx('记下了', 'Added')}
+        if do in ('archive', 'unarchive', 'aside') and isinstance(b.get('ids'), list):  # (several at once: put away, brought back, or put aside)
+            ids = [str(x) for x in b['ids'][:1000]]
+            for x in ids:
+                with contextlib.suppress(ValueError, KeyError):
+                    A.task_do({'do': 'set', 'who': 'person', 'id': x, 'status': 'backlog'} if do == 'aside' else {'do': do, 'who': 'person', 'id': x})
+            n = len(ids)
+            return True, {'n': n, 'msg': {'archive': tx(f'归档了 {n} 件', f'{n} archived'), 'unarchive': tx(f'{n} 件取消归档', f'{n} brought back'), 'aside': tx(f'{n} 件移到搁置', f'{n} put aside')}[do]}
         t = A.task_get(tid)
+        if do in ('archive', 'unarchive'):
+            A.task_do({'do': do, 'who': 'person', 'id': t['id']})
+            return True, tx(f'「{t["title"]}」已归档' if do == 'archive' else f'「{t["title"]}」取消归档', f'“{t["title"]}” archived' if do == 'archive' else f'“{t["title"]}” brought back')
         if do == 'set':
             A.task_do({'do': 'set', 'who': 'person', 'id': t['id'], **{k: b[k] for k in ('title', 'now', 'next', 'status') if b.get(k) is not None}})
             return True, {}
@@ -3716,7 +3756,7 @@ class Deck:
                 h.write(f'\n## {who.get(it["who"], it["who"])}' + (f'（{full.get(it["kind"], it["kind"])}）' if it['who'] == 'assistant' else '')
                         + (time.strftime(' %Y-%m-%d %H:%M', time.localtime(it['at'])) if it.get('at') else '') + f'\n\n{it["text"]}\n')
         ids = {f'{x["kind"]}:{x["conv"]}' for x in k['segs']}
-        tasks = [t for t in self.state.get('tasks') or [] if t.get('shown') not in ('done', 'dropped')
+        tasks = [t for t in self.state.get('tasks') or [] if t.get('shown') not in ('done', 'dropped', 'backlog')
                  and any(l.get('sid') in ids or (k['name'] and l.get('name') == k['name']) for l in t.get('sessions') or [])][:3]
         topics = [x for sid in sorted(ids, key=lambda i: -((self.stories.data.get(i) or {}).get('at') or 0)) for x in (self.stories.data.get(sid) or {}).get('topics') or []][:12]
         dirty = len((git(k['work'] or k['folder'], 'status', '--porcelain') or '').splitlines()) if os.path.isdir(k['work'] or k['folder'] or '') else 0
@@ -3829,7 +3869,8 @@ class Deck:
 
     def rest_pass(self, now=None):
         """Sessions nobody has used for the days set (rest_days) have their terminals closed: an agent at rest still holds
-        its memory and its pane. Only one that is idle with no prompt open, that nobody is looking at, that is not
+        its memory and its pane. Only one at rest (idle, or waiting on the person for an answer in words) with no prompt
+        open, that nobody is looking at, that is not
         pinned, whose process is the deck's to end and whose conversation is there to go on with. It stays in the list,
         stopped, and goes on in a new terminal when taken up again. Returns the sessions it closed."""
         days = float(self.cfg.get('rest_days', DEFAULTS['rest_days']) or 0)
@@ -3839,7 +3880,8 @@ class Deck:
         for s in list(self.everyone):
             k = self.kept.get(s.get('kept') or '')
             if (not k or k['pinned'] or k['live'] != s['id'] or s.get('starting') or s.get('parent_id') or s.get('unknown')
-                    or s['state'] != 'idle' or s.get('prompting') or now - max(s.get('at') or 0, s.get('since') or 0, k.get('at') or 0) < days * 86400):
+                    or s['state'] not in ('idle', 'waiting') or s.get('prompting') or at_menu(s)  # (at rest, or waiting on the person with words; not at a prompt that only its terminal can answer)
+                    or now - max(s.get('at') or 0, s.get('since') or 0, k.get('at') or 0) < days * 86400):
                 continue
             if not (s.get('window_pid') or (s.get('pid') if s['kind'] != 'codex' else None)):
                 continue  # (not the deck's to end: the Codex app's own)
@@ -4572,7 +4614,8 @@ def app_places(st, on):
                                     for x in t.get('sessions') or []][:6]}
     tasks, closed = st.get('tasks') or [], ('done', 'dropped')
     shut = sorted((t for t in tasks if t.get('status') in closed), key=lambda t: -(t.get('closed') or 0))
-    tasks = [brief(t) for t in tasks if t.get('status') not in closed][:150] + [brief(t) for t in shut[:30]]
+    # (what was put aside is left out here: the phone app knows the states it was made with)
+    tasks = [brief(t) for t in tasks if t.get('status') not in closed and t.get('status') != 'backlog'][:150] + [brief(t) for t in shut[:30]]
     chans = [{'key': k, 'name': b.get('name') or k, 'kind': b.get('kind') or 'project', 'unread': b.get('unread') or 0, 'calls': b.get('calls') or 0,
               'last': {'from': b['last'].get('from') or '', 'text': (b['last'].get('text') or '')[:200], 'at': b['last'].get('at') or 0} if b.get('last') else None,
               'topics': [{'id': t.get('id') or '', 'title': t.get('title') or '', 'n': t.get('n') or 0, 'at': t.get('at') or 0}
@@ -5273,7 +5316,7 @@ class Handler(BaseHTTPRequestHandler):
             from urllib.parse import urlparse, parse_qs
             q = parse_qs(urlparse(self.path).query)
             one = lambda k: (q.get(k) or [''])[0]
-            return self.send_json(DECK.tasks_find(one('q'), one('scope'), True if one('closed') else False))
+            return self.send_json(DECK.tasks_find(one('q'), one('scope'), True if one('closed') else False, bool(one('archived'))))
         if self.path.startswith('/api/task'):
             from urllib.parse import urlparse, parse_qs
             try:

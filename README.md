@@ -159,6 +159,8 @@ A session is temporary; what it was working toward is not. Each project and work
 - Start a new session from a task, give it to a running one, or pick one from a session's page.
 - Sessions keep their tasks up to date with `amail task`, and hear of the open ones when they start.
 - The assistant fills in what they leave out from each session's report, without overwriting you, and tidies the list as it grows.
+- A task is to do, under way, waiting on you, put aside, done or dropped, and the page groups the list by project or by state. One nobody is on and that waits on nobody is **put aside**; anything can be **archived**, which takes it out of the lists but not out of the search.
+- The list tidies itself: a task that waited on you for seven days with no session left on it is put aside, one ended for seven days or put aside for thirty is archived, and one button puts aside everything that waits on you with nobody there to hear the answer.
 - Search covers tasks, decisions and results, ended ones too. Updates replace what was there, so the store stays small. See [Tasks in the operations guide](docs/operations.md#tasks).
 
 ## Shared channels with amail

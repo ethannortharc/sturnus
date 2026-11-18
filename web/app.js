@@ -986,7 +986,7 @@ function build() {  // (the frame of a view; render() fills it)
     TF.found = null;
     $('#view').innerHTML = `<div class="page"><div class="h-title"><h2>${t('任务')}</h2><span class="sub" id="taskSub"></span></div>${taskNewForm(route.scope || '')}
       <div class="task-bar"><div class="task-tabs" id="taskTabs" role="group"></div><input class="field" id="taskQ" type="search" placeholder="${tt('搜索任务、决定、产出', 'Search tasks, decisions, results')}" title="${tt('也搜已结束的', 'Ended ones too')}" value="${esc(TF.q)}" autocomplete="off"></div>
-      <div id="taskList"></div></div>`;
+      <div id="taskTidy"></div><div id="taskList"></div></div>`;
     sig.tasktabs = sig.tasklist = sig.taskscope = null;
     if (TF.q || TF.show === 'closed') taskFetch();
   } else if (route.name === 'reports') {
@@ -1612,33 +1612,45 @@ function decsFor(ids) {
 }
 const decText = d => d.topic ? `${d.topic}${t('：')}${d.what}` : d.what;
 // ---------- tasks: what the projects work through; sessions come and go on them ----------
-const TASK_LOOK = { needs: ['等你', 'Needs you'], working: ['进行中', 'Under way'], paused: ['待继续', 'To pick up'], todo: ['待办', 'To do'], done: ['做完了', 'Done'], dropped: ['不做了', 'Dropped'] };
-const TASK_RANK = { needs: 0, working: 1, paused: 2, todo: 3, done: 4, dropped: 5 };
-const taskOpen = x => !['done', 'dropped'].includes(x.shown);
+const TASK_LOOK = { needs: ['等你', 'Needs you'], working: ['进行中', 'Under way'], paused: ['待继续', 'To pick up'], todo: ['待办', 'To do'], backlog: ['搁置', 'Put aside'], done: ['做完了', 'Done'], dropped: ['不做了', 'Dropped'] };
+const TASK_RANK = { needs: 0, working: 1, paused: 2, todo: 3, backlog: 4, done: 5, dropped: 6 };
+const taskOpen = x => !['done', 'dropped', 'backlog'].includes(x.shown);  // (still to be done: not ended, and not put aside)
 const taskOrder = (a, b) => TASK_RANK[a.shown] - TASK_RANK[b.shown] || b.at - a.at;
 const taskIn = (x, key) => !key || x.scope === key || (projOf(x.scope) || {}).workspace === key;
 const taskLabel = k => tt(...TASK_LOOK[k]);
 const taskAgo = ts => { const a = ago(ts); return a === t('刚刚') ? a : tt(`${a}前`, `${a} ago`); };
 const taskLinked = l => { const s = l.live && (S.sessions || []).find(x => x.id === l.sid); return s ? standing(s) : [l.st, '']; };
-const TASK_WORDS = { todo: ['待办', 'to do'], doing: ['在做', 'under way'], waiting: ['等你', 'needs you'], done: ['做完了', 'done'], dropped: ['不做了', 'dropped'] };
+const TASK_WORDS = { todo: ['待办', 'to do'], doing: ['在做', 'under way'], waiting: ['等你', 'needs you'], backlog: ['搁置', 'put aside'], done: ['做完了', 'done'], dropped: ['不做了', 'dropped'] };
 function taskLogText(w) {  // (kept in one language, said in the page's)
   if (w === 'added') return tt('记下了', 'added');
+  if (w === 'archived') return tt('归档了', 'archived');
+  if (w === 'out of the archive') return tt('取消归档', 'brought back from the archive');
   if (w.startsWith('merged in: ')) return tt('并入了：', 'merged in: ') + w.slice(11);
   const m = w.match(/^(\w+) → (\w+)(: .*)?$/);
   return m && TASK_WORDS[m[1]] && TASK_WORDS[m[2]] ? `${tt(...TASK_WORDS[m[1]])} → ${tt(...TASK_WORDS[m[2]])}${m[3] ? tt('：', ': ') + m[3].slice(2) : ''}` : w;
 }
-const taskSig = l => l.map(x => [x.id, x.shown, x.title, x.now, x.next, x.at, x.sessions.map(s => [s.name, s.st, s.live])]);
-function taskRow(x) {
+const taskSig = l => l.map(x => [x.id, x.shown, x.title, x.now, x.next, x.at, x.archived, x.orphan, x.sessions.map(s => [s.name, s.st, s.live])]);
+// (what a row offers without opening it: put aside what is not being done, put away what is over or put aside, bring back what was put away)
+const taskActs = x => (x.archived ? `<button type="button" class="task-do" data-task-unarchive="${esc(x.id)}">${tt('取消归档', 'Bring back')}</button>`
+  : taskOpen(x) ? `<button type="button" class="task-do" data-task-aside="${esc(x.id)}" title="${tt('不在做，也不等谁：先放一边', 'Nobody is on it and it waits on nobody: put it aside')}">${tt('搁置', 'Put aside')}</button>`
+    : `<button type="button" class="task-do" data-task-archive="${esc(x.id)}" title="${tt('收进归档，各处的列表里不再出现', 'Into the archive, out of the lists')}">${tt('归档', 'Archive')}</button>`);
+function taskRow(x, where) {
   const on = x.sessions.filter(l => l.live), ended = x.sessions.length - on.length;
-  return `<article class="task ${x.shown}" data-task="${esc(x.id)}">
-    <div class="task-head"><span class="task-st"><i></i>${taskLabel(x.shown)}</span><b>${esc(x.title)}</b><time>${taskAgo(x.at)}</time></div>
+  return `<article class="task ${x.shown}${x.archived ? ' archived' : ''}" data-task="${esc(x.id)}">
+    <div class="task-head"><span class="task-st"><i></i>${taskLabel(x.shown)}</span><b>${esc(x.title)}</b>${where ? `<span class="task-where">${esc(taskScopeName(x))}</span>` : ''}${x.archived ? `<span class="task-where">${tt('已归档', 'Archived')}</span>` : ''}${taskActs(x)}<time>${taskAgo(x.at)}</time></div>
     ${x.now ? `<p class="task-now">${esc(x.now)}</p>` : ''}
     ${x.next && taskOpen(x) ? `<p class="task-next"><em>${tt('接着做', 'Next')}</em>${esc(x.next)}</p>` : ''}
     ${on.length || ended ? `<div class="task-foot">${on.map(l => `<a class="task-sess" data-go="${esc(l.sid)}" title="${esc(l.title || l.name)}">${mark(l.kind, taskLinked(l)[0], 'sm')}<span>${esc(l.name)}</span><em>${esc(taskLinked(l)[1])}</em></a>`).join('')}${ended ? `<span class="task-ended">${tt(`${ended} 个会话已结束`, `${ended} session${ended > 1 ? 's' : ''} ended`)}</span>` : ''}</div>` : ''}
   </article>`;
 }
 const taskMini = x => `<div class="task-mini ${x.shown}" data-task="${esc(x.id)}"><span class="task-st"><i></i></span><div><b>${esc(x.title)}</b><p>${esc(taskOpen(x) && x.next ? x.next : x.now || taskLabel(x.shown))}</p></div></div>`;
+const taskScopeName = x => { const p = projOf(x.scope), w = p ? wsOf(p.workspace) : wsOf(x.scope); return (p || w || {}).name || x.scope_name || x.scope; };
 function taskGroups(list) {
+  if (TF.group === 'status') {  // (by how they stand, as a board reads top to bottom: each row says where it belongs)
+    return Object.keys(TASK_RANK).map(k => [k, list.filter(x => x.shown === k).sort((a, b) => b.at - a.at)]).filter(([, l]) => l.length).map(([k, l]) =>
+      `<section class="grp"><div class="grp-head"><h3><span class="task-st ${k}"><i></i>${taskLabel(k)}</span></h3><span class="meta"><span>${tt(`${l.length} 件`, `${l.length}`)}</span></span></div>
+      <div class="task-list">${l.map(x => taskRow(x, true)).join('')}</div></section>`).join('');
+  }
   const by = new Map();
   for (const x of list.slice().sort(taskOrder)) { if (!by.has(x.scope)) by.set(x.scope, []); by.get(x.scope).push(x); }
   return [...by.entries()].sort((a, b) => taskOrder(a[1][0], b[1][0])).map(([k, l]) => {
@@ -1646,7 +1658,7 @@ function taskGroups(list) {
     const left = l.filter(taskOpen).length;
     return `<section class="grp"><div class="grp-head"><h3>${p ? `<a href="#/p/${encodeURIComponent(k)}">${esc(name)}</a>` : w ? `<a href="#/w/${encodeURIComponent(k)}">${esc(name)}</a>` : esc(name)}</h3>
       <span class="meta">${p && w ? `<span>${esc(w.name)}</span>` : w ? `<span>${tt('工作区本身', 'The workspace itself')}</span>` : ''}${left ? `<span>${tt(`${left} 件没做完`, `${left} open`)}</span>` : ''}</span></div>
-      <div class="task-list">${l.map(taskRow).join('')}</div></section>`;
+      <div class="task-list">${l.map(x => taskRow(x)).join('')}</div></section>`;
   }).join('');
 }
 function taskScopes(chosen) {
@@ -1654,26 +1666,37 @@ function taskScopes(chosen) {
     ${(w.projects || []).map(k => projOf(k)).filter(Boolean).map(p => `<option value="${esc(p.key)}"${chosen === p.key ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}</optgroup>`).join('');
 }
 const taskNewForm = scope => `<form class="task-new" data-task-new="${esc(scope || '')}" autocomplete="off"><input class="field" name="title" placeholder="${tt('要推进的一件事，说清楚做成什么样算完', 'Something to get done, and what done looks like')}">${scope ? '' : `<select class="field" name="scope" aria-label="${tt('放在哪个项目', 'Which project')}">${taskScopes(store.get('deck.taskScope', ''))}</select>`}<button class="btn" type="submit">${I.plus}${tt('记下', 'Add')}</button></form>`;
-let TF = { show: 'open', q: '', found: null, timer: 0 };
+let TF = { show: 'open', q: '', found: null, timer: 0, group: store.get('deck.taskGroup', 'scope') === 'status' ? 'status' : 'scope' };
 async function taskFetch() {
-  const j = await fetch('/api/tasks?closed=1&q=' + encodeURIComponent(TF.q), { cache: 'no-store' }).then(r => r.json()).catch(() => ({ tasks: [] }));
+  const j = await fetch(`/api/tasks?closed=1${TF.show === 'archived' && !TF.q ? '&archived=1' : ''}&q=` + encodeURIComponent(TF.q), { cache: 'no-store' }).then(r => r.json()).catch(() => ({ tasks: [] }));
   TF.found = j.tasks || [];
   sig.tasklist = null;
   if (route.name === 'tasks') renderTasks();
 }
 function renderTasks() {
   const key = route.scope || '', live = (S.tasks || []).filter(x => taskIn(x, key)), n = k => live.filter(x => x.shown === k).length, open = live.filter(taskOpen);
-  draw('tasktabs', [key, TF.show, ['needs', 'working', 'paused', 'todo'].map(n), open.length], () => {
+  draw('tasktabs', [key, TF.show, TF.group, ['needs', 'working', 'paused', 'todo', 'backlog'].map(n), open.length], () => {
     $('#taskSub').textContent = tt('会话结束了它们还在：现状、接着做什么、定下来的事都留在这里', 'They outlast the sessions: where each stands, what comes next and what was settled stay here');
-    $('#taskTabs').innerHTML = [['open', tt('没做完', 'Open'), open.length], ['needs', taskLabel('needs'), n('needs')], ['working', taskLabel('working'), n('working')], ['paused', taskLabel('paused'), n('paused')], ['todo', taskLabel('todo'), n('todo')], ['closed', tt('已结束', 'Ended'), 0]]
-      .map(([k, l, c]) => `<button type="button" data-task-show="${k}" class="${TF.show === k ? 'on' : ''}">${l}${c ? ` <b>${c}</b>` : ''}</button>`).join('');
+    $('#taskTabs').innerHTML = [['open', tt('没做完', 'Open'), open.length], ['needs', taskLabel('needs'), n('needs')], ['working', taskLabel('working'), n('working')], ['paused', taskLabel('paused'), n('paused')], ['todo', taskLabel('todo'), n('todo')],
+      ['backlog', taskLabel('backlog'), n('backlog')], ['closed', tt('已结束', 'Ended'), 0], ['archived', tt('已归档', 'Archived'), 0]]
+      .map(([k, l, c]) => `<button type="button" data-task-show="${k}" class="${TF.show === k ? 'on' : ''}">${l}${c ? ` <b>${c}</b>` : ''}</button>`).join('')
+      + `<span class="task-group" role="group" aria-label="${tt('怎么归类', 'Grouped by')}"><button type="button" data-task-group="scope" class="${TF.group === 'scope' ? 'on' : ''}">${tt('按项目', 'By project')}</button><button type="button" data-task-group="status" class="${TF.group === 'status' ? 'on' : ''}">${tt('按状态', 'By state')}</button></span>`;
   });
   draw('taskscope', [(S.workspaces || []).map(w => [w.key, w.name, w.projects])], () => { const sel = $('.task-new select'); if (sel && document.activeElement !== sel) sel.innerHTML = taskScopes(store.get('deck.taskScope', '')); });
-  const wide = TF.q || TF.show === 'closed';
+  const wide = TF.q || TF.show === 'closed' || TF.show === 'archived';
   const base = wide ? (TF.found || []).filter(x => taskIn(x, key)) : live;
-  const list = TF.q ? base : TF.show === 'closed' ? base.filter(x => !taskOpen(x)) : TF.show === 'open' ? base.filter(taskOpen) : base.filter(x => x.shown === TF.show);
-  draw('tasklist', [key, TF.show, TF.q, taskSig(list), tick()], () => {
-    $('#taskList').innerHTML = taskGroups(list) || `<div class="calm">${TF.q ? tt('没有提到这个的任务。', 'No task mentions that.') : TF.show === 'open' ? tt('这里还没有没做完的任务。会话在做的事会自动记到这里，也可以自己写一件。', 'No open tasks here yet. What sessions work on is noted here on its own, or add one yourself.') : tt('现在没有这种状态的任务。', 'No task in this state now.')}</div>`;
+  const list = TF.q ? base : TF.show === 'archived' ? base.filter(x => x.archived) : TF.show === 'closed' ? base.filter(x => ['done', 'dropped'].includes(x.shown) && !x.archived) : TF.show === 'open' ? base.filter(taskOpen) : base.filter(x => x.shown === TF.show);
+  // (the tidying at hand: what waits on the person with no session left to hear the answer; what is over or put aside, to put away)
+  const orphans = TF.q ? [] : ['open', 'needs'].includes(TF.show) ? list.filter(x => x.orphan) : [], away = TF.q ? [] : ['backlog', 'closed'].includes(TF.show) ? list : [];
+  draw('tasktidy', [key, TF.show, TF.q, orphans.map(x => x.id), away.map(x => x.id), LANG], () => {
+    const box = $('#taskTidy');
+    if (!box) return;
+    box.innerHTML = (orphans.length ? `<div class="task-tidy"><span>${tt(`有 ${orphans.length} 件在等你，但已经没有会话在等这个回答了。`, `${orphans.length} wait${orphans.length > 1 ? '' : 's'} on you with no session left to hear the answer.`)}</span><button type="button" class="btn" data-task-bulk="aside" data-ids="${esc(orphans.map(x => x.id).join(' '))}">${tt('都移到搁置', 'Put them aside')}</button></div>` : '')
+      + (away.length ? `<div class="task-tidy"><span>${TF.show === 'backlog' ? tt('搁置的：不在做，也不等谁。要用时在任务里改回状态。', 'Put aside: nobody is on them and they wait on nobody. Set a state on one to take it up again.') : tt('已结束的：做完了的和不做了的。', 'Ended: done and dropped.')}</span><button type="button" class="btn" data-task-bulk="archive" data-ids="${esc(away.map(x => x.id).join(' '))}">${tt(`这 ${away.length} 件都归档`, `Archive these ${away.length}`)}</button></div>` : '')
+      + (TF.q ? '' : `<p class="task-rule">${tt('自动整理：等你超过 7 天、又没有会话在做的任务会移到搁置；结束 7 天、搁置 30 天后归档。归档的不再出现在各处的列表里，这里和搜索里还找得到。', 'Tidied automatically: a task that waited on you for 7 days with no session on it is put aside; one ended for 7 days, or put aside for 30, is archived. Archived tasks leave the lists; they are still here and in the search.')}</p>`);
+  });
+  draw('tasklist', [key, TF.show, TF.q, TF.group, taskSig(list), tick()], () => {
+    $('#taskList').innerHTML = taskGroups(list) || `<div class="calm">${TF.q ? tt('没有提到这个的任务。', 'No task mentions that.') : TF.show === 'open' ? tt('这里还没有没做完的任务。会话在做的事会自动记到这里，也可以自己写一件。', 'No open tasks here yet. What sessions work on is noted here on its own, or add one yourself.') : TF.show === 'archived' ? tt('归档里还没有任务。', 'Nothing is archived yet.') : tt('现在没有这种状态的任务。', 'No task in this state now.')}</div>`;
   });
 }
 let TP = null;
@@ -1688,7 +1711,7 @@ async function openTask(id) {
 function drawTaskPanel() {
   const x = TP, near = s => (s.project === x.scope || s.workspace === x.scope || (projOf(x.scope) || {}).workspace === s.workspace ? 0 : 1);
   const can = roots(S.sessions).filter(live).filter(s => !x.sessions.some(l => l.live && l.name === s.name)).sort((a, b) => near(a) - near(b) || (b.at || 0) - (a.at || 0));
-  const STATES = [['todo', '待办', 'To do'], ['doing', '在做', 'Under way'], ['waiting', '等你', 'Needs you'], ['done', '做完了', 'Done'], ['dropped', '不做了', 'Dropped']];
+  const STATES = [['todo', '待办', 'To do'], ['doing', '在做', 'Under way'], ['waiting', '等你', 'Needs you'], ['backlog', '搁置', 'Put aside'], ['done', '做完了', 'Done'], ['dropped', '不做了', 'Dropped']];
   $('#taskBody').innerHTML = `<div class="tkp">
     <input class="field tkp-title" id="tpTitle" value="${esc(x.title)}" aria-label="${tt('任务名', 'Task name')}">
     <div class="tkp-meta"><span class="task-st ${x.shown}"><i></i>${taskLabel(x.shown)}${x.shown === 'paused' ? ` · ${tt('现在没有会话在做', 'No session is on it now')}` : ''}</span><span>${esc(x.scope_name || '')}</span><span>${tt(`${taskAgo(x.at)}更新`, `updated ${taskAgo(x.at)}`)}</span><code>${esc(x.id)}</code></div>
@@ -1703,8 +1726,8 @@ function drawTaskPanel() {
     ${x.sessions.length ? `<h5>${tt('做过它的会话', 'Sessions on it')}</h5><div class="tkp-rows">${x.sessions.map(l => `<div class="tkp-s">${mark(l.kind, taskLinked(l)[0], 'sm')}<div>${l.live ? `<a data-tp-go="${esc(l.sid)}"><b>${esc(l.name)}</b></a><span>${esc(taskLinked(l)[1])}</span>` : `<b>${esc(l.name)}</b><span>${tt('已结束', 'ended')}</span>`}${l.resume ? `<code>${esc(l.resume)}</code>` : ''}</div><button type="button" class="link" data-tp-unlink="${esc(l.name)}">${tt('不再关联', 'Unlink')}</button></div>`).join('')}</div>` : ''}
     ${x.decisions.length ? `<h5>${tt('定下来的事', 'What was settled')}</h5><div class="d-list">${x.decisions.slice().reverse().map(d => `<div class="dec">${byMark(d.by)}<div class="w">${d.topic ? `<b>${esc(d.topic)}</b> ` : ''}${esc(d.what)}</div><time>${clock(d.at)}</time></div>`).join('')}</div>` : ''}
     ${x.results.length ? `<h5>${tt('产出', 'Results')}</h5><div class="refs">${x.results.slice().reverse().map(r => /^https?:\/\//.test(r) ? `<a href="${esc(r)}" target="_blank" rel="noopener noreferrer">${esc(refLabel(r))}</a>` : `<span>${esc(r)}</span>`).join('')}</div>` : ''}
-    ${x.log.length ? `<h5>${tt('经过', 'What happened')}</h5><div class="tkp-log">${x.log.map(l => `<div><time>${clock(l.at)}</time><b>${esc(l.who === 'person' ? tt('你', 'You') : l.who === 'summary' ? tt('助手', 'Assistant') : l.who)}</b><span>${esc(taskLogText(l.what))}</span></div>`).join('')}</div>` : ''}
-    <div class="tkp-foot"><button type="button" class="link danger" data-tp-delete>${tt('删除这个任务', 'Delete this task')}</button><button type="button" class="btn" data-close>${tt('关闭', 'Close')}</button></div></div>`;
+    ${x.log.length ? `<h5>${tt('经过', 'What happened')}</h5><div class="tkp-log">${x.log.map(l => `<div><time>${clock(l.at)}</time><b>${esc(l.who === 'person' ? tt('你', 'You') : l.who === 'summary' ? tt('助手', 'Assistant') : l.who === 'deck' ? tt('自动整理', 'Tidying') : l.who)}</b><span>${esc(taskLogText(l.what))}</span></div>`).join('')}</div>` : ''}
+    <div class="tkp-foot"><button type="button" class="link danger" data-tp-delete>${tt('删除这个任务', 'Delete this task')}</button><button type="button" class="btn" data-tp-archive="${x.archived ? 'unarchive' : 'archive'}">${x.archived ? tt('取消归档', 'Bring back from the archive') : tt('归档', 'Archive')}</button><button type="button" class="btn" data-close>${tt('关闭', 'Close')}</button></div></div>`;
 }
 function taskPanelFor(s) {  // (a session's page: what it works on, and picking one)
   const all = S.tasks || [], on = all.filter(x => taskOpen(x) && x.sessions.some(l => l.name === s.name)), scope = s.project || s.workspace;
@@ -2627,7 +2650,23 @@ document.addEventListener('click', async e => {
     }
     return;
   }
-  if ((el = q('[data-task-show]'))) { TF.show = el.dataset.taskShow; if (TF.show === 'closed') taskFetch(); renderTasks(); return; }
+  if ((el = q('[data-task-show]'))) { TF.show = el.dataset.taskShow; if (TF.show === 'closed' || TF.show === 'archived') { TF.found = null; taskFetch(); } renderTasks(); return; }
+  if ((el = q('[data-task-group]'))) { TF.group = el.dataset.taskGroup; store.set('deck.taskGroup', TF.group); renderTasks(); return; }
+  if ((el = q('[data-task-bulk]'))) {  // (several at once: put aside, or put away)
+    const ids = el.dataset.ids.split(' ').filter(Boolean), what = el.dataset.taskBulk;
+    if (!ids.length || !confirm(what === 'aside' ? tt(`把这 ${ids.length} 件任务移到搁置？`, `Put these ${ids.length} tasks aside?`) : tt(`把这 ${ids.length} 件任务归档？`, `Archive these ${ids.length} tasks?`))) return;
+    el.disabled = true;
+    await post('task', { do: what, ids });
+    if (TF.show === 'closed' || TF.show === 'archived') taskFetch();
+    return;
+  }
+  if ((el = q('[data-task-aside], [data-task-archive], [data-task-unarchive]'))) {
+    const d = el.dataset;
+    await post('task', d.taskAside ? { do: 'set', id: d.taskAside, status: 'backlog' } : d.taskArchive ? { do: 'archive', id: d.taskArchive } : { do: 'unarchive', id: d.taskUnarchive });
+    if (TF.show === 'closed' || TF.show === 'archived' || TF.q) taskFetch();
+    return;
+  }
+  if ((el = q('[data-tp-archive]'))) { await post('task', { do: el.dataset.tpArchive, id: TP.id }); if (TF.show === 'closed' || TF.show === 'archived' || TF.q) taskFetch(); openTask(TP.id); return; }
   if ((el = q('[data-tp-status]'))) { await post('task', { do: 'set', id: TP.id, status: el.dataset.tpStatus }); openTask(TP.id); return; }
   if (q('[data-tp-new]')) {
     const p = projOf(TP.scope), w = wsOf(p ? p.workspace : TP.scope), dir = (p && p.path) || (w && w.path);

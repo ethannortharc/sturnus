@@ -473,5 +473,33 @@ class OverHttp(unittest.TestCase):
         self.assertEqual(self.call('/api/say', {'id': 'x', 'text': 'hi'}, key=j['key'], deck_header=False)[0], 403)
 
 
+class Tidying(unittest.TestCase):
+    """Tasks nobody has touched for long: put aside, then archived; what the person set, and what a session is on, stay."""
+
+    def test_long_untouched_tasks_are_put_aside_and_archived(self):
+        A, day, now = S.A, 86400, time.time()
+        sc = {'scope': 'p-tidy', 'scope_name': 'tidy'}
+        mk = lambda title, status, age, who='summary', session=None: (lambda tid: (A.task_do({'do': 'set', 'who': who, 'id': tid, 'status': status, 'at': now - age * day,
+                                                                                               **({'session': session} if session else {})}), tid)[1])(
+            A.task_do({'do': 'add', 'who': 'summary', **sc, 'title': title, 'at': now - age * day}))
+        old_wait, new_wait = mk('waited long', 'waiting', 9), mk('waited a little', 'waiting', 2)
+        held = mk('the person says it waits', 'waiting', 9, who='person')
+        on_it = mk('someone is on it', 'waiting', 9, session={'name': 'work-1', 'sid': 'claude:abc', 'kind': 'claude'})
+        old_doing, done_long, done_now = mk('left half done', 'doing', 20), mk('finished long ago', 'done', 10), mk('finished today', 'done', 0)
+        deck = type('D', (), {'cfg': {}, 'said': [], 'note': lambda self, text, ok=True: self.said.append(text)})()
+        got = S.Deck.tasks_sweep(deck, [session()], now)
+        st = lambda tid: (A.task_get(tid)['status'], bool(A.task_get(tid)['archived']))
+        self.assertEqual([st(x) for x in (old_wait, new_wait, held, on_it, old_doing, done_long, done_now)],
+                         [('backlog', False), ('waiting', False), ('waiting', False), ('waiting', False), ('backlog', False), ('done', True), ('done', False)])
+        self.assertEqual((got, len(deck.said)), ((2, 1), 1))
+        self.assertEqual(S.Deck.tasks_sweep(deck, [session()], now), (0, 0))  # (once tidied, nothing more to do)
+        self.assertEqual(S.Deck.tasks_sweep(deck, [session()], now + 31 * day)[1], 3)  # (put aside for a month, ended for a week: put away)
+        self.assertEqual(st(old_wait), ('backlog', True))
+        self.assertEqual(S.Deck.task_shown({'status': 'backlog'}, []), 'backlog')
+        self.assertEqual(S.Deck.task_shown({'status': 'backlog'}, [session(state='working')]), 'working')  # (a session at work on it: that shows)
+        shown = [x['id'] for x in A.tasks_query(closed=True)]
+        self.assertTrue(new_wait in shown and old_wait not in shown and old_wait in [x['id'] for x in A.tasks_query(closed=True, archived=True)])
+
+
 if __name__ == '__main__':
     unittest.main()

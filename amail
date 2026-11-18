@@ -27,7 +27,7 @@
                               your project's tasks: they outlast sessions, and say where to pick up (all: ended ones too)
   amail task add TITLE... [--now T] [--next T] [--to CH]    a task worth tracking: an outcome, not a step
   amail task start ID         you take it up: it is linked to you and under way
-  amail task update ID [--now T] [--next T] [--title T] [--status todo|doing|waiting] [--decided "topic: what"] [--result T]
+  amail task update ID [--now T] [--next T] [--title T] [--status todo|doing|waiting|backlog] [--decided "topic: what"] [--result T]
                               what you say again replaces what was there; --now where it stands, --next where to pick up
   amail task done ID [--now T] [--result T] / amail task drop ID [--now WHY]    only the person deletes one
   amail task leave ID         you are no longer on it; the task stays
@@ -1631,6 +1631,28 @@ def selftest():
         assert len(t['decisions']) == TASK_KEEP['decisions'] and [d['what'] for d in t['decisions'] if d['topic'] == 'same'] == ['v29'], 'one word per topic, capped'
         assert len(t['results']) == TASK_KEEP['results'] and len(t['log']) == TASK_KEEP['log']
         assert tasks_query(q='topic 29') and tasks_query(q='nothing like this') == [] and tasks_query(q='100%') == []
+        # put aside and put away: the person's word, or the deck's tidying; a summary touches neither an archived task nor what the person set
+        shelf = task_do({'do': 'add', 'who': 'summary', 'scope': 'p-shelftest', 'scope_name': 'shelf', 'title': 'Maybe later'})
+        task_do({'do': 'set', 'who': 'deck', 'id': shelf, 'status': 'backlog'})
+        assert task_get(shelf)['status'] == 'backlog' and any(x['id'] == shelf for x in tasks_query('p-shelftest'))
+        try:
+            task_do({'do': 'archive', 'who': 'workspace-1', 'id': shelf})
+            assert False, 'a session archived a task'
+        except ValueError:
+            pass
+        task_do({'do': 'archive', 'who': 'person', 'id': shelf})
+        assert task_get(shelf)['archived'] and not any(x['id'] == shelf for x in tasks_query('p-shelftest'))
+        assert [x['id'] for x in tasks_query('p-shelftest', archived=True)] == [shelf] and any(x['id'] == shelf for x in tasks_query(q='maybe later', archived=None))
+        assert task_do({'do': 'set', 'who': 'summary', 'id': shelf, 'status': 'waiting'}) is None and task_get(shelf)['status'] == 'backlog', 'a summary moved an archived task'
+        task_do({'do': 'set', 'who': 'workspace-1', 'id': shelf, 'status': 'doing', 'session': {'name': 'workspace-1'}})
+        assert not task_get(shelf)['archived'] and task_get(shelf)['status'] == 'doing', 'taken up again: out of the archive'
+        task_do({'do': 'set', 'who': 'person', 'id': shelf, 'status': 'waiting'})
+        task_do({'do': 'set', 'who': 'deck', 'id': shelf, 'status': 'backlog'})
+        assert task_get(shelf)['status'] == 'waiting', 'the deck changed what the person set'
+        with contextlib.closing(tasks_db()) as c:  # (out of the way of what is counted below)
+            with c:
+                for table, col in (('tasks', 'id'), ('task_sessions', 'task'), ('task_log', 'task')):
+                    c.execute(f'DELETE FROM {table} WHERE {col} = ?', (shelf,))
         task_do({'do': 'set', 'who': 'taskie', 'id': tid, 'status': 'done', 'now': 'shipped'})
         t = task_get(tid)
         assert t['status'] == 'done' and t['closed'] and t['next'] == ''
@@ -1784,7 +1806,9 @@ def resolve(me, to=None):
 # ---------- tasks: what a project works through; they outlast the sessions that work on them ----------
 
 TASKS = os.environ.get('STURNUS_TASKS') or os.path.expanduser('~/.local/state/sturnus/tasks.db')  # (not in HOME: that is a temporary folder)
-TASK_STATES = ('todo', 'doing', 'waiting', 'done', 'dropped')
+# (backlog: put aside — nobody is on it and it waits on nobody — but not ended. A task can also be archived, whatever its
+# state: out of every list but the archive's own and a search, and brought back by whoever takes it up again.)
+TASK_STATES = ('todo', 'doing', 'waiting', 'backlog', 'done', 'dropped')
 TASK_CLOSED = ('done', 'dropped')
 TASK_KEEP = {'decisions': 12, 'results': 8, 'log': 20, 'sessions': 12}  # (per task: what is said again replaces, the newest stay)
 TASK_SCHEMA = '''
@@ -1805,6 +1829,9 @@ def tasks_db():
     c = sqlite3.connect(TASKS, timeout=5)
     c.row_factory = sqlite3.Row
     c.executescript(TASK_SCHEMA)
+    if 'archived' not in {r['name'] for r in c.execute('PRAGMA table_info(tasks)')}:  # (a store from before tasks could be archived)
+        with contextlib.suppress(sqlite3.OperationalError):  # (another process added it a moment ago)
+            c.execute('ALTER TABLE tasks ADD COLUMN archived REAL')
     return c
 
 
@@ -1852,8 +1879,10 @@ def task_apply(c, op):
     """One change to the store; the task's id, or None when it was left alone. Sessions, the person and the summaries all
     come through here, and who decides what is settled here: the person's word on a field stands against the summaries (a
     session's own update replaces it); a summary that read the conversation only up to AS_OF changes no field that a
-    session or the person has written since; it neither reopens an ended task nor brings a deleted one back; only the
-    person deletes."""
+    session or the person has written since; it neither reopens an ended task nor brings a deleted one back, nor touches
+    an archived one; only the person deletes. The deck's own tidying (who 'deck': a task nobody has touched for long is
+    put aside or archived) leaves what the person set as it is. A session or the person taking an archived task up again
+    brings it out of the archive."""
     do, who, at = op['do'], op.get('who') or 'someone', op.get('at') or time.time()
     row = c.execute('SELECT * FROM tasks WHERE id = ?', (op.get('id') or '',)).fetchone()
     made = False
@@ -1882,13 +1911,20 @@ def task_apply(c, op):
             raise ValueError('only the person deletes a task; a session drops it: amail task drop ID')
         c.execute('UPDATE tasks SET deleted = ?, at = ? WHERE id = ?', (at, at, tid))
         return tid
+    if do in ('archive', 'unarchive'):  # (put away, or brought back: the person's word, or the deck's tidying)
+        if who not in ('person', 'deck'):
+            raise ValueError('only the person archives a task')
+        if not row['deleted'] and bool(row['archived']) != (do == 'archive'):
+            c.execute('UPDATE tasks SET archived = ? WHERE id = ?', (at if do == 'archive' else None, tid))
+            task_note(c, tid, at, who, 'archived' if do == 'archive' else 'out of the archive')
+        return tid
     if do == 'merge':  # (the summary's tidying: the same thing written down twice)
         if who != 'summary':
             raise ValueError('only the assistant merges tasks')
         return task_absorb(c, row, op, who, at)
     if row['deleted']:
         return None if who == 'summary' else tid
-    if who == 'summary' and row['status'] in TASK_CLOSED:
+    if who == 'summary' and (row['status'] in TASK_CLOSED or row['archived']):
         return None
     s = op.get('session')
     if do == 'unlink':  # (remembered: a summary does not put it back; the session itself, or the person, may)
@@ -1912,6 +1948,8 @@ def task_apply(c, op):
     stale = who == 'summary' and (op.get('as_of') or at) < (row['direct'] or 0)  # (they spoke after what it read: their word is the newer)
     if who == 'summary':
         new = {k: v for k, v in new.items() if k not in held and not stale}
+    elif who == 'deck':
+        new = {k: v for k, v in new.items() if k not in held}
     elif who == 'person':
         held |= set(new)
     else:
@@ -1936,6 +1974,8 @@ def task_apply(c, op):
         new['direct'] = at
     if held != set(json.loads(row['held'] or '[]')):
         new['held'] = json.dumps(sorted(held))
+    if row['archived'] and who != 'deck' and (new.get('status') in ('todo', 'doing', 'waiting') or (s and s.get('name') and who != 'summary')):
+        new['archived'] = None  # (taken up again: out of the archive)
     if 'status' in new:
         new['closed'] = at if new['status'] in TASK_CLOSED else None
         if not made or new['status'] != 'todo':
@@ -2039,13 +2079,19 @@ def task_flush():
     return len(names)
 
 
-def tasks_query(scope=None, closed=False, q=None, limit=500, wait=5):
-    """Tasks, newest change first, with their sessions. CLOSED: False open ones, True all, a time: also those ended since."""
+def tasks_query(scope=None, closed=False, q=None, limit=500, wait=5, archived=False):
+    """Tasks, newest change first, with their sessions. CLOSED: False open ones, True all, a time: also those ended since.
+    ARCHIVED: False those not put away, True only those put away, None both."""
     c = tasks_read(wait)
     if not c:
         return []
     with contextlib.closing(c):
         where, args = ['deleted IS NULL'], []
+        if 'archived' in {r['name'] for r in c.execute('PRAGMA table_info(tasks)')}:  # (read-only here: a store not yet written by this version has none archived)
+            if archived is not None:
+                where.append('archived IS NOT NULL' if archived else 'archived IS NULL')
+        elif archived:
+            return []
         if scope:
             where.append('scope = ?')
             args.append(scope)
@@ -2146,7 +2192,7 @@ def task_word(t):
 
 def task_text(t, full=False):
     who = ', '.join(s['name'] for s in t.get('sessions') or [])
-    head = f'{t["id"]}  [{task_word(t)}] {t["title"]}'
+    head = f'{t["id"]}  [{task_word(t)}{", archived" if t.get("archived") else ""}] {t["title"]}'
     if not full:
         return head + (f' | now: {t["now"]}' if t['now'] else '') + (f' | next: {t["next"]}' if t['next'] else '') + (f' | {who}' if who else '')
     lines = [head + (f'  ({t["scope_name"]})' if t.get('scope_name') else '')]
@@ -2171,11 +2217,11 @@ def task_cmd(me, a):
         ws = ' '.join(words(a, TASK_VALUED))
         if not ws:
             sys.exit('usage: amail task search WORDS')
-        print('\n'.join(task_text(t) for t in tasks_query(closed=True, q=ws, limit=40)) or f'no task mentions {ws}')
+        print('\n'.join(task_text(t) for t in tasks_query(closed=True, q=ws, limit=40, archived=None)) or f'no task mentions {ws}')
         return 0
     if cmd in ('list', 'all'):
         key = resolve(me, opt(a, '--to'))
-        ts = tasks_query(key, closed=cmd == 'all')
+        ts = tasks_query(key, closed=cmd == 'all', archived=None if cmd == 'all' else False)
         print('\n'.join(task_text(t) for t in ts) or f'no {"" if cmd == "all" else "open "}tasks on {channels()[key]["name"]} (amail task add "what")')
         return 0
     fields = {k: opt(a, f'--{k}') for k in ('now', 'next', 'title', 'status')}
@@ -2213,7 +2259,7 @@ def task_cmd(me, a):
     elif cmd == 'drop':
         fields.update(status='dropped')
     elif not fields:
-        sys.exit('usage: amail task update ID [--now T] [--next T] [--title T] [--status todo|doing|waiting] [--decided "topic: what"] [--result T]')
+        sys.exit('usage: amail task update ID [--now T] [--next T] [--title T] [--status todo|doing|waiting|backlog] [--decided "topic: what"] [--result T]')
     else:
         fields['session'] = task_me(me)
     task_do({'do': 'set', 'who': who, 'id': t['id'], **fields})
@@ -2231,7 +2277,8 @@ def task_intro(me, cwd):
         here = os.path.realpath(cwd) if cwd else ''
         rooms = [m for k, m in channels().items() if k.startswith('w-') and m.get('path') and (here == m['path'] or here.startswith(m['path'] + '/'))]
         at = mine.get('project') or (project_of(here) if here else None) or mine.get('workspace') or max(rooms, key=lambda m: len(m['path']), default=None)
-        ts = sorted(tasks_query(at['key'], wait=1), key=lambda t: {'doing': 0, 'waiting': 1}.get(t['status'], 2))[:5] if at else []
+        # (what was put aside is not pressed on a session starting: it finds it with amail task)
+        ts = sorted((t for t in tasks_query(at['key'], wait=1) if t['status'] != 'backlog'), key=lambda t: {'doing': 0, 'waiting': 1}.get(t['status'], 2))[:5] if at else []
     except Exception:  # (telling them is not worth a failed session start)
         return how
     if not ts:

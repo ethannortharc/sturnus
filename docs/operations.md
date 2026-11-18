@@ -61,6 +61,8 @@ A session is kept apart from the terminal it runs in and from the agent's own co
 
 Sessions come and go; a project's tasks stay. They are kept in `~/.local/state/sturnus/tasks.db` (SQLite; `STURNUS_TASKS` points elsewhere), which upgrades and a plain `sturnus uninstall` leave alone; only `--purge` removes it.
 
+A task is `todo`, `doing`, `waiting` (on the person), `backlog` (put aside: nobody is on it and it waits on nobody), `done` or `dropped`, and may be archived whatever its state: an archived task is in no list but the archive's own and the search, and comes out again when a session or the person takes it up. Once an hour the service tidies (config `task_days`, days; 0 switches a rule off): `needs` 7 — a task waiting on the person with no session left on it is put aside; `doing` 14 — so is one under way with no session; `closed` 7 — an ended one is archived; `backlog` 30 — one put aside is archived. A state the person set is never changed by this, and a summary never touches an archived task.
+
 Three write to them, through one set of rules:
 
 - **The sessions**, as they work: `amail task add`, `start`, `update`, `done`, `drop`, `leave`. A sandbox that cannot write to the store (Codex's, Cursor's) leaves its change in amail's folder, and the service applies it.
