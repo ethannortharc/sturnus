@@ -55,6 +55,7 @@ ME_NAME = 'user'  # (who the person is on amail when writing from this page)
 
 DEFAULTS = {
     'host': '127.0.0.1', 'port': 7788, 'pane_titles': True,
+    'rest_days': 7,  # (a session idle this many days has its terminal closed; it goes on in a new one when taken up again. 0: never)
     # (what a new session runs; add your own flags here)
     'launch': {'claude': ['claude'], 'codex': ['codex'], 'cursor': ['cursor-agent']},
     'summarizer': {'cmd': ['claude', '-p', '--model', 'haiku', '--no-session-persistence', '--strict-mcp-config',
@@ -681,6 +682,7 @@ def codex_convs(known):
     return out
 
 
+REST_EVERY = float(os.environ.get('STURNUS_REST_EVERY') or 600)  # (seconds between looks for sessions that have rested long enough)
 PLAN_REST = float(os.environ.get('STURNUS_PLAN_REST') or 1800)  # (seconds a session the clock started rests before its terminal is stopped)
 
 
@@ -2506,7 +2508,8 @@ class Deck:
             self.everyone = sessions
             self.state = {'sessions': [s for s in sessions if not s['hidden']], 'talk': self.talk.all(), 'groups': zs, 'locks': locks,
                           'tasks': task_rows, 'kept': kept, 'spaces': spaces, 'recover': self.recover_view(kept), 'plans': plans,
-                          'terminal': {'way': T.way(self.cfg).key, 'usable': [w.key for w in T.WAYS.values() if w.usable()]},
+                          'terminal': {'way': T.way(self.cfg).key, 'usable': [w.key for w in T.WAYS.values() if w.usable()],
+                                       'rest_days': float(self.cfg.get('rest_days', DEFAULTS['rest_days']) or 0)},
                           'workspaces': workspaces, 'projects': projects, 'boards': boards,
                           'muxes': [m for m in ('zellij', 'tmux') if shutil.which(m)], 'voice': self.voice_view(),
                           'at': now, 'version': VERSION, 'summarizer': {'busy': self.sums.busy, 'error': self.sums.error},
@@ -3274,6 +3277,16 @@ class Deck:
             return self.recover(body)
         if what == 'plan':  # (what is set to be done again and again by the clock)
             return self.plan_act(body)
+        if what == 'terminal' and 'rest_days' in body:  # (how many days a session may rest before its terminal is closed; 0: never)
+            try:
+                days = float(body['rest_days'])
+            except (TypeError, ValueError):
+                days = -1
+            if not 0 <= days <= 365:
+                return False, tx('天数要在 0 到 365 之间', 'The days must be between 0 and 365')
+            self.cfg['rest_days'] = days
+            save_config({'rest_days': days})
+            return True, tx(f'空闲 {days:g} 天的会话会自动关掉终端' if days else '不再自动关掉空闲会话的终端', f'A session idle for {days:g} days has its terminal closed' if days else 'Idle sessions keep their terminals')
         if what == 'terminal':  # (the way new terminals are opened)
             if body.get('way') not in T.WAYS or not T.WAYS[body['way']].usable():
                 return False, tx('这台机器上用不了这种打开方式', 'That way of opening a terminal cannot be used on this machine')
@@ -3798,9 +3811,9 @@ class Deck:
                 'space': tx('没有这个工作区', 'No such workspace'), 'place': tx('这个目录不在这个工作区里', 'That folder is not in this workspace'),
                 'session': tx('找不到这条会话', 'Session not found'), 'archive': tx('先归档，才能删除', 'Archive it first, then delete')}.get(getattr(e, 'code', ''), str(e))
 
-    def stop(self, s, kid=None):
+    def stop(self, s, kid=None, why='stopped'):
         """A session's agent ended, with what it started: its window's process (a Codex thread with no window of its own,
-        the desktop app's, has none to end). Its terminal is marked over at once."""
+        the desktop app's, has none to end). Its terminal is marked over at once, for the reason given."""
         pid = s.get('window_pid') or (s.get('pid') if s['kind'] != 'codex' else None)
         if not pid:
             return False
@@ -3811,8 +3824,63 @@ class Deck:
             with contextlib.suppress(OSError):
                 os.kill(p, signal.SIGTERM)
         if kid:
-            self.book.close(kid)
+            self.book.close(kid, why)
         return True
+
+    def rest_pass(self, now=None):
+        """Sessions nobody has used for the days set (rest_days) have their terminals closed: an agent at rest still holds
+        its memory and its pane. Only one that is idle with no prompt open, that nobody is looking at, that is not
+        pinned, whose process is the deck's to end and whose conversation is there to go on with. It stays in the list,
+        stopped, and goes on in a new terminal when taken up again. Returns the sessions it closed."""
+        days = float(self.cfg.get('rest_days', DEFAULTS['rest_days']) or 0)
+        if days <= 0:
+            return []
+        now, out = now or time.time(), []
+        for s in list(self.everyone):
+            k = self.kept.get(s.get('kept') or '')
+            if (not k or k['pinned'] or k['live'] != s['id'] or s.get('starting') or s.get('parent_id') or s.get('unknown')
+                    or s['state'] != 'idle' or s.get('prompting') or now - max(s.get('at') or 0, s.get('since') or 0, k.get('at') or 0) < days * 86400):
+                continue
+            if not (s.get('window_pid') or (s.get('pid') if s['kind'] != 'codex' else None)):
+                continue  # (not the deck's to end: the Codex app's own)
+            full = self.book.get(k['id'])
+            seg = full['segs'][-1] if full and full['segs'] else None
+            if not seg or seg['kind'] != s['kind'] or not ((seg['path'] and os.path.exists(seg['path'])) or transcript_of({'kind': seg['kind'], 'session': seg['conv']})):
+                continue  # (nothing to go on with afterwards: left as it is)
+            try:
+                if s.get('loc') and T.in_view(s['loc']):
+                    continue  # (someone has it in front of them)
+            except Exception:
+                continue
+            if self.stop(s, k['id'], 'rested'):
+                out.append(k['id'])
+                self.note(tx(f'「{k["title"] or s["name"]}」{days:g} 天没用了：关了它的终端，对话都还在，要用时点继续', f'“{k["title"] or s["name"]}” was not used for {days:g} days: its terminal is closed, the conversation is all there, Go on takes it up again'))
+        if out:
+            self.kept_refresh()
+        return out
+
+    def take(self, kid, s, group=''):
+        """A session running where the page cannot reach it — a terminal window outside Zellij and tmux, the Codex app —
+        goes on in a terminal of the deck's own. A process the deck can end is ended first, so no two write one
+        conversation; the Codex app's thread has none of its own, and is the person's to leave alone there."""
+        if s.get('loc'):
+            return False, tx('它已经在 Zellij 或 tmux 里了', 'It is already in Zellij or tmux')
+        if s.get('starting') or s['state'] == 'working':
+            return False, tx('它正在工作：等它停下来再搬', 'It is at work: move it once it has come to rest')
+        pid = s.get('window_pid') or (s.get('pid') if s['kind'] != 'codex' else None)
+        if pid:
+            if not self.stop(s, kid, 'moved'):
+                return False, tx('结束不了它现在的进程，没有搬', 'Its process could not be ended: not moved')
+            for _ in range(50):
+                if not A.proc(pid):
+                    break
+                time.sleep(.2)
+            else:
+                return False, tx('它现在的进程还没退出：等它退出后点「继续」', 'Its process has not exited yet: once it has, Go on')
+        else:
+            self.book.close(kid, 'moved')
+        self.kept_refresh()
+        return self.launch(kid, group=group, force=True)
 
     def kept_act(self, b):
         """The person's word on a session that lasts: its title, pinned, its workspace, stopped, archived (a running one
@@ -3828,6 +3896,8 @@ class Deck:
                 self.book.set(kid, pinned=on)
             elif do == 'space':
                 self.book.set(kid, space=str(b.get('space') or ''))
+            elif do == 'take':  # (out of where the page cannot reach it, into a terminal of the deck's own)
+                return self.take(kid, s, str(b.get('group') or '')) if s else self.launch(kid, group=str(b.get('group') or ''))
             elif do == 'stop':
                 if not s or not self.stop(s, kid):
                     return False, tx('它没有在这台机器的终端里跑，这里停不了', 'It is not running in a terminal on this machine, so it cannot be stopped from here')
@@ -3903,12 +3973,13 @@ class Deck:
         self.kept_refresh()
         return True, {'id': sid}
 
-    def launch(self, kid, prompt='', group='', kind=''):
+    def launch(self, kid, prompt='', group='', kind='', force=False):
         """A stopped session goes on in a new terminal; with KIND, another agent takes it on. Refused while one already
-        runs for it: two processes on one conversation would both write it."""
-        if self.kept_live(kid) or any(l.get('kept') == kid for l in self.launched.values()):
+        runs for it: two processes on one conversation would both write it (FORCE: the caller has seen to that)."""
+        if (not force and self.kept_live(kid)) or any(l.get('kept') == kid for l in self.launched.values()):
             return False, tx('这条会话已经在跑了：进它现在的终端', 'This session is already running: go to its terminal')
         sp = next((x for x in self.state.get('spaces') or [] if x['id'] == (self.kept.get(kid) or {}).get('space')), None)
+        # (a name still held by a row on its way out is left to it: the mailbox knows one session by a name at a time)
         taken = {s['name'] for s in self.everyone if s['state'] not in ('gone', 'ended')}
         ok, r = launch_session(self.book, self.cfg, kid, prompt, group, (sp or {}).get('group') or '', taken, kind)
         if not ok:
@@ -3964,9 +4035,13 @@ class Deck:
         has said anything in it: it is still there to read and go on with. One the person has spoken in, or pinned, is
         theirs to stop."""
         time.sleep(20)
+        rested = time.time() - REST_EVERY + min(60, REST_EVERY)  # (the first look a minute after the deck is up)
         while True:
             try:
                 now = time.time()
+                if now - rested >= REST_EVERY:
+                    rested = now
+                    self.rest_pass(now)
                 for p in self.book.plans():
                     if p['live'] and p['next'] and p['next'] <= now:
                         try:
@@ -3981,7 +4056,7 @@ class Deck:
                         self.stop(s, k['id'])
             except Exception as e:
                 self.note(tx(f'定时任务出错：{e!r}', f'The clock failed: {e!r}'), False)
-            time.sleep(30)
+            time.sleep(min(30, REST_EVERY))
 
     def index_loop(self):
         """The conversations on disk, looked through now and then: one no session has yet becomes a stopped session."""

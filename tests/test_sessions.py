@@ -37,7 +37,7 @@ class Sessions(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.dir = os.path.realpath(tempfile.mkdtemp(prefix='st-', dir='/tmp'))  # (short: a tmux socket's path has a limit)
-        for d in ('conf', 'cache', 'mail', 'reg', 'tm', 'fake', 'proj', 'elsewhere'):
+        for d in ('conf', 'cache', 'mail', 'reg', 'tm', 'zj', 'fake', 'proj', 'elsewhere'):
             os.makedirs(f'{cls.dir}/{d}')
         cls.port = free_port()
         with open(f'{cls.dir}/conf/config.json', 'w') as f:
@@ -47,7 +47,8 @@ class Sessions(unittest.TestCase):
         keep = {k: v for k, v in os.environ.items() if not k.startswith(('TMUX', 'ZELLIJ', 'STURNUS', 'AMAIL'))}  # (run from inside a session or not: the same)
         cls.env = {**keep, 'STURNUS_CONF': f'{cls.dir}/conf/config.json', 'STURNUS_CACHE': f'{cls.dir}/cache', 'AMAIL_HOME': f'{cls.dir}/mail',
                    'STURNUS_TASKS': f'{cls.dir}/tasks.db', 'AMAIL_CLAUDE_SESSIONS': f'{cls.dir}/reg', 'TMUX_TMPDIR': f'{cls.dir}/tm',
-                   'FAKE_HOME': f'{cls.dir}/fake', 'FAKE_AMAIL': os.path.join(HERE, 'amail'), 'STURNUS_QUIET': '3'}
+                   'FAKE_HOME': f'{cls.dir}/fake', 'FAKE_AMAIL': os.path.join(HERE, 'amail'), 'STURNUS_QUIET': '3', 'STURNUS_REST_EVERY': '2',
+                   'ZELLIJ_SOCKET_DIR': f'{cls.dir}/zj'}  # (no Zellij session of the person's can be reached from here, whatever a test starts)
         cls.log = open(f'{cls.dir}/deck.log', 'w')
         cls.deck = subprocess.Popen([sys.executable, os.path.join(HERE, 'sturnus'), 'serve'], env=cls.env, stdout=cls.log, stderr=cls.log)
         for _ in range(120):
@@ -282,6 +283,48 @@ class Sessions(unittest.TestCase):
         other = self.until(lambda: next((x for x in self.call('/api/state').get('kept') or [] if x['live'] and (x['term'] or {}).get('grp') == 'tmux:leak'), None), 'the one that inherited a session’s words did not show')
         self.assertNotIn(other['id'], (mine, k['id']))
         self.assertEqual((len(self.call(f'/api/kept?id={mine}')['kept']['segs']), self.kept(mine)['live'] != other['live']), (1, True))
+
+    def test_one_outside_zellij_and_tmux_is_brought_to_a_terminal_here(self):
+        there = f'{self.dir}/elsewhere'
+        out = subprocess.Popen([sys.executable, AGENT, 'outside'], cwd=there, env=self.env, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # (a plain process: in no pane)
+        try:
+            k = self.until(lambda: next((x for x in self.call('/api/state').get('kept') or [] if x['live'] and 'done: outside' in self.said(x['id'])), None), 'the one outside did not become a session')
+            self.assertEqual((k['term']['mux'], k['nsegs']), ('', 1))
+            j = self.call('/api/kept', {'id': k['id'], 'do': 'take'})
+            self.assertTrue(j['ok'], j)
+            self.assertIsNotNone(out.wait(10))  # (its process was ended first: no two on one conversation)
+            m = self.until(lambda: (lambda x: x if x and x['live'] and not x['live'].startswith('new:') and x['term'] and x['term']['mux'] == 'tmux' else None)(self.kept(k['id'])), 'it did not come up in a terminal here')
+            full = self.call(f'/api/kept?id={k["id"]}')['kept']
+            self.assertEqual((len(full['segs']), [(t['mux'], t['why'] or '') for t in full['terms']]), (1, [('', 'moved'), ('tmux', '')]))
+            self.assertTrue(self.call('/api/say', {'id': m['live'], 'text': 'here now'})['ok'])
+            self.until(lambda: 'done: here now' in self.said(k['id']), 'words did not reach it in its new terminal')
+            self.assertFalse(self.call('/api/kept', {'id': k['id'], 'do': 'take'})['ok'])  # (already in a pane)
+        finally:
+            if out.poll() is None:
+                out.kill()
+
+    def test_one_not_used_for_long_has_its_terminal_closed_and_goes_on_when_taken_up(self):
+        mk = lambda title: self.call('/api/new', {'kind': 'claude', 'cwd': f'{self.dir}/proj', 'prompt': title, 'title': title})['kept']
+        rests, pinned = mk('rests'), mk('pinned')
+        for kid in (rests, pinned):
+            self.until(lambda: (lambda k: k and k['live'] and not k['live'].startswith('new:') and k['state'] == 'idle')(self.kept(kid)), 'a session did not come to rest')
+        self.assertTrue(self.call('/api/kept', {'id': pinned, 'do': 'pin', 'on': True})['ok'])
+        self.assertFalse(self.call('/api/terminal', {'rest_days': -1})['ok'])
+        self.assertEqual(self.call('/api/state')['terminal']['rest_days'], 7)
+        try:
+            self.assertTrue(self.call('/api/terminal', {'rest_days': 0.00003})['ok'])  # (about three seconds, for the test)
+            self.until(lambda: (lambda k: k and not k['live'] and (k['ended'] or {}).get('why') == 'rested')(self.kept(rests)), 'the idle one was not put to rest', wait=45)
+            self.assertTrue(self.kept(pinned)['live'])  # (a pinned one is left alone)
+        finally:
+            self.assertTrue(self.call('/api/terminal', {'rest_days': 0})['ok'])
+        j = self.call('/api/resume', {'id': rests, 'text': 'on again'})  # (taken up again: a new terminal, the same conversation)
+        self.assertTrue(j['ok'], j)
+        self.until(lambda: 'done: on again' in self.said(rests), 'it did not go on')
+        self.until(lambda: (lambda k: k and k['live'] and not k['live'].startswith('new:'))(self.kept(rests)), 'its new terminal was not seen')
+        full = self.call(f'/api/kept?id={rests}')['kept']
+        self.assertEqual((len(full['segs']), [t['why'] or '' for t in full['terms']]), (1, ['rested', '']))
+        self.assertTrue(self.call('/api/terminal', {'rest_days': 7})['ok'])
+
 
 
 if __name__ == '__main__':

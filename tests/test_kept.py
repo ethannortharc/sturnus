@@ -317,6 +317,18 @@ class Keeping(unittest.TestCase):
         b.drop(kid)
         self.assertIsNone(b.get(kid))
 
+    def test_a_terminal_with_no_process_closed_is_not_reopened_by_the_same_row_until_it_is_in_a_pane(self):
+        b = book()
+        app = row(id='codex:t1', kind='codex', session='t1', pid=None, pid_at=0, loc=None, origin='Codex 桌面应用')  # (a thread in the Codex app: no pane, no process of its own)
+        kid = b.bind([app], now=200)['codex:t1']
+        self.assertEqual([(t['mux'], t['origin']) for t in b.get(kid)['terms']], [('', 'Codex 桌面应用')])
+        b.close(kid, 'moved', now=210)  # (being moved into a terminal of the deck's own)
+        b.bind([app], now=212)
+        self.assertEqual((len(b.get(kid)['terms']), b.get(kid)['terms'][0]['why']), (1, 'moved'))  # (the same row, still pane-less: no terminal of it again)
+        b.bind([row(id='codex:t1', kind='codex', session='t1', pid=None, window_pid=77, pid_at=211, loc={'mux': 'tmux', 'session': 'tmux:g', 'pane': '%3'})], now=214)
+        self.assertEqual([(t['mux'], t['pane'], t['ended'] is None) for t in b.get(kid)['terms']], [('', '', False), ('tmux', '%3', True)])
+        self.assertEqual(len(b.get(kid)['segs']), 1)  # (the same conversation, in another place)
+
     def test_stopping_closes_its_terminal_at_once(self):
         b = book()
         kid = b.bind([row()], now=200)['claude:c1']

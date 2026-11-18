@@ -410,7 +410,8 @@ class Book:
                               (kid, norm(s.get('home') or s.get('cwd')), s['kind'], s.get('name') or '', at, s.get('at') or now, s['state']))
                     kept[kid] = dict(c.execute('SELECT * FROM kept WHERE id = ?', (kid,)).fetchone())
                 halt = self.stopping.get(kid)
-                if kid in seen or (halt and now - halt[0] < 30 and halt[1] in (None, pid)):  # (two rows of one session: the first one seen is it; a process just stopped is not it running again)
+                # (a process just stopped is not the session running again; a terminal closed with no process to its name — the Codex app's — is not reopened by the same row, until it is in a pane)
+                if kid in seen or (halt and now - halt[0] < 30 and (halt[1] == pid if halt[1] else not (s.get('loc') or {}).get('mux'))):  # (two rows of one session: the first one seen is it; a process just stopped is not it running again)
                     out[s['id']] = kid
                     continue
                 seen.add(kid)
@@ -478,7 +479,8 @@ class Book:
         return out
 
     def close(self, kid, why='stopped', now=None):
-        """A session's open terminal marked over (the person stopped it): the deck does not wait to see it gone."""
+        """A session's open terminal marked over — the person stopped it ('stopped'), it rested too long ('rested'), it is
+        being moved into another ('moved') — without the deck waiting to see it gone."""
         now = now or time.time()
         with self.tx() as c:
             t = c.execute('SELECT pid FROM terms WHERE kept = ? AND ended IS NULL', (kid,)).fetchone()

@@ -135,6 +135,8 @@ terminal it runs in and the agent's own conversation.
 - **What you send shows at once.** Words sent from a session's page are under its conversation before they have left,
   with how they went (typed into its terminal, queued, put in its mailbox); the conversation in sight is read again
   about every second while its agent works.
+- **A session at rest gives its terminal back.** One nobody has used for seven days (Settings → Terminals; any number of days, or never) has its terminal closed, so idle agents do not pile up in memory; it stays in the list and goes on in a new terminal when you take it up again. A session running where the page cannot reach it (a plain terminal window, the Codex desktop app) says so on its Terminal tab and can be brought into a terminal here.
+- **A session's page remembers.** Its conversation, how far you had read, the steps and diffs you had opened and the words you had begun are there when you come back from another session. While its agent works, a line under the conversation says so, with what it is doing and for how long. The side panel is as wide as you drag it.
 - **A terminal is only where a session runs.** New terminals open as a tab in the workspace's Zellij group, a window in
   its tmux group, or a tmux session of its own (Settings → Terminals; change it at any time, nothing is moved).
   `sturnus ls` lists the sessions; `sturnus open NUMBER|TITLE` takes the terminal you are in to that session, and gives a
