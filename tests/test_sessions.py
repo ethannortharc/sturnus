@@ -186,6 +186,26 @@ class Sessions(unittest.TestCase):
         self.assertTrue(self.call('/api/kept', {'id': kid, 'do': 'delete'})['ok'])
         self.assertNotIn(kid, {k['id'] for k in self.call('/api/kept')['kept']})
 
+    def test_another_agent_takes_a_session_on_with_what_it_is_told(self):
+        proj = f'{self.dir}/elsewhere'
+        kid = self.call('/api/new', {'kind': 'claude', 'cwd': proj, 'prompt': 'find the slow query', 'title': 'Slow query'})['kept']
+        self.until(lambda: 'done: find the slow query' in self.said(kid), 'its ask was not answered')
+        hits = self.until(lambda: self.call('/api/search?q=slow%20query')['hits'], 'what was said was not found')
+        self.assertEqual((hits[0]['kept'], hits[0]['title']), (kid, 'Slow query'))
+        self.assertTrue(self.call('/api/kept', {'id': kid, 'do': 'stop'})['ok'])
+        self.until(lambda: (lambda k: k and not k['live'])(self.kept(kid)), 'it did not stop')
+        self.assertFalse(self.call('/api/handover', {'id': kid, 'kind': 'vim'})['ok'])
+        j = self.call('/api/handover', {'id': kid, 'kind': 'codex', 'text': 'then fix it'})
+        self.assertTrue(j['ok'], j)
+        for part in ('Slow query', 'Claude Code', 'find the slow query', 'then fix it', j['file']):
+            self.assertIn(part, j['note'])
+        self.assertIn('find the slow query', open(j['file']).read())
+        self.assertTrue(self.call('/api/resume', {'id': kid, 'kind': 'codex', 'text': 'HANDOVER ' + j['note']})['ok'])
+        k = self.until(lambda: (lambda k: k if k and k['live'] and not k['live'].startswith('new:') and k['nsegs'] == 2 else None)(self.kept(kid)), 'the other agent did not take it on')
+        self.assertEqual(k['nterms'], 2)  # (a new conversation of its own, in a second terminal, in the same session)
+        self.until(lambda: any(x.startswith('HANDOVER ') for x in self.said(kid)), 'what it was told is not in the session')
+        self.assertIn('done: find the slow query', self.said(kid))  # (and what was said before is still its)
+
     def test_an_agent_started_by_hand_is_a_session_too(self):
         there = f'{self.dir}/elsewhere'
         r = self.tmux('new-session', '-d', '-s', 'hand', '-c', there, sys.executable, AGENT, 'by hand')

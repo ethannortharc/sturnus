@@ -451,46 +451,53 @@ def text_of(content):
     return '\n'.join(texts), tools
 
 
+def line_items(d):
+    """One line of a conversation file (Claude Code's, Codex's, or another's in that shape) as items {who: user|assistant|
+    tool, text, at}."""
+    out = []
+    if not isinstance(d, dict):
+        return out
+    at = d.get('timestamp')
+    if d.get('type') in ('user', 'assistant') and isinstance(d.get('message'), dict):
+        m = d['message']
+        c = m.get('content')
+        if m.get('role') == 'user' and isinstance(c, list) and all(isinstance(x, dict) and x.get('type') == 'tool_result' for x in c):
+            return out
+        t, tools = text_of(c)
+        if m.get('role') == 'user' and re.match(r'\s*<(task-notification|system-reminder|local-command|command-)', t):
+            note = re.search(r'<summary>(.*?)</summary>', t, re.S)  # (the harness speaking, not the person: one line)
+            if note:
+                out.append({'who': 'tool', 'text': tx(f'后台通知：{" ".join(note.group(1).split())[:200]}', f'Background notice: {" ".join(note.group(1).split())[:200]}'), 'at': at})
+            return out
+        if t.strip():
+            out.append({'who': m.get('role'), 'text': t.strip()[:4000], 'at': at})
+        for tool in tools:
+            out.append({'who': 'tool', 'text': tool, 'at': at})
+    elif d.get('type') == 'response_item' and isinstance(d.get('payload'), dict):
+        p = d['payload']
+        if p.get('type') == 'message' and p.get('role') in ('user', 'assistant'):
+            t, _ = text_of(p.get('content'))
+            if t.strip() and not t.lstrip().startswith(('<environment_context', '<user_instructions', '# AGENTS.md', '<permissions')):
+                out.append({'who': p['role'], 'text': t.strip()[:4000], 'at': at})
+        elif p.get('type') in ('function_call', 'custom_tool_call'):
+            out.append({'who': 'tool', 'text': f'{p.get("name")}({str(p.get("arguments") or p.get("input") or "")[:160]})', 'at': at})
+    elif d.get('role') in ('user', 'assistant'):
+        t, tools = text_of(d.get('content') or d.get('message'))
+        if t.strip():
+            out.append({'who': d['role'], 'text': t.strip()[:4000], 'at': at})
+        for tool in tools:
+            out.append({'who': 'tool', 'text': tool, 'at': at})
+    return out
+
+
 def transcript_items(path, limit=120):
     """A conversation's end as items {who: user|assistant|tool, text, at}, oldest first, for reading on the page."""
     out = []
     for line in lines_of(path, 1500000):
         try:
-            d = json.loads(line)
+            out += line_items(json.loads(line))
         except ValueError:
             continue
-        if not isinstance(d, dict):
-            continue
-        at = d.get('timestamp')
-        if d.get('type') in ('user', 'assistant') and isinstance(d.get('message'), dict):
-            m = d['message']
-            c = m.get('content')
-            if m.get('role') == 'user' and isinstance(c, list) and all(isinstance(x, dict) and x.get('type') == 'tool_result' for x in c):
-                continue
-            t, tools = text_of(c)
-            if m.get('role') == 'user' and re.match(r'\s*<(task-notification|system-reminder|local-command|command-)', t):
-                note = re.search(r'<summary>(.*?)</summary>', t, re.S)  # (the harness speaking, not the person: one line)
-                if note:
-                    out.append({'who': 'tool', 'text': tx(f'后台通知：{" ".join(note.group(1).split())[:200]}', f'Background notice: {" ".join(note.group(1).split())[:200]}'), 'at': at})
-                continue
-            if t.strip():
-                out.append({'who': m.get('role'), 'text': t.strip()[:4000], 'at': at})
-            for tool in tools:
-                out.append({'who': 'tool', 'text': tool, 'at': at})
-        elif d.get('type') == 'response_item' and isinstance(d.get('payload'), dict):
-            p = d['payload']
-            if p.get('type') == 'message' and p.get('role') in ('user', 'assistant'):
-                t, _ = text_of(p.get('content'))
-                if t.strip() and not t.lstrip().startswith(('<environment_context', '<user_instructions', '# AGENTS.md', '<permissions')):
-                    out.append({'who': p['role'], 'text': t.strip()[:4000], 'at': at})
-            elif p.get('type') in ('function_call', 'custom_tool_call'):
-                out.append({'who': 'tool', 'text': f'{p.get("name")}({str(p.get("arguments") or p.get("input") or "")[:160]})', 'at': at})
-        elif d.get('role') in ('user', 'assistant'):
-            t, tools = text_of(d.get('content') or d.get('message'))
-            if t.strip():
-                out.append({'who': d['role'], 'text': t.strip()[:4000], 'at': at})
-            for tool in tools:
-                out.append({'who': 'tool', 'text': tool, 'at': at})
     return out[-limit:]
 
 
@@ -684,15 +691,16 @@ def agent_argv(cfg, kind, conv='', name='', prompt=''):
     return argv + ([prompt] if prompt else [])
 
 
-def launch_session(book, cfg, kid, prompt='', group='', prefer='', taken=()):
+def launch_session(book, cfg, kid, prompt='', group='', prefer='', taken=(), kind=''):
     """A terminal for a session that lasts, its agent in it: on with its latest conversation when it has one, from the
-    start when it has none. The caller has seen that nothing runs for it now. Returns (True, {msg, marker, loc, group,
-    kind, cwd, tab}) or (False, why)."""
+    start when it has none, or when another agent (KIND) takes it on: that one starts anew, with what it is told. The
+    caller has seen that nothing runs for it now. Returns (True, {msg, marker, loc, group, kind, cwd, tab}) or (False, why)."""
     k = book.get(kid)
     if not k:
         return False, tx('找不到这条会话', 'Session not found')
-    kind = k['kind'] if k['kind'] in K.AGENTS else 'claude'
-    seg = k['segs'][-1] if k['segs'] and k['segs'][-1]['kind'] == kind else None
+    was = k['kind'] if k['kind'] in K.AGENTS else 'claude'
+    kind = kind if kind in K.AGENTS else was
+    seg = k['segs'][-1] if k['segs'] and k['segs'][-1]['kind'] == kind == was else None
     path = seg and (seg['path'] if seg['path'] and os.path.exists(seg['path']) else transcript_of({'kind': kind, 'session': seg['conv']}))
     if seg and not path:  # (its latest conversation has no file: cleared and nothing said since, or cleaned away: a new one)
         seg = None
@@ -2097,6 +2105,8 @@ class Deck:
         self.lock = threading.Lock()
         self.book = K.Book()  # (the sessions that last, and their workspaces)
         self.kept, self.wants, self.items = {}, {}, {}  # (the sessions as the page lists them; (pid, when it started) -> the session it was started for; conversation file -> its items as last read)
+        self.keep_lock = threading.Lock()  # (one reader of a conversation file at a time: what it reads goes after what is there)
+        self.recovered = self.book.meta('recover')  # (the restart whose sessions the person has already been offered)
 
     def began(self, s, born):
         """When a session began: its conversation's first timestamp, else its process's start, else when this deck first saw it."""
@@ -2340,7 +2350,7 @@ class Deck:
         with self.lock:
             self.everyone = sessions
             self.state = {'sessions': [s for s in sessions if not s['hidden']], 'talk': self.talk.all(), 'groups': zs, 'locks': locks,
-                          'tasks': task_rows, 'kept': kept, 'spaces': spaces,
+                          'tasks': task_rows, 'kept': kept, 'spaces': spaces, 'recover': self.recover_view(kept),
                           'terminal': {'way': T.way(self.cfg).key, 'usable': [w.key for w in T.WAYS.values() if w.usable()]},
                           'workspaces': workspaces, 'projects': projects, 'boards': boards,
                           'muxes': [m for m in ('zellij', 'tmux') if shutil.which(m)], 'voice': self.voice_view(),
@@ -3099,7 +3109,15 @@ class Deck:
         if what == 'space':  # (… on a workspace and its folders)
             return self.space_act(body)
         if what == 'resume':  # (a stopped session goes on, in a new terminal; with words, they are its next ask)
-            return self.launch(str(body.get('id') or ''), prompt=(body.get('text') or '').strip(), group=str(body.get('group') or ''))
+            return self.launch(str(body.get('id') or ''), prompt=(body.get('text') or '').strip(), group=str(body.get('group') or ''), kind=str(body.get('kind') or ''))
+        if what == 'handover':  # (what another agent would be told on taking a session on: shown to the person first, to change)
+            kid, kind = str(body.get('id') or ''), str(body.get('kind') or '')
+            if kind not in K.AGENTS or not self.book.get(kid):
+                return False, tx('选一个 agent', 'Pick an agent')
+            note, f = self.handover(kid, kind, str(body.get('text') or ''))
+            return True, {'note': note, 'file': f}
+        if what == 'recover':  # (the sessions a restart ended: all of them on again, or the offer put away)
+            return self.recover(body)
         if what == 'terminal':  # (the way new terminals are opened)
             if body.get('way') not in T.WAYS or not T.WAYS[body['way']].usable():
                 return False, tx('这台机器上用不了这种打开方式', 'That way of opening a terminal cannot be used on this machine')
@@ -3451,8 +3469,147 @@ class Deck:
             t['words'] = T.attach_words(T.loc_of(t)) if t['ended'] is None and T.loc_of(t) else ''
         return {'ok': True, 'kept': {**k, 'live': s and s['id'], 'show': tilde(k['folder'])}}
 
+    def keep_talk(self, only=None, room=8 << 20):
+        """Each session's latest conversation, copied into the record as far as its file has grown (kept.py's said): at
+        most ROOM bytes of a file a pass. A long file first met is read from its last six megabytes on."""
+        left = 3 * room
+        for k in ([self.book.get(only)] if only else self.book.all()):
+            seg = k and (k['segs'][-1] if only and k['segs'] else k.get('seg'))
+            if not seg or left <= 0:
+                continue
+            path = seg['path'] if seg['path'] and os.path.exists(seg['path']) else transcript_of({'kind': seg['kind'], 'session': seg['conv']})
+            if not path or path.endswith('/store.db'):
+                continue
+            with self.keep_lock:
+                try:
+                    size = os.path.getsize(path)
+                    r = self.book.reading(path)
+                    off, first = (r['off'], False) if r else (max(0, size - 6 * (1 << 20)), True)
+                    if size <= off:
+                        continue
+                    with open(path, 'rb') as f:
+                        f.seek(off)
+                        data = f.read(min(size - off, room))
+                except OSError:
+                    continue
+                left -= len(data)
+                head = data.find(b'\n') + 1 if first and off else 0  # (begun in the middle of a line: from the next one)
+                end = data.rfind(b'\n')
+                if end < head:
+                    if len(data) == room:  # (one line longer than a pass reads: past it)
+                        self.book.say(k['id'], seg['n'], path, off + len(data), [], clipped=first and off > 0)
+                    continue
+                lines = [INLINE_DATA.sub(b'"data":""', l) if len(l) > 300000 else l for l in data[head:end].split(b'\n') if l.strip() and not NOT_TALK.match(l)]
+                lines = [l.decode('utf-8', 'replace') for l in lines if len(l) <= 300000]
+                items = []
+                for l in cursor_lines(lines) if '/.cursor/projects/' in path else lines:
+                    try:
+                        items += line_items(json.loads(l))
+                    except ValueError:
+                        continue
+                for it in items:
+                    it['at'] = stamp(it['at']) if isinstance(it.get('at'), str) else it.get('at')
+                self.book.say(k['id'], seg['n'], path, off + end + 1, items, clipped=first and off > 0)
+
+    def keep_loop(self):
+        time.sleep(12)
+        while True:
+            try:
+                self.keep_talk()
+            except Exception as e:
+                self.note(tx(f'抄录对话出错：{e!r}', f'Copying the conversations failed: {e!r}'), False)
+            time.sleep(15)
+
+    def handover(self, kid, kind, words=''):
+        """What another agent is told when it takes a session on: what the session is for, what was settled, where it
+        stands, the last of what was said, and the file with all of it (written now). In the agents' working language.
+        Returns (note, file)."""
+        k = self.book.get(kid)
+        if not k:
+            return '', ''
+        self.keep_talk(only=kid)
+        en = (self.cfg.get('work_lang') or 'zh') == 'en'
+        w = lambda zh, e: e if en else zh
+        full = {'claude': 'Claude Code', 'codex': 'Codex', 'cursor': 'Cursor'}
+        said = self.book.said(kid, 4000, talk=True)
+        folder = os.path.join(os.path.dirname(self.book.path), 'handover')
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+        f = os.path.join(folder, f'{kid}.md')
+        who = {'user': w('用户', 'The person'), 'assistant': w('助手', 'The agent')}
+        with open(f, 'w') as h:
+            h.write(f'# {k["title"] or kid}\n\n' + w(f'目录：{k["folder"]}\n\n以下是这条会话到目前为止说过的话，按先后。\n', f'Folder: {k["folder"]}\n\nEverything said in this session so far, in order.\n'))
+            for it in said:
+                h.write(f'\n## {who.get(it["who"], it["who"])}' + (f'（{full.get(it["kind"], it["kind"])}）' if it['who'] == 'assistant' else '')
+                        + (time.strftime(' %Y-%m-%d %H:%M', time.localtime(it['at'])) if it.get('at') else '') + f'\n\n{it["text"]}\n')
+        ids = {f'{x["kind"]}:{x["conv"]}' for x in k['segs']}
+        tasks = [t for t in self.state.get('tasks') or [] if t.get('shown') not in ('done', 'dropped')
+                 and any(l.get('sid') in ids or (k['name'] and l.get('name') == k['name']) for l in t.get('sessions') or [])][:3]
+        topics = [x for sid in sorted(ids, key=lambda i: -((self.stories.data.get(i) or {}).get('at') or 0)) for x in (self.stories.data.get(sid) or {}).get('topics') or []][:12]
+        dirty = len((git(k['work'] or k['folder'], 'status', '--porcelain') or '').splitlines()) if os.path.isdir(k['work'] or k['folder'] or '') else 0
+        last, room = [], 5000
+        for it in reversed(said[-14:]):
+            line = f'{who.get(it["who"], it["who"])}: {" ".join(it["text"].split())[:700]}'
+            if room - len(line) < 0:
+                break
+            room -= len(line)
+            last.insert(0, line)
+        was = full.get(k['kind'], k['kind'] or '?')
+        out = [w(f'你来接手一条进行中的会话，之前由 {was} 在做。下面是交接说明；要细节时读完整记录：{f}', f'You are taking on a session under way, so far done by {was}. Below is the handover; for detail, read the full record: {f}'),
+               w(f'这条会话在做的事：{k["title"] or "（没有名字）"}', f'What this session is for: {k["title"] or "(not named)"}'),
+               w(f'目录：{k["folder"]}', f'Folder: {k["folder"]}') + (w(f'，分支 {k["branch"]}', f', branch {k["branch"]}') if k['branch'] else '')
+               + (w(f'，有 {dirty} 个文件还没提交', f', {dirty} file(s) not committed') if dirty else '')]
+        for t in tasks:
+            out.append(w(f'任务「{t["title"]}」：现状 {t.get("now") or "—"}；接着做 {t.get("next") or "—"}', f'Task “{t["title"]}”: now {t.get("now") or "—"}; next {t.get("next") or "—"}'))
+        if topics:
+            out.append(w('已经定下的事：', 'Settled so far:'))
+            out += [f'- {x.get("topic")}: {x.get("now")}' + (f'（{x["why"]}）' if x.get('why') else '') for x in topics]
+        if last:
+            out.append(w('最近说过的话（更早的在完整记录里）：', 'The last of what was said (earlier words are in the full record):'))
+            out += last
+        out.append(w('接下来：', 'Next: ') + (words.strip() or w('先读完整记录里和现状有关的部分，再说你打算怎么接着做，等用户确认。', 'read what bears on where things stand in the full record, then say how you mean to go on, and wait for the person to confirm.')))
+        return '\n'.join(out), f
+
+    def recover_view(self, kept):
+        """The sessions the last restart of the machine ended, not gone on with since: offered once, to go on together."""
+        if self.recovered == str(int(boot_time())):
+            return []
+        return [k['id'] for k in kept if not k['archived'] and not k['live'] and (k.get('ended') or {}).get('why') == 'restart' and (k['ended'].get('at') or 0) > boot_time() - 14 * 86400]
+
+    def recover(self, b):
+        ids = self.recover_view(list(self.kept.values()))
+        self.recovered = self.book.meta('recover', int(boot_time()))
+        if b.get('do') != 'all':
+            self.kept_refresh()
+            return True, {}
+        done = []
+        for kid in ids:
+            ok, _ = self.launch(kid)
+            done += [kid] if ok else []
+        self.kept_refresh()
+        return True, tx(f'继续了 {len(done)} 条会话' + (f'，{len(ids) - len(done)} 条没开起来' if len(done) < len(ids) else ''), f'{len(done)} session(s) going on' + (f', {len(ids) - len(done)} could not be started' if len(done) < len(ids) else ''))
+
+    def search(self, q):
+        """Where something was said, for the page: each hit with its session's title and a line around the words."""
+        out = []
+        for h in self.book.find(q, 40):
+            k = self.kept.get(h['kept'])
+            if not k:
+                continue
+            text = ' '.join(h['text'].split())
+            i = max(0, text.lower().find(q.lower()) - 40)
+            out.append({'kept': h['kept'], 'title': k['title'] or k['name'], 'who': h['who'], 'at': h['at'], 'archived': bool(k['archived']), 'line': ('…' if i else '') + text[i:i + 160]})
+        return out
+
     def kept_items(self, kid, limit=200):
-        """A session's conversations one after another, as items for the page ({who, text, at, seg}): the last of them."""
+        """A session's conversations one after another, as items for the page ({who, text, at, seg}): the last of them,
+        from the record's own copy (brought up to date first); from the files themselves while it has none."""
+        try:
+            self.keep_talk(only=kid)
+            got = self.book.said(kid, limit)
+            if got:
+                return got
+        except (sqlite3.Error, OSError):
+            pass
         out = []
         for seg in (self.book.get(kid) or {}).get('segs') or []:
             path = seg['path'] if seg['path'] and os.path.exists(seg['path']) else transcript_of({'kind': seg['kind'], 'session': seg['conv']})
@@ -3562,14 +3719,14 @@ class Deck:
         self.kept_refresh()
         return True, {'id': sid}
 
-    def launch(self, kid, prompt='', group=''):
-        """A stopped session goes on in a new terminal. Refused while one already runs for it: two processes on one
-        conversation would both write it."""
+    def launch(self, kid, prompt='', group='', kind=''):
+        """A stopped session goes on in a new terminal; with KIND, another agent takes it on. Refused while one already
+        runs for it: two processes on one conversation would both write it."""
         if self.kept_live(kid) or any(l.get('kept') == kid for l in self.launched.values()):
             return False, tx('这条会话已经在跑了：进它现在的终端', 'This session is already running: go to its terminal')
         sp = next((x for x in self.state.get('spaces') or [] if x['id'] == (self.kept.get(kid) or {}).get('space')), None)
         taken = {s['name'] for s in self.everyone if s['state'] not in ('gone', 'ended')}
-        ok, r = launch_session(self.book, self.cfg, kid, prompt, group, (sp or {}).get('group') or '', taken)
+        ok, r = launch_session(self.book, self.cfg, kid, prompt, group, (sp or {}).get('group') or '', taken, kind)
         if not ok:
             return False, r
         self.launched[r['marker']] = {'kind': r['kind'], 'name': r['tab'], 'group': r['group'], 'cwd': r['cwd'], 'at': time.time(), 'kept': kid}
@@ -4789,6 +4946,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({'ok': True, 'kept': list(DECK.kept.values())})
             v = DECK.kept_page(kid)
             return self.send_json(v or {'ok': False, 'msg': tx('找不到这条会话', 'Session not found')}, 200 if v else 404)
+        if self.path.startswith('/api/search'):  # (where something was said, in any session's conversations)
+            from urllib.parse import urlparse, parse_qs
+            return self.send_json({'ok': True, 'hits': DECK.search((parse_qs(urlparse(self.path).query).get('q') or [''])[0].strip())})
         if self.path.startswith('/api/transcript'):
             from urllib.parse import urlparse, parse_qs
             q = parse_qs(urlparse(self.path).query)
@@ -4896,6 +5056,7 @@ def serve():
     threading.Thread(target=DECK.mind_loop, daemon=True).start()
     threading.Thread(target=DECK.projects.facts_loop, args=(DECK,), daemon=True).start()
     threading.Thread(target=DECK.index_loop, daemon=True).start()
+    threading.Thread(target=DECK.keep_loop, daemon=True).start()
     cfg = DECK.cfg
     global ACCESS_
     ACCESS_ = Access()

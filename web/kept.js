@@ -7,7 +7,7 @@
 'use strict';
 const OLD = { parseRoute, build, render, drawRail, drawSide, palPlaces, palItems, drawSettings };
 const KV = { view: store.get('deck.kView', 'space'), open: new Set(store.get('deck.kOpen', [])), places: store.get('deck.kPlaces', false), info: store.get('deck.kInfo', true),
-  full: {}, all: null, allAt: 0, chatAt: 0, menu: false, rename: false, blind: !S, spTab: {}, allShow: 'open', allQ: '' };
+  full: {}, all: null, allAt: 0, chatAt: 0, menu: false, rename: false, blind: !S, spTab: {}, allShow: 'open', allQ: '', hand: null, hits: [], hitsQ: '', hitsT: 0 };
 const KN = { kind: store.get('deck.newKind', 'claude'), space: store.get('deck.kSpace', null), dir: '' };  // (space: null until the person has picked one, or none)
 const KI = {
   side: '<svg viewBox="0 0 20 20"><rect x="3.5" y="4.5" width="13" height="11" rx="2"/><path d="M8 4.5v11"/></svg>',
@@ -145,7 +145,7 @@ function kBuildHome() {
     <h1>${tt('要做什么？', 'What needs doing?')}</h1>
     <form class="kn-box" id="knForm" autocomplete="off"><textarea id="knText" rows="3" aria-label="${tt('这条会话要做的事', 'What this session is to do')}" placeholder="${tt('说说这条会话要做的事（也可以先不说，开起来再讲）', 'Say what this session is to do (or leave it empty and say it once it is up)')}"></textarea>
       <div class="kn-row" id="knRow"></div></form>
-    <div class="kn-opts" id="knOpts"></div>
+    <div class="kn-opts" id="knOpts"></div><div id="knRecover"></div>
     <section class="entry"><div class="h-title"><h2>${tt('等你处理', 'Needs you')}</h2><span class="sub" id="attnSub"></span></div><div id="attn"></div></section>
   </div></div>`;
   $('#knForm').addEventListener('submit', e => { e.preventDefault(); kStart(); });
@@ -171,6 +171,12 @@ function kDrawHome() {
         <span class="hint">${tt('各自用自己的命令行和登录，Sturnus 不代它们说话', 'Each runs its own CLI with its own sign-in; Sturnus never speaks for them')}</span></div>
       <span class="l">${tt('终端', 'Terminal')}</span><div class="kn-term"><b>${esc(tt(...(KWAY[way] || [way, way])))}</b><button type="button" class="lnk" data-kset="terminal">${tt('换一种', 'Change')}</button>
         <span class="hint">${tt('会话在自己的终端里跑，在这台机器上随时能进去：sturnus open。终端关了、机器重启了，会话都还在，继续的时候换一个新终端。', 'A session runs in a terminal of its own; get to it on this machine at any time: sturnus open. Closed, or the machine restarted, the session stays, and goes on in a new terminal.')}</span></div>`;
+  });
+  draw('knrec', [S.recover, (S.recover || []).map(id => (kOf(id) || {}).title), LANG], () => {
+    const ids = (S.recover || []).filter(kOf);
+    $('#knRecover').innerHTML = ids.length ? `<div class="kstop"><div><b>${tt(`机器重启前有 ${ids.length} 条会话在跑`, `${ids.length} session${ids.length > 1 ? 's were' : ' was'} running before the machine restarted`)}</b>
+      <span>${ids.slice(0, 6).map(id => esc(kTitle(kOf(id)))).join(tt('、', ', '))}${ids.length > 6 ? tt(' 等', ' and more') : ''}</span></div>
+      <button class="btn" data-krecover="off">${tt('不用', 'No need')}</button><button class="btn primary" data-krecover="all">${KI.play}${tt('全部继续', 'Go on with all')}</button></div>` : '';
   });
   drawAttn('');
 }
@@ -241,6 +247,7 @@ function kDrawHead(k, s, tab) {
         <div class="kmenu"><button class="ks-ib" data-kmenu aria-expanded="${KV.menu}" title="${tt('更多', 'More')}" aria-label="${tt('更多', 'More')}">${KI.dots}</button>${KV.menu ? `<div class="kmenu-list" role="menu">
           <button role="menuitem" data-krename>${tt('改名', 'Rename')}</button>
           ${up ? `<button role="menuitem" data-kdo="stop">${tt('停止（终端里的 agent 会结束）', 'Stop (its agent ends)')}</button>` : ''}
+${!s && !k.archived ? `<button role="menuitem" data-khand>${tt('换一个 agent 继续…', 'Go on with another agent…')}</button>` : ''}
           <button role="menuitem" data-kdo="${k.archived ? 'unarchive' : 'archive'}">${k.archived ? tt('取消归档', 'Unarchive') : tt('归档', 'Archive')}</button>
           ${k.archived ? `<button role="menuitem" class="bad" data-kdo="delete">${tt('删除', 'Delete')}</button>` : ''}</div>` : ''}</div></div>`;
     if (KV.rename && $('#kTitle')) { $('#kTitle').focus(); $('#kTitle').select(); }
@@ -295,9 +302,14 @@ async function kDrawChat(k, s) {
   } catch {}
 }
 function kDrawFoot(k, s, tab) {
-  const mode = tab !== 'chat' ? 'none' : !s ? (k.archived ? 'archived' : 'stopped') : s.starting ? 'starting' : 'live';
-  draw('kfoot', [k.id, mode, s && s.id, mode === 'starting' && [s.summary, s.needs_you, s.loc], LANG], () => {
+  const mode = tab !== 'chat' ? 'none' : !s ? (k.archived ? 'archived' : KV.hand ? 'hand' : 'stopped') : s.starting ? 'starting' : 'live';
+  if (mode !== 'hand') KV.hand = null;
+  draw('kfoot', [k.id, mode, s && s.id, mode === 'starting' && [s.summary, s.needs_you, s.loc], KV.hand && [KV.hand.kind, KV.hand.busy, KV.hand.file], LANG], () => {
     $('#kpFoot').innerHTML = mode === 'none' ? ''
+      : mode === 'hand' ? `<div class="khand"><div class="kn-ch"><b>${tt('换谁来接着做', 'Who takes it on')}</b>${Object.keys(S.launch || {}).filter(x => FULL[x] && x !== k.kind).map(x => `<button type="button" data-khandkind="${x}" aria-pressed="${KV.hand.kind === x}" class="${KV.hand.kind === x ? 'on' : ''}">${mark(x, '', 'xs')}${FULL[x]}</button>`).join('')}</div>
+          <textarea id="kNote" aria-label="${tt('交接说明', 'The handover')}" placeholder="${KV.hand.busy ? tt('正在写交接说明……', 'Writing the handover…') : tt('先选一个 agent', 'Pick an agent first')}">${esc(KV.hand.note || '')}</textarea>
+          <div class="row"><span class="hint">${tt('这是新 agent 开头读到的话，可以改。它换不走原来那个 agent 的上下文，只能靠这份说明和完整记录文件接上；之前的对话仍然留在这条会话里。', 'This is what the new agent reads first; change it as you like. It cannot take over the other agent’s context: this note and the full record file are how it picks up. What was said before stays in this session.')}</span>
+            <button class="btn" data-khandoff>${tt('取消', 'Cancel')}</button><button class="btn primary" data-khandgo ${KV.hand.kind && !KV.hand.busy ? '' : 'disabled'}>${KI.play}${KV.hand.kind ? tt(`用 ${FULL[KV.hand.kind]} 继续`, `Go on with ${FULL[KV.hand.kind]}`) : tt('继续', 'Go on')}</button></div></div>`
       : mode === 'live' ? `<div class="chat-say kp-say">${replyBox(s)}</div>`
       : mode === 'starting' ? `<div class="kstop"><div><b>${esc(s.summary || tt('正在启动……', 'Starting…'))}</b><span>${esc(s.needs_you || tt('它的 agent 起来以后，这里就能说话了。', 'Once its agent is up, you can talk to it here.'))}</span></div>${s.loc ? `<a class="btn dark" href="#/term/${encodeURIComponent(s.loc.session)}/${encodeURIComponent(s.loc.pane)}">${I.term}${tt('看它的终端', 'See its terminal')}</a>` : ''}</div>`
       : mode === 'archived' ? `<div class="kstop"><div><b>${tt('这条会话已经归档', 'This session is archived')}</b><span>${tt('对话都还在。取消归档后可以继续。', 'The conversation is all here. Unarchive it to go on.')}</span></div><button class="btn" data-kdo="unarchive">${tt('取消归档', 'Unarchive')}</button></div>`
@@ -499,8 +511,22 @@ window.palPlaces = function () {
   return [...(q ? (S.spaces || []).filter(w => !w.archived && hit(w.name, ...w.places.map(p => p.show))).map(w => ({ href: `#/w/${encodeURIComponent(w.id)}`, label: w.name, sub: tt('工作区 · ', 'Workspace · ') + w.places.map(p => p.show).join('、'), ws: { key: w.id } })) : []),
     ...(S.kept || []).filter(k => !k.archived && hit(kTitle(k), k.name, k.show, (kSpace(k.space) || {}).name, FULL[k.kind], (kLive(k) || {}).summary)).sort(kOrder).slice(0, 30)
       .map(k => ({ href: kHref(k), label: kTitle(k), sub: `${(kSpace(k.space) || {}).name || tt('未归入工作区', 'In no workspace')} · ${kStand(k)[1]} · ${FULL[k.kind] || k.kind}` })),
-    ...(q ? Object.values(S.projects || {}).filter(p => p.name.toLowerCase().includes(q)).slice(0, 5).map(p => ({ href: `#/p/${encodeURIComponent(p.key)}`, label: p.name, sub: tt('项目 · ', 'Project · ') + home(p.path) })) : [])];
+    ...(q ? Object.values(S.projects || {}).filter(p => p.name.toLowerCase().includes(q)).slice(0, 5).map(p => ({ href: `#/p/${encodeURIComponent(p.key)}`, label: p.name, sub: tt('项目 · ', 'Project · ') + home(p.path) })) : []),
+    ...(q && KV.hitsQ === q ? KV.hits.slice(0, 14).map(h => ({ href: `#/k/${encodeURIComponent(h.kept)}`, label: h.title || tt('没有名字的会话', 'Unnamed session'), sub: `${h.archived ? tt('已归档 · ', 'Archived · ') : ''}${h.who === 'user' ? tt('你说过', 'You said') : tt('它说过', 'It said')}：${h.line}` })) : [])];
 };
+$('#paletteQ').addEventListener('input', () => {  // (what was said in any session's conversations: looked up a moment after the typing stops)
+  clearTimeout(KV.hitsT);
+  const q = $('#paletteQ').value.trim().toLowerCase();
+  if (q.length < 2 || phone()) { KV.hits = []; KV.hitsQ = ''; return; }
+  KV.hitsT = setTimeout(async () => {
+    try {
+      const j = await (await fetch('/api/search?q=' + encodeURIComponent(q), { cache: 'no-store' })).json();
+      if ($('#paletteQ').value.trim().toLowerCase() !== q) return;
+      KV.hitsQ = q; KV.hits = j.hits || [];
+      if (!$('#palette').hidden) drawPalette();
+    } catch {}
+  }, 260);
+});
 window.palItems = function () { return phone() ? OLD.palItems() : []; };
 // (settings: the way new terminals are opened, a pane of its own)
 window.drawSettings = function () {
@@ -556,6 +582,26 @@ document.addEventListener('click', async e => {
     return;
   }
   if ((el = q('[data-allshow]'))) { KV.allShow = el.dataset.allshow; render(); return; }
+  if (q('[data-khand]')) { KV.menu = false; KV.hand = { kind: '', note: '', busy: false }; delete sig.khead; render(); return; }
+  if (q('[data-khandoff]')) { KV.hand = null; render(); return; }
+  if ((el = q('[data-khandkind]'))) {
+    const k = cur(), kind = el.dataset.khandkind;
+    if (!k) return;
+    KV.hand = { kind, note: '', busy: true }; render();
+    const j = await api('handover', { id: k.id, kind }).catch(x => ({ ok: false, msg: x.message }));
+    if (!KV.hand || KV.hand.kind !== kind) return;
+    if (!j.ok) toast(j.msg, false);
+    KV.hand = { kind, note: j.note || '', file: j.file || '', busy: false }; render();
+    return;
+  }
+  if (q('[data-khandgo]')) {
+    const k = cur(), note = $('#kNote') ? $('#kNote').value.trim() : '';
+    if (!k || !KV.hand || !KV.hand.kind) return;
+    const j = await kDo('resume', { id: k.id, kind: KV.hand.kind, text: note });
+    if (j.ok) { KV.hand = null; KV.chatAt = 0; render(); }
+    return;
+  }
+  if ((el = q('[data-krecover]'))) { await kDo('recover', { do: el.dataset.krecover }); return; }
   if ((el = q('[data-spmain]'))) { await kDo('space', { do: 'place_main', id: route.key, path: el.dataset.spmain }); return; }
   if ((el = q('[data-spdrop]'))) { if (confirm(tt('把这个目录从工作区里拿掉？磁盘上什么都不动；开在里面的会话会变成「未归入工作区」。', 'Take this folder out of the workspace? Nothing on disk is touched; sessions opened in it are then in no workspace.'))) await kDo('space', { do: 'place_drop', id: route.key, path: el.dataset.spdrop }); return; }
   if (q('[data-spdel]')) { const sp = kSpace(route.key); if (sp && confirm(tt(`删除工作区「${sp.name}」？只删这个分组：目录、会话和对话都留着。`, `Delete workspace “${sp.name}”? Only the grouping goes: folders, sessions and conversations stay.`))) { const j = await kDo('space', { do: 'delete', id: sp.id }); if (j.ok) location.hash = '#/'; } return; }

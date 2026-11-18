@@ -40,7 +40,13 @@ CREATE TABLE IF NOT EXISTS terms (kept TEXT NOT NULL, n INTEGER NOT NULL, mux TE
     began REAL NOT NULL, ended REAL, why TEXT NOT NULL DEFAULT '', PRIMARY KEY (kept, n));
 CREATE INDEX IF NOT EXISTS terms_open ON terms (ended);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS said (kept TEXT NOT NULL, seg INTEGER NOT NULL, n INTEGER NOT NULL, who TEXT NOT NULL, text TEXT NOT NULL, at REAL,
+    PRIMARY KEY (kept, seg, n));
+CREATE TABLE IF NOT EXISTS reads (path TEXT PRIMARY KEY, off INTEGER NOT NULL, kept TEXT NOT NULL, seg INTEGER NOT NULL, clipped INTEGER NOT NULL DEFAULT 0);
 '''
+# said: what was said in a session, copied from the agents' own conversation files as they grow (reads: how far each file
+# has been read), so a session's words outlast those files, read the same whichever agent wrote them, and can be searched.
+WORDS = "CREATE VIRTUAL TABLE IF NOT EXISTS words USING fts5(text, kept UNINDEXED, seg UNINDEXED, n UNINDEXED, tokenize='trigram')"
 # how a conversation came to be a session's: 'new' (started for it), 'found' (already running, or on disk, when first
 # seen), 'clear' (the same terminal went on with a new conversation), 'handover' (another agent took the work on).
 # why a terminal ended: 'restart' (the machine restarted), 'closed' (its pane is gone), 'exited' (the agent quit, the pane
@@ -94,6 +100,11 @@ class Book:
         os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
         with contextlib.closing(self._open()) as c:
             c.executescript(SCHEMA)
+            try:  # (searching by any three characters in a row: where this SQLite has it; else a plain look through)
+                c.execute(WORDS)
+                self.fts = True
+            except sqlite3.OperationalError:
+                self.fts = False
 
     def _open(self):
         c = sqlite3.connect(self.path, timeout=5, isolation_level=None)  # (no journal mode set: DELETE, readable from a sandbox)
@@ -284,7 +295,7 @@ class Book:
                 raise No('session')
             if not k['archived']:
                 raise No('archive')
-            for t in ('segs', 'terms'):
+            for t in ('segs', 'terms', 'said', 'reads') + (('words',) if self.fts else ()):
                 c.execute(f'DELETE FROM {t} WHERE kept = ?', (kid,))
             c.execute('DELETE FROM kept WHERE id = ?', (kid,))
 
@@ -420,3 +431,48 @@ class Book:
         self.missing.pop(kid, None)
         self.stopping = {k: v for k, v in self.stopping.items() if now - v[0] < 30}
         self.stopping[kid] = (now, t and t['pid'])
+
+    # ---------- what was said: a session's own copy of its conversations ----------
+
+    def reading(self, path):
+        """How far a conversation file has been read into the record: {off, kept, seg, clipped}, or None."""
+        with self.read() as c:
+            r = c.execute('SELECT * FROM reads WHERE path = ?', (path,)).fetchone()
+            return r and dict(r)
+
+    def say(self, kid, seg, path, off, items, clipped=False):
+        """More of a conversation, read up to OFF of its file: items [{who, text, at}] go after what the record has."""
+        with self.tx() as c:
+            n = c.execute('SELECT MAX(n) m FROM said WHERE kept = ? AND seg = ?', (kid, seg)).fetchone()['m'] or 0
+            for it in items:
+                text = str(it.get('text') or '')
+                if not text.strip():
+                    continue
+                n += 1
+                c.execute('INSERT INTO said (kept, seg, n, who, text, at) VALUES (?, ?, ?, ?, ?, ?)', (kid, seg, n, it.get('who') or '', text, it.get('at')))
+                if self.fts and it.get('who') in ('user', 'assistant'):
+                    c.execute('INSERT INTO words (text, kept, seg, n) VALUES (?, ?, ?, ?)', (text, kid, seg, n))
+            c.execute('INSERT INTO reads (path, off, kept, seg, clipped) VALUES (?, ?, ?, ?, ?) ON CONFLICT (path) DO UPDATE SET off = excluded.off', (path, off, kid, seg, int(clipped)))
+
+    def said(self, kid, limit=200, talk=False):
+        """The last of what was said in a session, across its conversations, oldest first: [{who, text, at, seg, kind}];
+        with TALK, only the person's and the agent's words."""
+        with self.read() as c:
+            kinds = {r['n']: r['kind'] for r in c.execute('SELECT n, kind FROM segs WHERE kept = ?', (kid,))}
+            rows = c.execute(f"SELECT * FROM said WHERE kept = ? {'AND who != ' + repr('tool') if talk else ''} ORDER BY seg DESC, n DESC LIMIT ?", (kid, limit)).fetchall()
+        return [{'who': r['who'], 'text': r['text'], 'at': r['at'], 'seg': r['seg'], 'kind': kinds.get(r['seg'], '')} for r in reversed(rows)]
+
+    def find(self, q, limit=40):
+        """Where something was said: [{kept, seg, n, who, text, at}], the latest first. Three characters or more go by the
+        index; fewer, or with no index, by a plain look through."""
+        q = str(q or '').strip()
+        if not q:
+            return []
+        with self.read() as c:
+            if self.fts and len(q) >= 3:
+                sql = ('SELECT s.* FROM words w JOIN said s ON s.kept = w.kept AND s.seg = w.seg AND s.n = w.n WHERE words MATCH ? ORDER BY s.at DESC LIMIT ?')
+                rows = c.execute(sql, ('"' + q.replace('"', '""') + '"', limit)).fetchall()
+            else:
+                like = '%' + q.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%'
+                rows = c.execute("SELECT * FROM said WHERE who IN ('user', 'assistant') AND text LIKE ? ESCAPE '\\' ORDER BY at DESC LIMIT ?", (like, limit)).fetchall()
+        return [dict(r) for r in rows]

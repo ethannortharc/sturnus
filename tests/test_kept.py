@@ -268,6 +268,22 @@ class Keeping(unittest.TestCase):
         self.assertIsNone(a['old2']['space'])
         self.assertEqual(b.bind([row(id='claude:old1', session='old1')], now=300)['claude:old1'], a['old1']['id'])  # (resumed: it is that session)
 
+    def test_what_was_said_is_kept_in_order_found_again_and_goes_with_the_session(self):
+        b = book()
+        kid = b.bind([row()], now=200)['claude:c1']
+        b.say(kid, 1, '/t/c1.jsonl', 120, [{'who': 'user', 'text': '把会话改成连续的', 'at': 5}, {'who': 'tool', 'text': 'Bash(ls)', 'at': 6}, {'who': 'assistant', 'text': '好的，100% done_ok', 'at': 7}, {'who': 'user', 'text': '  '}])
+        b.bind([row(id='claude:c2', session='c2')], now=260)  # (cleared: its second conversation)
+        b.say(kid, 2, '/t/c2.jsonl', 40, [{'who': 'user', 'text': 'ab', 'at': 9}])
+        self.assertEqual((b.reading('/t/c1.jsonl')['off'], b.reading('/t/c2.jsonl')['seg'], b.reading('/t/none')), (120, 2, None))
+        self.assertEqual([(x['who'], x['text'], x['seg'], x['kind']) for x in b.said(kid)],
+                         [('user', '把会话改成连续的', 1, 'claude'), ('tool', 'Bash(ls)', 1, 'claude'), ('assistant', '好的，100% done_ok', 1, 'claude'), ('user', 'ab', 2, 'claude')])
+        self.assertEqual([x['text'] for x in b.said(kid, 2, talk=True)], ['好的，100% done_ok', 'ab'])
+        for q, want in (('改成连', ['把会话改成连续的']), ('ab', ['ab']), ('100%', ['好的，100% done_ok']), ('done_ok', ['好的，100% done_ok']), ('Bash', []), ('', [])):
+            self.assertEqual([x['text'] for x in b.find(q)], want, q)
+        b.set(kid, archived=True)
+        b.drop(kid)
+        self.assertEqual((b.find('改成连'), b.said(kid), b.reading('/t/c1.jsonl')), ([], [], None))
+
     def test_the_list_is_newest_first_with_what_each_runs_on(self):
         b = book()
         b.bind([row(), row(id='claude:c2', session='c2', pid=501, at=300, loc={'mux': 'zellij', 'session': 'work', 'pane': '4'})], now=310)
