@@ -4,7 +4,8 @@ Claude Code's registry of running sessions while it runs, and tells amail what h
 
     fake_agent.py [--resume ID] [--name NAME] [first ask]
 
-A line typed to it is an ask, answered at once with "done: <ask>". /clear goes on with a new conversation; /exit ends it.
+A line typed to it is an ask, answered at once with "done: <ask>". /clear goes on with a new conversation; /ask leaves it
+waiting on the person; /exit ends it.
 It needs FAKE_HOME (where its conversation files go), FAKE_AMAIL (the amail to tell) and AMAIL_CLAUDE_SESSIONS (the registry)."""
 import json
 import os
@@ -79,6 +80,9 @@ for line in sys.stdin:
     if line == '/exit':
         hook('SessionEnd')
         leave()
+    elif line == '/ask':  # (stopped at a prompt that waits on the person, until the next line)
+        reg('waiting')
+        print('waiting on the person', flush=True)
     elif line == '/clear':
         conv = str(uuid.uuid4())
         reg('idle')

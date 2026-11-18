@@ -3395,6 +3395,8 @@ class Deck:
         by_id = {s['id']: s for s in sessions}
         for s in sessions:
             s['kept'] = got.get(s['id']) or (s.get('kept') if s.get('starting') else None)
+            if s['kept'] and not s.get('title'):  # (until a summary says what it works on: what its session is called)
+                s['title'] = (self.kept.get(s['kept']) or {}).get('title') or ''
         for s in sessions:
             if not s['kept'] and s.get('parent_id') in by_id:
                 s['kept'] = by_id[s['parent_id']].get('kept')

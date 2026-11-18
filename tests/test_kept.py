@@ -114,7 +114,7 @@ class Binding(unittest.TestCase):
         kid = b.bind([row(at=180)], now=200)['claude:c1']
         b.bind([], now=900, boot=600)
         t = b.get(kid)['terms'][0]
-        self.assertEqual((t['ended'], t['why']), (200, 'restart'))
+        self.assertEqual((t['began'], t['ended'], t['why']), (70, 180, 'restart'))  # (begun with its process, over at its last stir)
 
     def test_resumed_in_another_terminal_is_the_same_session_with_a_second_terminal(self):
         b = book()

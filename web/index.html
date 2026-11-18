@@ -9,6 +9,7 @@
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="preload" href="fonts/inter.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="kept.css">
 <script>
   try { const t = JSON.parse(localStorage.getItem('deck.theme') || '"auto"'); document.documentElement.dataset.theme = t === 'auto' ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : t } catch {}
   try { document.documentElement.dataset.skin = JSON.parse(localStorage.getItem('deck.skin') || '"graphite"') } catch {}
@@ -67,6 +68,7 @@
       <h3 data-i18n>设置</h3>
       <button data-pane="models" class="on" data-i18n>助手与模型</button>
       <button data-pane="voice" data-i18n>语音输入</button>
+      <button data-pane="terminal" data-i18n>终端</button>
       <button data-pane="look" data-i18n>显示</button>
       <button data-pane="access" data-i18n>访问</button>
       <button data-pane="about" data-i18n>关于</button>
@@ -77,5 +79,6 @@
 
 <div class="toasts" id="toasts" aria-live="polite"></div>
 <script src="app.js"></script>
+<script src="kept.js"></script>
 </body>
 </html>

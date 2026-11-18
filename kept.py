@@ -369,9 +369,11 @@ class Book:
                     c.execute('UPDATE terms SET ended = ?, why = ? WHERE kept = ? AND n = ?', (now, 'moved', kid, t['n']))
                     t = None
                 if not t:
-                    n = (c.execute('SELECT MAX(n) m FROM terms WHERE kept = ?', (kid,)).fetchone()['m'] or 0) + 1
+                    last = c.execute('SELECT MAX(n) m, MAX(COALESCE(ended, began)) e FROM terms WHERE kept = ?', (kid,)).fetchone()
+                    # (it began when its process did, not when the deck first saw it there: what was said in between is this terminal's)
+                    began = pid_at if pid_at and (last['e'] or 0) < pid_at <= now else now
                     c.execute('INSERT INTO terms (kept, n, mux, grp, pane, sock, origin, pid, pid_at, began) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                              (kid, n, *here, loc.get('sock') or '', '' if loc else line(s.get('origin'), 80), pid, pid_at or None, now))
+                              (kid, (last['m'] or 0) + 1, *here, loc.get('sock') or '', '' if loc else line(s.get('origin'), 80), pid, pid_at or None, began))
                 elif not t['pid'] and pid:
                     c.execute('UPDATE terms SET pid = ?, pid_at = ? WHERE kept = ? AND n = ?', (pid, pid_at or None, kid, t['n']))
                 # what the session is now
