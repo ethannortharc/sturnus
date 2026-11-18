@@ -16,6 +16,8 @@ Use it when several agents are working across repositories: one is implementing 
 **Linux & macOS · Python standard library · Zellij & tmux · English & 中文**
 
 > Under active development. The media below shows the actual **0.13.1** interface with fictional workspace data. The tour demonstrates navigation; it does not run agents or send messages. [Demo notes and transcript →](docs/demo.md)
+>
+> Since **0.23** the desktop page is laid out around sessions that last: one sidebar of workspaces and sessions, and a page for each session ([what changed](#sessions-that-last-in-workspaces-of-your-own)). The media predates that; the pages it shows are all still there, arranged differently.
 
 ## See it in action
 
