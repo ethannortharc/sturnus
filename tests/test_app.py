@@ -473,6 +473,27 @@ class OverHttp(unittest.TestCase):
         self.assertEqual(self.call('/api/say', {'id': 'x', 'text': 'hi'}, key=j['key'], deck_header=False)[0], 403)
 
 
+class Models(unittest.TestCase):
+    """The model a session runs on, read from the end of its conversation file."""
+
+    def test_claude_code_s_last_answer_and_codex_s_last_settings_say_it(self):
+        d = tempfile.mkdtemp(dir=TMP)
+        cc, cx = f'{d}/c.jsonl', f'{d}/x.jsonl'
+        ans = lambda model, effort, speed, **more: json.dumps({'type': 'assistant', 'effort': effort, 'message': {'role': 'assistant', 'model': model, 'content': [], 'usage': {'speed': speed}}, **more})
+        with open(cc, 'w') as f:
+            f.write('\n'.join([ans('claude-opus-5-5', 'high', 'standard'), json.dumps({'type': 'user', 'message': {'role': 'user', 'content': 'x' * 400_000}}),
+                               ans('claude-fable-5-2', 'xhigh', 'fast'), ans('claude-haiku-5-5', 'low', 'standard', isSidechain=True),
+                               ans('<synthetic>', None, None), json.dumps({'type': 'user', 'message': {'role': 'user', 'content': 'thanks'}})]) + '\n')
+        self.assertEqual(S.conv_meta(cc, 'claude'), {'model': 'claude-fable-5-2', 'effort': 'xhigh', 'speed': 'fast'})  # (not a sub-agent's, not a made-up line's)
+        with open(cx, 'w') as f:
+            f.write('\n'.join([json.dumps({'type': 'turn_context', 'payload': {'model': 'gpt-6.1-sol', 'effort': 'high'}}),
+                               json.dumps({'type': 'event_msg', 'payload': {'type': 'thread_settings_applied', 'thread_settings': {'model': 'gpt-6.2-sol', 'reasoning_effort': 'xhigh', 'service_tier': 'fast'}}}),
+                               json.dumps({'type': 'response_item', 'payload': {'type': 'message', 'role': 'assistant', 'content': []}})]) + '\n')
+        self.assertEqual(S.conv_meta(cx, 'codex'), {'model': 'gpt-6.2-sol', 'effort': 'xhigh', 'speed': 'fast'})
+        open(f'{d}/empty.jsonl', 'w').close()
+        self.assertEqual((S.conv_meta(f'{d}/empty.jsonl', 'claude'), S.conv_meta(f'{d}/none.jsonl', 'codex'), S.conv_meta(cc, 'cursor')), ({}, {}, {}))
+
+
 class Tidying(unittest.TestCase):
     """Tasks nobody has touched for long: put aside, then archived; what the person set, and what a session is on, stay."""
 

@@ -11,6 +11,7 @@ opened in, the nearest one, unless the person put it elsewhere; one opened in no
 Nothing here starts or reads a terminal or a conversation: that is terms.py's and the deck's. This file only remembers.
 """
 import contextlib
+import json
 import os
 import re
 import sqlite3
@@ -125,7 +126,7 @@ class Book:
         with contextlib.closing(self._open()) as c:
             c.executescript(SCHEMA)
             have = {r['name'] for r in c.execute('PRAGMA table_info(kept)')}
-            for col in ('wt', 'wt_branch'):  # (a record made before a session could have a worktree of its own)
+            for col in ('wt', 'wt_branch', 'meta'):  # (a record made before a session could have a worktree of its own, or before what model it runs on was kept)
                 if col not in have:
                     c.execute(f"ALTER TABLE kept ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
             try:  # (searching by any three characters in a row: where this SQLite has it; else a plain look through)
@@ -322,6 +323,8 @@ class Book:
                     c.execute('UPDATE kept SET pinned = NULL WHERE id = ?', (kid,))
             if 'kind' in f:
                 c.execute('UPDATE kept SET kind = ? WHERE id = ?', (f['kind'], kid))
+            if 'meta' in f:  # (the model it last ran on, and how: kept so a stopped session still says)
+                c.execute('UPDATE kept SET meta = ? WHERE id = ?', (json.dumps(f['meta'], ensure_ascii=False) if f['meta'] else '', kid))
             if 'wt' in f:  # (the worktree sturnus made for it, and its branch; '' once it is merged and gone)
                 c.execute('UPDATE kept SET wt = ?, wt_branch = ? WHERE id = ?', (norm(f['wt']), f.get('wt_branch') or '', kid))
 

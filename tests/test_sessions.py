@@ -137,6 +137,12 @@ class Sessions(unittest.TestCase):
         j = self.call('/api/say', {'id': k['live'], 'text': 'second ask'})
         self.assertEqual((j['ok'], j.get('how')), (True, 'type'), j)  # (the page says beside the words how they went)
         self.until(lambda: 'done: second ask' in self.said(kid), 'the words typed did not reach it')
+        # the model it runs on is read from its conversation; one set from the page is a command typed into its terminal
+        self.until(lambda: (self.kept(kid) or {}).get('model') == {'model': 'claude-fable-5-2', 'effort': 'high', 'speed': 'standard'}, 'its model was not read')
+        for words in ('/model opus', '/effort low', '/fast on'):
+            self.assertTrue(self.call('/api/type', {'id': k['live'], 'text': words, 'enter': True})['ok'])
+        self.assertTrue(self.call('/api/say', {'id': k['live'], 'text': 'and again'})['ok'])
+        self.until(lambda: (self.kept(kid) or {}).get('model') == {'model': 'claude-opus-5-5', 'effort': 'low', 'speed': 'fast'}, 'its new model was not read')
         got = self.call(f'/api/transcript?kept={kid}')
         self.assertTrue(got['sig'] and got['items'])
         self.assertEqual(self.call(f'/api/transcript?kept={kid}&have={got["sig"]}'), {'same': True, 'sig': got['sig']})

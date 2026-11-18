@@ -301,7 +301,7 @@ function kBuildNeed() {
 // ---------- a session ----------
 function kBuildKept() {
   sessTab = route.tab;
-  KV.menu = KV.rename = false;
+  KV.menu = KV.rename = KV.model = false;
   KV.chatAt = 0;
   $('#view').innerHTML = `<div class="kp${KV.info ? '' : ' no-info'}" id="kp"><section class="kp-main"><header class="kp-head" id="kpHead"></header>
     <div class="kp-scroll" id="sess"><div id="hero" hidden></div><div id="tabBody"></div></div><footer class="kp-foot" id="kpFoot"></footer></section>
@@ -352,14 +352,34 @@ function kDrawKept() {
   kDrawFoot(k, s, tab);
   kDrawInfo(k, s);
 }
+// (the model a session runs on, said the way its maker says it: claude-fable-5-2 is Fable 5.2; any other name stays as it is)
+const kModelName = id => { const m = String(id || '').match(/^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{6,8})?(\[1m\])?$/); return m ? `${m[1][0].toUpperCase()}${m[1].slice(1)} ${m[2]}${m[3] ? '.' + m[3] : ''}${m[4] ? ' 1M' : ''}` : String(id || ''); };
+const kFast = md => ['fast', 'priority'].includes((md || {}).speed);
+// (the choice of model, effort and speed for a Claude Code session: each is a command typed into its terminal, so only
+// while it sits at its prompt; Claude Code keeps a model and an effort set this way as the person's default, and bills
+// fast answers from usage credits — said in the menu, not found out afterwards)
+function kModelMenu(k, s, md) {
+  const fast = kFast(md), fam = (String(md.model || '').match(/^claude-([a-z]+)/) || [])[1];
+  const can = !!s && !s.starting && k.kind === 'claude' && sayHow(s) === 'type';
+  const why = k.kind !== 'claude' ? tt('这里只能给 Claude Code 换。Codex 和 Cursor 的模型在它们自己的终端里用 /model 换。', 'Only a Claude Code session can be changed from here. Codex and Cursor change theirs with /model in their own terminal.')
+    : !s ? tt('它现在没有在跑：点「继续」之后才能换。', 'It is not running now: Go on first, then change it.')
+      : !can ? tt('它现在不在提示符前（在工作、停在一个提示上，或不在 Zellij / tmux 里）：等它空下来再换。', 'It is not at its prompt now (at work, stopped at a question, or outside Zellij and tmux): change it once it is at rest.') : '';
+  const opt = (what, v, label, on) => `<button role="menuitemradio" aria-checked="${!!on}" data-kmset="${what}:${v}" ${can && !on ? '' : 'disabled'} class="${on ? 'on' : ''}">${on ? I.check : '<span class="no"></span>'}${label}</button>`;
+  return `<div class="ks-menu kmodel-menu" role="menu" aria-label="${tt('模型、思考强度、速度', 'Model, effort, speed')}">
+    <div class="ks-mh">${tt('模型', 'Model')}</div>${[['fable', 'Fable'], ['opus', 'Opus'], ['sonnet', 'Sonnet'], ['haiku', 'Haiku']].map(([v, l]) => opt('model', v, l, fam === v)).join('')}
+    <div class="ks-mh">${tt('思考强度', 'Effort')}</div><div class="kmodel-row">${['low', 'medium', 'high', 'xhigh', 'max'].map(v => opt('effort', v, v, md.effort === v)).join('')}</div>
+    <div class="ks-mh">${tt('速度', 'Speed')}</div>${opt('fast', 'off', tt('标准', 'Standard'), !fast)}${opt('fast', 'on', tt('快速（不在订阅额度里，按用量另外计费）', 'Fast (outside the plan: billed from usage credits)'), fast)}
+    <p class="kmodel-note">${why || tt('会在它的终端里输入 /model、/effort 或 /fast。Claude Code 会把这样设的模型和强度存成你的默认设置；这里从它的下一次回复起显示新的。', 'This types /model, /effort or /fast into its terminal. Claude Code keeps a model and an effort set this way as your default; what is shown here follows from its next answer.')}</p></div>`;
+}
 function kDrawHead(k, s, tab) {
   if (document.activeElement && document.activeElement.id === 'kTitle') return;
   const [st, label] = kStand(k), sp = kSpace(k.space), up = s && !s.starting;
-  draw('khead', [k.id, kTitle(k), st, label, k.pinned, k.archived, tab, up, sp && [sp.id, sp.name], k.kind, k.folder, k.branch, KV.info, KV.menu, KV.rename, LANG], () => {
+  const md = k.model || {};
+  draw('khead', [k.id, kTitle(k), st, label, k.pinned, k.archived, tab, up, sp && [sp.id, sp.name], k.kind, k.folder, k.branch, KV.info, KV.menu, KV.rename, [md.model, md.effort, md.speed], KV.model, KV.model && s && sayHow(s), LANG], () => {
     const tabs = [['chat', tt('对话', 'Conversation')], ['overview', tt('概览', 'Overview')], ['report', tt('报告', 'Report')], ['term', tt('终端', 'Terminal')], ['msgs', tt('消息', 'Messages')]];
     $('#kpHead').innerHTML = `<div class="kh-l">${KV.rename ? `<input class="field" id="kTitle" value="${esc(k.title || kTitle(k))}" aria-label="${tt('会话的名字', 'Session title')}" placeholder="${tt('留空：回到自动起的名字', 'Empty: back to the name it is given')}">`
         : `<h1 data-krename title="${tt('点一下改名', 'Click to rename')}">${esc(kTitle(k))}</h1>`}
-        <div class="sub">${mark(k.kind, '', 'xs')}<span>${esc(FULL[k.kind] || k.kind)}</span><i>·</i>${sp ? `<a href="#/w/${encodeURIComponent(sp.id)}">${esc(sp.name)}</a>` : `<span>${tt('未归入工作区', 'In no workspace')}</span>`}<i>·</i><span class="mono" title="${esc(k.show)}">${esc(folder(k.folder))}${k.branch ? ' / ' + esc(k.branch) : ''}</span></div></div>
+        <div class="sub">${mark(k.kind, '', 'xs')}<span>${esc(FULL[k.kind] || k.kind)}</span>${md.model ? `<button class="kh-model" data-kmodel aria-haspopup="menu" aria-expanded="${!!KV.model}" title="${tt('它用的模型、思考强度和速度；点开可以换', 'Its model, effort and speed; open to change them')}">${esc(kModelName(md.model))}${md.effort ? `<em>${esc(md.effort)}</em>` : ''}${kFast(md) ? `<em class="fast">↯ ${tt('快速', 'fast')}</em>` : ''}${chev(true)}</button>` : ''}<i>·</i>${sp ? `<a href="#/w/${encodeURIComponent(sp.id)}">${esc(sp.name)}</a>` : `<span>${tt('未归入工作区', 'In no workspace')}</span>`}<i>·</i><span class="mono" title="${esc(k.show)}">${esc(folder(k.folder))}${k.branch ? ' / ' + esc(k.branch) : ''}</span></div>${KV.model && md.model ? kModelMenu(k, s, md) : ''}</div>
       <div class="r"><span class="kchip ${st}"><i></i>${esc(k.archived ? tt('已归档', 'Archived') : label)}</span>
         ${!s && !k.archived ? `<button class="btn primary" data-kresume>${KI.play}${tt('继续', 'Go on')}</button>` : ''}
         ${up ? `<nav class="seg ktabs">${tabs.map(([x, l]) => `<a href="${kHref(k)}${x === 'chat' ? '' : '/' + x}" class="${tab === x ? 'on' : ''}">${l}</a>`).join('')}</nav>` : ''}
@@ -853,6 +873,18 @@ document.addEventListener('click', async e => {
   const cur = () => kOf((el && el.dataset.kid) || route.kept);
   if (KV.menu && !q('.kmenu')) { KV.menu = false; delete sig.khead; render(); }
   if (KV.arr && !q('.ks-arr')) { KV.arr = false; render(); }
+  if (KV.model && !q('.kmodel-menu, [data-kmodel]')) { KV.model = false; render(); }
+  if (q('[data-kmodel]')) { KV.model = !KV.model; render(); return; }
+  if ((el = q('[data-kmset]'))) {  // (a model, an effort or a speed for a Claude Code session: the command for it, typed into its terminal)
+    const k = cur(), s = k && kLive(k), [what, v] = el.dataset.kmset.split(':');
+    if (!k || !s || sayHow(s) !== 'type') return;
+    if (what === 'fast' && v === 'on' && !confirm(tt('快速模式不在订阅额度里，按用量额度另外计费。给这条会话打开？', 'Fast mode is not part of the plan: it is billed from usage credits. Turn it on for this session?'))) return;
+    const text = `/${what === 'fast' ? 'fast' : what} ${v}`;
+    KV.model = false; render();
+    const j = await api('type', { id: s.id, text, enter: true }).catch(() => ({ ok: false, msg: tt('没连上服务', 'The service could not be reached') }));
+    toast(j.ok ? tt(`已在它的终端里输入 ${text}`, `Typed ${text} into its terminal`) : (j.msg || tt('没发出去', 'Not sent')), !!j.ok);
+    return;
+  }
   if ((el = q('[data-act="say"], [data-act="say-now"]')) && route.kept) {  // (words for a session, from its page: shown in its conversation at once)
     const k = kOf(route.kept), s = kLive(k), text = $('#rText') ? $('#rText').value.trim() : '';
     if (k && s && text) { e.stopPropagation(); e.preventDefault(); kSay(k, s, text, el.dataset.act === 'say-now'); return; }
@@ -984,6 +1016,7 @@ document.addEventListener('keydown', e => {
   if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && el.id === 'kText') { e.preventDefault(); const k = kOf(route.kept); if (k) kResume(k, true); return; }
   if (e.key === 'Escape' && KV.menu) { KV.menu = false; delete sig.khead; render(); e.stopImmediatePropagation(); return; }
   if (e.key === 'Escape' && KV.arr) { KV.arr = false; render(); e.stopImmediatePropagation(); return; }
+  if (e.key === 'Escape' && KV.model) { KV.model = false; render(); e.stopImmediatePropagation(); return; }
   if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
   const overlay = ['#palette', '#settings', '#newSess', '#taskPanel'].some(id => !$(id).hidden);
   if (overlay) return;

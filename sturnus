@@ -709,6 +709,58 @@ def open_book():
             print(f'sturnus: the record of sessions could not be read ({e}): set aside as {aside}, a new one begun', file=sys.stderr, flush=True)
 
 
+# ---------- the model a session runs on, as its own conversation file says ----------
+
+def conv_meta(path, kind):
+    """The model a conversation was last run on, and how: {model, effort, speed} from the end of its file (Claude Code
+    writes them on every answer; Codex in each turn's context and whenever a thread's settings are applied). {} when
+    the file does not say."""
+    try:
+        size = os.path.getsize(path)
+    except (OSError, TypeError):
+        return {}
+    for back in (300_000, 6_000_000):  # (the end of the file; further back when that is one long line or says nothing)
+        try:
+            with open(path, 'rb') as f:
+                f.seek(max(0, size - back))
+                lines = f.read().split(b'\n')
+        except OSError:
+            return {}
+        out = {}
+        for l in reversed(lines[1:] if size > back else lines):
+            if kind == 'claude':
+                if b'"assistant"' not in l[:4000] and b'"type":"assistant"' not in l:
+                    continue
+                try:
+                    d = json.loads(l)
+                except ValueError:
+                    continue
+                m = d.get('message') if isinstance(d.get('message'), dict) else {}
+                model = m.get('model')
+                if d.get('type') != 'assistant' or d.get('isSidechain') or not isinstance(model, str) or model.startswith('<'):
+                    continue
+                u = m.get('usage') if isinstance(m.get('usage'), dict) else {}
+                return {k: v for k, v in (('model', model), ('effort', d.get('effort')), ('speed', u.get('speed'))) if isinstance(v, str) and v}
+            if kind == 'codex':
+                if b'turn_context' not in l[:300] and b'thread_settings_applied' not in l[:300]:
+                    continue
+                try:
+                    d = json.loads(l)
+                except ValueError:
+                    continue
+                p = d.get('payload') if isinstance(d.get('payload'), dict) else {}
+                st = p.get('thread_settings') if isinstance(p.get('thread_settings'), dict) else p if d.get('type') == 'turn_context' else {}
+                for k, names in (('model', ('model',)), ('effort', ('reasoning_effort', 'effort')), ('speed', ('service_tier',))):
+                    v = next((st.get(n) for n in names if isinstance(st.get(n), str) and st.get(n)), None)
+                    if v and k not in out:
+                        out[k] = v
+                if 'model' in out and 'effort' in out:
+                    return out
+        if out or size <= back:
+            return out
+    return {}
+
+
 # ---------- a session's own worktree, and what it has changed ----------
 
 def repo_of(folder):
@@ -2264,6 +2316,7 @@ class Deck:
         self.lock = threading.Lock()
         self.book = open_book()  # (the sessions that last, and their workspaces)
         self.kept, self.wants, self.items = {}, {}, {}  # (the sessions as the page lists them; (pid, when it started) -> the session it was started for; conversation file -> its items as last read)
+        self.metas = {}  # (session -> (when read, its file as it was, the model it runs on): read again when the file has grown)
         self.keep_lock = threading.Lock()  # (one reader of a conversation file at a time: what it reads goes after what is there)
         self.recovered = self.book.meta('recover')  # (the restart whose sessions the person has already been offered)
 
@@ -3628,11 +3681,36 @@ class Deck:
             if not s['kept'] and s.get('parent_id') in by_id:
                 s['kept'] = by_id[s['parent_id']].get('kept')
 
+    def meta_of(self, k, l, now):
+        """The model a session runs on, with its effort and speed: read from the end of its conversation file when that
+        has grown (every few seconds at most), and kept in the record, so a stopped session still says what it last ran on."""
+        try:
+            old = json.loads(k['meta']) if k.get('meta') else {}
+        except ValueError:
+            old = {}
+        seg = k.get('seg')
+        if not l or not seg or seg['kind'] not in ('claude', 'codex'):
+            return old
+        path = seg['path'] or l.get('transcript') or ''
+        try:
+            sig = (path, os.path.getsize(path))
+        except OSError:
+            return old
+        hit = self.metas.get(k['id'])
+        if hit and (hit[1] == sig or now - hit[0] < 6):
+            return hit[2] or old
+        got = conv_meta(path, seg['kind']) or old
+        self.metas[k['id']] = (now, sig, got)
+        if got != old:
+            with contextlib.suppress(K.No, sqlite3.Error):
+                self.book.set(k['id'], meta=got)
+        return got
+
     def kept_view(self, sessions):
         """The sessions that last as the page lists them, each with the row that runs it now: the pinned and the running
         ones, and the latest 120 of the rest (all of them, the archived too, are at /api/kept). And the workspaces, each
         with its folders, how many sessions it has, and the group most of its running ones are in."""
-        live = {}
+        live, now = {}, time.time()
         for s in sessions:
             if s.get('kept') and not s.get('parent_id') and not s.get('hidden') and (s['kept'] not in live or live[s['kept']].get('unknown')):
                 live[s['kept']] = s
@@ -3642,7 +3720,7 @@ class Deck:
             if l and not t and not l.get('starting'):
                 l = None  # (stopped a moment ago: what is still seen of it is on its way out)
             v = {f: k[f] for f in ('id', 'title', 'space', 'spaced', 'folder', 'kind', 'name', 'branch', 'made', 'at', 'pinned', 'archived', 'state', 'note', 'nsegs', 'nterms')}
-            v.update(live=l and l['id'], conv=(k.get('seg') or {}).get('conv'), show=tilde(k['folder']), wt=k.get('wt') or '',
+            v.update(live=l and l['id'], conv=(k.get('seg') or {}).get('conv'), show=tilde(k['folder']), wt=k.get('wt') or '', model=self.meta_of(k, l, now),
                      term=t and {x: t[x] for x in ('n', 'mux', 'grp', 'pane', 'origin', 'began')},
                      ended=None if t or not lt else {'at': lt['ended'], 'why': lt['why']})
             out.append(v)

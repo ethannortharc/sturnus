@@ -340,3 +340,19 @@ a.wk-row:hover, .wk-row:hover { background: var(--panel-2); }
 .kset-h { margin-top: 26px; }
 .kset-row { display: flex; align-items: center; gap: 10px; font-size: 13px; }
 .kset-row .sel { height: 30px; }
+
+/* ---------- the model a session runs on, in its head; the menu that changes it ---------- */
+.kh-l { position: relative; }
+.kh-model { flex: none; display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 3px 0 7px; border: 0; border-radius: 6px; background: color-mix(in srgb, var(--ink) 7%, transparent); color: var(--ink-2); font-size: 11.5px; font-weight: 550; white-space: nowrap; }
+.kh-model:hover, .kh-model[aria-expanded="true"] { background: color-mix(in srgb, var(--ink) 12%, transparent); color: var(--ink); }
+.kh-model em { font-style: normal; font-weight: 450; color: var(--muted); font-family: var(--font-mono); font-size: 11px; }
+.kh-model em.fast { color: var(--warn-ink); font-family: var(--font-ui); font-weight: 600; }
+.kh-model:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.kmodel-menu { left: 0; right: auto; top: calc(100% + 4px); width: 300px; }
+.kmodel-menu button[disabled] { opacity: .45; cursor: default; }
+.kmodel-menu button.on[disabled] { opacity: 1; }
+.kmodel-row { display: flex; flex-wrap: wrap; gap: 2px; }
+.kmodel-row button { flex: 1 1 auto; padding: 0 7px; font-family: var(--font-mono); font-size: 11.5px; }
+.kmodel-row button svg, .kmodel-row button .no { display: none; }
+.kmodel-row button.on { background: color-mix(in srgb, var(--ink) 9%, transparent); }
+.kmodel-note { margin: 6px 9px 4px; font-size: 11.5px; line-height: 1.55; color: var(--muted); white-space: normal; }
