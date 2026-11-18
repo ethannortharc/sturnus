@@ -11,6 +11,9 @@ is (its Zellij session and pane), what they say to each other. Jump to one, writ
                                    the newest version: a git clone it was installed from is pulled first; one installed
                                    from a release archive (or --release) takes the newest release on GitHub
   sturnus uninstall [--purge]      take everything out again (--purge: its settings and caches too)
+  sturnus ls [--all]               the sessions: what each is called, its workspace, how it stands, its terminal
+  sturnus open NUMBER|TITLE        this terminal goes to that session's terminal; a stopped one is given a new
+                                   terminal first and goes on with its conversation
   sturnus status | open | serve | version
 """
 import base64, calendar, contextlib, difflib, fcntl, functools, ipaddress, glob, hashlib, hmac, importlib.machinery, importlib.util, json, os, plistlib, pty, re, resource, secrets, shutil, signal, socket, sqlite3, struct, subprocess, sys, termios, threading, time, urllib.error, urllib.request
@@ -110,6 +113,31 @@ T = load_terms()
     T.procs, T.environ, T.place_of, T.place_from, T.WEB_TMUX, T.TMUX, T.env_of, T.cwd_of, T.zellij_clients, T.zellij_sessions, T.zj, T.zellij_server,
     T.ROOM, T.raise_file_limit, T.zellij_room, T.zellij_marked, T.focused, T.focus_in, T.NAME, T.kdl, T.marked, T.plugin_v, T.clients_of, T.plugin,
     T.ask_grant, T.in_view, T.origin_of, T.go_to, T.jump, T.term_argv, T.pane_screen, T.zellij_bring)
+
+
+# ---------- the sessions that last, and their workspaces (kept.py) ----------
+
+def load_kept():
+    loader = importlib.machinery.SourceFileLoader('kept', os.path.join(APP, 'kept.py'))
+    m = importlib.util.module_from_spec(importlib.util.spec_from_loader('kept', loader))
+    loader.exec_module(m)
+    return m
+
+
+K = load_kept()
+
+
+@functools.cache
+def boot_time():
+    """When this machine started: a terminal from before then ended with the restart."""
+    try:
+        if MAC:
+            m = re.search(r'sec = (\d+)', run(['sysctl', '-n', 'kern.boottime']).stdout)
+            return float(m.group(1)) if m else 0
+        with open('/proc/uptime') as f:
+            return time.time() - float(f.read().split()[0])
+    except (OSError, ValueError):
+        return 0
 
 
 # ---------- transcripts ----------
@@ -546,6 +574,145 @@ def opening(path, budget=2500):
         out.append(line)
         n += len(line)
     return out
+
+
+# ---------- the conversations on disk: each a session that can be taken up again ----------
+
+CLAUDE_OWN = ('cli', 'claude-desktop')  # (how a person's own Claude Code conversation was entered; 'sdk-cli' is a run with no window)
+TITLE_LINES = (('custom-title', 'customTitle'), ('agent-name', 'agentName'), ('ai-title', 'aiTitle'))  # (the person's own name for it first)
+
+
+def conv_title(path):
+    """What a Claude Code conversation is called: the name the person gave it, else the one Claude Code made up; else ''."""
+    best = {}
+    try:
+        with open(path, 'rb') as f:
+            rows = [f.readline(400000) for _ in range(60)]
+            f.seek(max(0, os.path.getsize(path) - 300000))
+            rows += f.read().split(b'\n')
+    except OSError:
+        return ''
+    for raw in rows:
+        if b'-title"' not in raw and b'"agent-name"' not in raw:
+            continue
+        try:
+            d = json.loads(raw)
+        except ValueError:
+            continue
+        for typ, key in TITLE_LINES:
+            if isinstance(d, dict) and d.get('type') == typ and d.get(key):
+                best[typ] = str(d[key])
+    return next((best[t] for t, _ in TITLE_LINES if t in best), '')
+
+
+def first_ask(path):
+    """The person's first words in a conversation, as one short line: what it is called when nothing names it."""
+    for l in opening(path, 400):
+        return ' '.join(l.removeprefix('用户: ').split())[:60]
+    return ''
+
+
+def claude_convs(known):
+    """Claude Code's conversations on disk that no session has yet and a person could take up again: entered at a
+    terminal or in the desktop app (not a run with no window, not a sub-agent's), with something asked in them, their
+    folder still there."""
+    out = []
+    for f in glob.glob(os.path.expanduser('~/.claude/projects/*/*.jsonl')):
+        conv = os.path.basename(f)[:-6]
+        if ('claude', conv) in known:
+            continue
+        entry = folder = began = None
+        try:
+            with open(f, 'rb') as h:
+                for _ in range(60):
+                    raw = h.readline(400000)
+                    if not raw or (entry and folder and began):
+                        break
+                    try:
+                        d = json.loads(raw)
+                    except ValueError:
+                        continue
+                    if not isinstance(d, dict):
+                        continue
+                    if d.get('isSidechain'):
+                        entry = 'side'
+                        break
+                    entry, folder, began = entry or d.get('entrypoint'), folder or d.get('cwd'), began or d.get('timestamp')
+            at = os.path.getmtime(f)
+        except OSError:
+            continue
+        if entry not in CLAUDE_OWN or not folder or folder.startswith(CACHE) or not os.path.isdir(folder):
+            continue
+        ask = first_ask(f)
+        if ask:
+            out.append({'kind': 'claude', 'conv': conv, 'path': f, 'folder': folder, 'began': stamp(began) or at, 'at': at, 'title': conv_title(f) or ask})
+    return out
+
+
+def codex_convs(known):
+    """Codex's threads on disk likewise: a window's or the desktop app's, not a run with no window or a sub-agent's."""
+    names = {}
+    try:
+        with open(os.path.expanduser('~/.codex/session_index.jsonl')) as f:
+            for l in f:
+                with contextlib.suppress(ValueError, KeyError, TypeError):
+                    d = json.loads(l)
+                    names[d['id']] = d.get('thread_name') or ''
+    except OSError:
+        pass
+    out = []
+    for f in glob.glob(os.path.expanduser('~/.codex/sessions/*/*/*/rollout-*.jsonl')):
+        m = codex_meta(f)
+        conv, folder = m.get('id'), m.get('cwd')
+        if (not conv or ('codex', conv) in known or m.get('originator') == 'codex_exec' or not isinstance(m.get('source'), str) or m['source'] == 'exec'
+                or not folder or not os.path.isdir(folder)):
+            continue
+        title = names.get(conv) or first_ask(f)
+        if title:
+            at = os.path.getmtime(f)
+            out.append({'kind': 'codex', 'conv': conv, 'path': f, 'folder': folder, 'began': stamp(m.get('timestamp')) or at, 'at': at, 'title': title})
+    return out
+
+
+def agent_argv(cfg, kind, conv='', name='', prompt=''):
+    """What a terminal runs for an agent: its command as set (config "launch"), on with a conversation when one is named."""
+    argv = list(cfg.get('launch', DEFAULTS['launch']).get(kind) or DEFAULTS['launch'][kind])
+    if conv:
+        argv += {'claude': ['--resume', conv], 'codex': ['resume', conv], 'cursor': ['--resume', conv]}[kind]
+    if kind == 'claude' and name:
+        argv += ['--name', name]
+    return argv + ([prompt] if prompt else [])
+
+
+def launch_session(book, cfg, kid, prompt='', group='', prefer='', taken=()):
+    """A terminal for a session that lasts, its agent in it: on with its latest conversation when it has one, from the
+    start when it has none. The caller has seen that nothing runs for it now. Returns (True, {msg, marker, loc, group,
+    kind, cwd, tab}) or (False, why)."""
+    k = book.get(kid)
+    if not k:
+        return False, tx('找不到这条会话', 'Session not found')
+    kind = k['kind'] if k['kind'] in K.AGENTS else 'claude'
+    seg = k['segs'][-1] if k['segs'] and k['segs'][-1]['kind'] == kind else None
+    path = seg and (seg['path'] if seg['path'] and os.path.exists(seg['path']) else transcript_of({'kind': kind, 'session': seg['conv']}))
+    if seg and not path:  # (its latest conversation has no file: cleared and nothing said since, or cleaned away: a new one)
+        seg = None
+    cwd = (path and began_in(path)) or k['folder']
+    if not cwd or not os.path.isdir(cwd):
+        return False, tx(f'它原来的目录不在了，没法在原地继续：{tilde(cwd or "?")}', f'The folder it ran in is gone, so it cannot go on there: {tilde(cwd or "?")}')
+    name = k['name'] if NAME.fullmatch(k['name'] or '') and k['name'] not in taken else ''
+    marker = os.urandom(6).hex()
+    env = [f'STURNUS_NEW={marker}', f'STURNUS_SESSION={kid}'] + ([f'AMAIL_NAME={name}'] if name else [])
+    sp = next((x for x in book.spaces() if x['id'] == k['space']), None)
+    way = T.way(cfg, group)
+    last = k['terms'][-1] if k['terms'] else None
+    fits = lambda g: bool(g) and g.startswith('tmux:') == (way.mux == 'tmux')
+    g = way.group(sp, k, next((x for x in (group, prefer, last and last['grp']) if fits(x)), None))
+    tab = K.line(k['title'], 24) or name or f'{kind}·{os.path.basename(cwd) or "~"}'
+    ok, made, loc = way.start(g, tab, cwd, env, agent_argv(cfg, kind, seg['conv'] if seg else '', name, prompt), marker)
+    if not ok:
+        return False, made
+    words = tx(f'{made}在 {g} 里{"接着" if seg else ""}开了「{tab}」', f'{made}Opened “{tab}” in {g}' + (', going on with its conversation' if seg else ''))
+    return True, {'msg': words, 'marker': marker, 'loc': loc, 'group': f'tmux:{g}' if way.mux == 'tmux' else g, 'kind': kind, 'cwd': cwd, 'tab': tab, 'kept': kid}
 
 
 # ---------- models: one for summaries, one for helping the person (drafts) ----------
@@ -1928,6 +2095,8 @@ class Deck:
         self.names = {}  # (a session's id -> its name: a Claude session renamed takes its channel places along)
         self.born_at = {}  # (a session's id -> when it began: found once, so the column's order holds still)
         self.lock = threading.Lock()
+        self.book = K.Book()  # (the sessions that last, and their workspaces)
+        self.kept, self.wants, self.items = {}, {}, {}  # (the sessions as the page lists them; (pid, when it started) -> the session it was started for; conversation file -> its items as last read)
 
     def began(self, s, born):
         """When a session began: its conversation's first timestamp, else its process's start, else when this deck first saw it."""
@@ -2051,7 +2220,7 @@ class Deck:
             slow = now - l['at'] > 8
             sessions = [x for x in sessions if not (x.get('unknown') and x.get('loc') == loc)]
             card = {'id': f'new:{marker}', 'name': l['name'], 'kind': l['kind'], 'state': 'waiting' if slow else 'working',
-                    'since': l['at'], 'at': now, 'cwd': l['cwd'], 'loc': loc, 'unknown': True, 'starting': True,
+                    'since': l['at'], 'at': now, 'cwd': l['cwd'], 'loc': loc, 'unknown': True, 'starting': True, 'kept': l.get('kept'),
                     'summary': tx('刚开起来，还没登记成会话', 'Just started, not registered as a session yet') if slow else tx('正在启动…', 'Starting…'),
                     'needs_you': tx('去它的窗格看一眼：多半在等你确认（比如是否信任这个目录）', 'Take a look at its pane: it is probably waiting for you to confirm (for example, whether to trust this folder)') if slow else ''}
             if slow and l['kind'] == 'codex' and any(t['marker'] == marker for t in tuis):  # (its window is up: Codex registers a thread at its first message)
@@ -2134,6 +2303,11 @@ class Deck:
                 p = transcript_of(s)
                 if p:
                     self.talk.scan_claude(s['name'], p)
+        try:
+            self.first_spaces()
+            self.bind(sessions, born, now)
+        except (sqlite3.Error, OSError) as e:  # (the page still shows what runs; the sessions that last, as last known)
+            self.note(tx(f'会话记录现在读写不了：{e}', f'The record of sessions cannot be read or written just now: {e}'), False)
         clients, tclients = zellij_clients(ps), TMUX.clients()
         zs = {}
         for n in zellij_sessions():
@@ -2159,10 +2333,15 @@ class Deck:
         workspaces, projects = self.layout(sessions)
         boards = self.boards_view()
         task_rows = self.tasks_tick(sessions)
+        try:
+            kept, spaces = self.kept_view(sessions)
+        except (sqlite3.Error, OSError):
+            kept, spaces = self.state.get('kept') or [], self.state.get('spaces') or []
         with self.lock:
             self.everyone = sessions
             self.state = {'sessions': [s for s in sessions if not s['hidden']], 'talk': self.talk.all(), 'groups': zs, 'locks': locks,
-                          'tasks': task_rows,
+                          'tasks': task_rows, 'kept': kept, 'spaces': spaces,
+                          'terminal': {'way': T.way(self.cfg).key, 'usable': [w.key for w in T.WAYS.values() if w.usable()]},
                           'workspaces': workspaces, 'projects': projects, 'boards': boards,
                           'muxes': [m for m in ('zellij', 'tmux') if shutil.which(m)], 'voice': self.voice_view(),
                           'at': now, 'version': VERSION, 'summarizer': {'busy': self.sums.busy, 'error': self.sums.error},
@@ -2915,6 +3094,18 @@ class Deck:
                 return False, tx('找不到这个会话', 'Session not found')
             self.sums.data.pop(s['id'], None)
             return True, tx('马上重新总结', 'Summarizing again now')
+        if what == 'kept':  # (the person's word on a session that lasts)
+            return self.kept_act(body)
+        if what == 'space':  # (… on a workspace and its folders)
+            return self.space_act(body)
+        if what == 'resume':  # (a stopped session goes on, in a new terminal; with words, they are its next ask)
+            return self.launch(str(body.get('id') or ''), prompt=(body.get('text') or '').strip(), group=str(body.get('group') or ''))
+        if what == 'terminal':  # (the way new terminals are opened)
+            if body.get('way') not in T.WAYS or not T.WAYS[body['way']].usable():
+                return False, tx('这台机器上用不了这种打开方式', 'That way of opening a terminal cannot be used on this machine')
+            self.cfg['terminal'] = body['way']
+            save_config({'terminal': body['way']})
+            return True, tx(f'新终端的打开方式：{T.WAYS[body["way"]].label()}。已经开着的不动，下一个终端起按这个来', f'New terminals now open as: {T.WAYS[body["way"]].label()}. Those already open stay; the next one opens this way')
         if what == 'new':
             return self.new_session(body)
         if what == 'queue':
@@ -3168,17 +3359,246 @@ class Deck:
                 item.update(status='held', note=tx(f'助手建议先等：{reason}', f'The assistant suggests waiting: {reason}'))
             self.qsave()
 
+    # ---------- the sessions that last (kept.py): what the rows are bound to, and the person's word on them ----------
+
+    def first_spaces(self):
+        """Once: the workspaces this deck used to find by itself (a folder of projects that sessions worked in) become
+        the person's own, each with that one folder, under the key it had: its channel and its tasks stay its."""
+        if self.book.meta('spaces'):
+            return
+        # (only folders still there, and none under a temporary folder; of two with one inside the other, the inner one:
+        # the outer got to be a workspace only as "the folder above")
+        tmp = tuple(dict.fromkeys(os.path.realpath(t).rstrip('/') + '/' for t in ('/tmp', '/var/folders', __import__('tempfile').gettempdir())))
+        ws = [w for w in self.projects.workspace_paths() if os.path.isdir(w) and not (os.path.realpath(w) + '/').startswith(tmp) and not w.startswith(CACHE)]
+        for w in ws:
+            if any(x != w and x.startswith(w + '/') for x in ws):
+                continue
+            with contextlib.suppress(ValueError):
+                self.book.space_add(ws_name(w), [w], sid=A.key_of('w', w))
+        self.book.meta('spaces', time.time())
+
+    def bind(self, sessions, born, now):
+        """Each row is told the session it is ('kept'); a run another session started is its starter's. A process is one
+        session's while it shows one conversation at a time: Claude Code's and Cursor's own, a Codex window (the Codex
+        daemon its hooks run in is every thread's, so it names none)."""
+        for s in sessions:
+            if not K.bindable(s):
+                continue
+            pid = s.get('window_pid') or (s.get('pid') if s['kind'] != 'codex' else None)
+            s['pid'], s['pid_at'] = pid, ((born.get(pid) or (A.proc(pid) or (0, 0, 0))[2] or 0) if pid else 0)
+            if pid and (pid, s['pid_at']) not in self.wants:
+                self.wants[(pid, s['pid_at'])] = env_of(pid, 'STURNUS_SESSION') or ''
+            s['want'] = self.wants.get((pid, s['pid_at'])) or None
+        if len(self.wants) > 3000:
+            self.wants.clear()
+        got = self.book.bind(sessions, now, boot_time(), lambda t: T.there(T.loc_of(t)))
+        by_id = {s['id']: s for s in sessions}
+        for s in sessions:
+            s['kept'] = got.get(s['id']) or (s.get('kept') if s.get('starting') else None)
+        for s in sessions:
+            if not s['kept'] and s.get('parent_id') in by_id:
+                s['kept'] = by_id[s['parent_id']].get('kept')
+
+    def kept_view(self, sessions):
+        """The sessions that last as the page lists them, each with the row that runs it now: the pinned and the running
+        ones, and the latest 120 of the rest (all of them, the archived too, are at /api/kept). And the workspaces, each
+        with its folders, how many sessions it has, and the group most of its running ones are in."""
+        live = {}
+        for s in sessions:
+            if s.get('kept') and not s.get('parent_id') and not s.get('hidden') and (s['kept'] not in live or live[s['kept']].get('unknown')):
+                live[s['kept']] = s
+        out = []
+        for k in self.book.all():
+            l, t, lt = live.get(k['id']), k.get('term'), k.get('last_term')
+            if l and not t and not l.get('starting'):
+                l = None  # (stopped a moment ago: what is still seen of it is on its way out)
+            v = {f: k[f] for f in ('id', 'title', 'space', 'spaced', 'folder', 'kind', 'name', 'branch', 'made', 'at', 'pinned', 'archived', 'state', 'note', 'nsegs', 'nterms')}
+            v.update(live=l and l['id'], conv=(k.get('seg') or {}).get('conv'), show=tilde(k['folder']),
+                     term=t and {x: t[x] for x in ('n', 'mux', 'grp', 'pane', 'origin', 'began')},
+                     ended=None if t or not lt else {'at': lt['ended'], 'why': lt['why']})
+            out.append(v)
+        self.kept = {k['id']: k for k in out}
+        spaces = []
+        for sp in self.book.spaces():
+            mine = [k for k in out if k['space'] == sp['id'] and not k['archived']]
+            groups = Counter(g for g in ((live[k['id']].get('loc') or {}).get('session') for k in mine if k['id'] in live) if g)
+            spaces.append({'id': sp['id'], 'name': sp['name'], 'grp': sp['grp'], 'archived': sp['archived'], 'made': sp['made'],
+                           'group': groups.most_common(1)[0][0] if groups else '', 'n': len(mine), 'live': sum(1 for k in mine if k['live']),
+                           'places': [{'path': p['path'], 'show': tilde(p['path']), 'main': p['main'], 'there': os.path.isdir(p['path'])} for p in sp['places']]})
+        shown = [k for k in out if not k['archived']]
+        return [k for k in shown if k['pinned'] or k['live']] + [k for k in shown if not (k['pinned'] or k['live'])][:120], spaces
+
+    def kept_refresh(self):
+        """The page's list, now: after the person's word, not at the next collect."""
+        self.book.bind(self.everyone, time.time(), boot_time(), lambda t: T.there(T.loc_of(t)))
+        kept, spaces = self.kept_view(self.everyone)
+        with self.lock:
+            self.state['kept'], self.state['spaces'] = kept, spaces
+
+    def kept_live(self, kid):
+        """The row that runs a session now, or None."""
+        lid = (self.kept.get(kid) or {}).get('live')
+        return next((s for s in self.everyone if s['id'] == lid and s['state'] not in ('gone', 'ended')), None) if lid else None
+
+    def kept_page(self, kid):
+        k = self.book.get(kid)
+        if not k:
+            return None
+        s = self.kept_live(kid)
+        for t in k['terms']:
+            t['words'] = T.attach_words(T.loc_of(t)) if t['ended'] is None and T.loc_of(t) else ''
+        return {'ok': True, 'kept': {**k, 'live': s and s['id'], 'show': tilde(k['folder'])}}
+
+    def kept_items(self, kid, limit=200):
+        """A session's conversations one after another, as items for the page ({who, text, at, seg}): the last of them."""
+        out = []
+        for seg in (self.book.get(kid) or {}).get('segs') or []:
+            path = seg['path'] if seg['path'] and os.path.exists(seg['path']) else transcript_of({'kind': seg['kind'], 'session': seg['conv']})
+            if not path:
+                continue
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            hit = self.items.get(path)
+            if not hit or hit[0] != (st.st_size, st.st_mtime):
+                if len(self.items) > 200:
+                    self.items.clear()
+                hit = self.items[path] = ((st.st_size, st.st_mtime), transcript_items(path, limit))
+            out += [{**it, 'seg': seg['n'], 'kind': seg['kind']} for it in hit[1]]
+        return out[-limit:]
+
+    @staticmethod
+    def kept_words(e):
+        """Why something asked of the record cannot be, in the person's language."""
+        a = e.args[1:]
+        return {'name': tx('先起个名字', 'Give it a name first'), 'there': tx('已经有这个工作区了', 'That workspace is already there'),
+                'folder': tx('这个目录不能当工作区的目录', 'That folder cannot be a workspace’s'),
+                'taken': tx(f'{tilde(a[0])} 已经在工作区「{a[1]}」里了', f'{tilde(a[0])} is already in workspace “{a[1]}”') if len(a) == 2 else '',
+                'space': tx('没有这个工作区', 'No such workspace'), 'place': tx('这个目录不在这个工作区里', 'That folder is not in this workspace'),
+                'session': tx('找不到这条会话', 'Session not found'), 'archive': tx('先归档，才能删除', 'Archive it first, then delete')}.get(getattr(e, 'code', ''), str(e))
+
+    def stop(self, s, kid=None):
+        """A session's agent ended, with what it started: its window's process (a Codex thread with no window of its own,
+        the desktop app's, has none to end). Its terminal is marked over at once."""
+        pid = s.get('window_pid') or (s.get('pid') if s['kind'] != 'codex' else None)
+        if not pid:
+            return False
+        for p in [pid] + [p for p in A.pids() if any(a == pid for a, _ in A.ancestors(p)[1:])]:
+            with contextlib.suppress(OSError):
+                os.kill(p, signal.SIGTERM)
+        if kid:
+            self.book.close(kid)
+        return True
+
+    def kept_act(self, b):
+        """The person's word on a session that lasts: its title, pinned, its workspace, stopped, archived (a running one
+        is stopped first), deleted (an archived one only)."""
+        kid, do = str(b.get('id') or ''), b.get('do')
+        if not self.book.get(kid):
+            return False, tx('找不到这条会话', 'Session not found')
+        s, on = self.kept_live(kid), bool(b.get('on', True))
+        try:
+            if do == 'title':
+                self.book.set(kid, title=str(b.get('title') or ''))
+            elif do == 'pin':
+                self.book.set(kid, pinned=on)
+            elif do == 'space':
+                self.book.set(kid, space=str(b.get('space') or ''))
+            elif do == 'stop':
+                if not s or not self.stop(s, kid):
+                    return False, tx('它没有在这台机器的终端里跑，这里停不了', 'It is not running in a terminal on this machine, so it cannot be stopped from here')
+            elif do == 'archive':
+                if on and s:
+                    self.stop(s, kid)
+                self.book.set(kid, archived=on)
+            elif do == 'delete':
+                self.book.drop(kid)
+            else:
+                return False, tx(f'不认识的操作 {do}', f'Unknown action {do}')
+        except K.No as e:
+            return False, self.kept_words(e)
+        self.kept_refresh()
+        return True, {}
+
+    def space_act(self, b):
+        """The person's word on a workspace: a new one, its name, its folders (one added, taken out, made the default
+        for new sessions), its group for new terminals, archived, deleted."""
+        do, sid = b.get('do'), str(b.get('id') or '')
+        folder = lambda p: os.path.realpath(os.path.expanduser(str(p or '').strip()))
+        try:
+            if do == 'add':
+                paths = [folder(p) for p in b.get('paths') or [] if str(p or '').strip()]
+                gone = next((p for p in paths if not os.path.isdir(p)), None)
+                if gone:
+                    return False, tx(f'没有这个目录：{tilde(gone)}', f'No such folder: {tilde(gone)}')
+                sid = self.book.space_add(str(b.get('name') or ''), paths)
+            elif do == 'rename':
+                self.book.space_set(sid, name=str(b.get('name') or ''))
+            elif do == 'group':
+                g = str(b.get('group') or '').strip()
+                if g and not NAME.fullmatch(g.removeprefix('tmux:')):
+                    return False, tx('组名只能用字母、数字和 _ . -', 'A group name can use only letters, digits and _ . -')
+                self.book.space_set(sid, grp=g)
+            elif do == 'place_add':
+                p = folder(b.get('path'))
+                if not os.path.isdir(p):
+                    return False, tx(f'没有这个目录：{tilde(p)}', f'No such folder: {tilde(p)}')
+                self.book.place_add(sid, p)
+            elif do == 'place_drop':
+                self.book.place_drop(sid, folder(b.get('path')))
+            elif do == 'place_main':
+                self.book.place_main(sid, folder(b.get('path')))
+            elif do == 'archive':
+                self.book.space_set(sid, archived=bool(b.get('on', True)))
+            elif do == 'delete':
+                self.book.space_drop(sid)
+            else:
+                return False, tx(f'不认识的操作 {do}', f'Unknown action {do}')
+        except K.No as e:
+            return False, self.kept_words(e)
+        self.kept_refresh()
+        return True, {'id': sid}
+
+    def launch(self, kid, prompt='', group=''):
+        """A stopped session goes on in a new terminal. Refused while one already runs for it: two processes on one
+        conversation would both write it."""
+        if self.kept_live(kid) or any(l.get('kept') == kid for l in self.launched.values()):
+            return False, tx('这条会话已经在跑了：进它现在的终端', 'This session is already running: go to its terminal')
+        sp = next((x for x in self.state.get('spaces') or [] if x['id'] == (self.kept.get(kid) or {}).get('space')), None)
+        taken = {s['name'] for s in self.everyone if s['state'] not in ('gone', 'ended')}
+        ok, r = launch_session(self.book, self.cfg, kid, prompt, group, (sp or {}).get('group') or '', taken)
+        if not ok:
+            return False, r
+        self.launched[r['marker']] = {'kind': r['kind'], 'name': r['tab'], 'group': r['group'], 'cwd': r['cwd'], 'at': time.time(), 'kept': kid}
+        self.book.set(kid, archived=False)
+        self.note(r['msg'])
+        return True, {'msg': r['msg'], 'kept': kid, 'marker': r['marker']}
+
+    def index_loop(self):
+        """The conversations on disk, looked through now and then: one no session has yet becomes a stopped session."""
+        time.sleep(8)
+        while True:
+            try:
+                with self.book.read() as c:
+                    known = {(r['kind'], r['conv']) for r in c.execute('SELECT kind, conv FROM segs')}
+                self.book.learn(claude_convs(known) + codex_convs(known))
+            except Exception as e:
+                self.note(tx(f'读磁盘上的旧对话出错：{e!r}', f'Reading the conversations on disk failed: {e!r}'), False)
+            time.sleep(600)
+
     def new_session(self, b):
-        """A new agent in a group (a Zellij or tmux session; made in the background when new), in its own tab or
-        window, at a folder."""
+        """A new agent in a terminal of its own at a folder, as a session that lasts: in the workspace named, else the
+        one its folder is in. Its group (a Zellij or tmux session; made in the background when new) is the one named,
+        else the one its workspace's sessions are in, as the way terminals are opened here has it."""
         kind, group = b.get('kind'), (b.get('group') or '').strip()
-        mux = 'tmux' if group.startswith('tmux:') or b.get('mux') == 'tmux' else 'zellij'
-        group = group[5:] if group.startswith('tmux:') else group
         name, prompt = (b.get('name') or '').strip(), (b.get('prompt') or '').strip()
         cwd = os.path.realpath(os.path.expanduser((b.get('cwd') or '~').strip()))
         if kind not in ('claude', 'codex', 'cursor', 'shell'):
             return False, tx('选一个 agent，或终端', 'Pick an agent, or a terminal')
-        if not NAME.fullmatch(group):
+        way = T.WAYS['tmux-window' if group.startswith('tmux:') or b.get('mux') == 'tmux' else 'zellij-tab'] if group else T.way(self.cfg)
+        group = group.removeprefix('tmux:')
+        if group and not NAME.fullmatch(group):
             return False, tx('组名只能用字母、数字和 _ . -', 'A group name can use only letters, digits and _ . -')
         if name and not NAME.fullmatch(name):
             return False, tx('名字只能用字母、数字和 _ . -', 'A name can use only letters, digits and _ . -')
@@ -3186,27 +3606,44 @@ class Deck:
             return False, tx(f'{name} 已经有会话在用了', f'{name} is already used by a session')
         if not os.path.isdir(cwd):
             return False, tx(f'目录不存在：{cwd}', f'Folder does not exist: {cwd}')
-        argv = [os.environ.get('SHELL') or '/bin/bash', '-l'] if kind == 'shell' else list(self.cfg.get('launch', DEFAULTS['launch']).get(kind) or DEFAULTS['launch'][kind])
-        if kind == 'claude' and name:
-            argv += ['--name', name]
+        spaces = self.book.spaces()
+        space = str(b.get('space') or '')
+        if space and not any(x['id'] == space for x in spaces):
+            return False, tx('没有这个工作区', 'No such workspace')
+        argv = [os.environ.get('SHELL') or '/bin/bash', '-l'] if kind == 'shell' else agent_argv(self.cfg, kind, name=name)
+        title, own = K.line(b.get('title'), 80), bool(K.line(b.get('title'), 80))
         if b.get('task_title') and kind != 'shell':  # (something the person asked to get done: a task from the start)
             scope = self.scope_at(cwd)
             if scope:
                 b = {**b, 'task': A.task_do({'do': 'add', 'who': 'person', 'scope': scope[0], 'scope_name': scope[1], 'title': b['task_title']})}
+        title = title or K.line(prompt.split('\n')[0], 60)
         if b.get('task'):  # (to work on a task: it says what to do unless the person wrote otherwise)
             task = A.task_get(b['task'])
             b = {**b, 'task': task['id']}
+            title = title or K.line(task['title'], 60)
             prompt = prompt or self.task_brief(task)
         if prompt and kind != 'shell':
             argv.append(prompt)
+        kid = None
+        if kind != 'shell':
+            kid = self.book.add(title=title, folder=cwd, kind=kind, space=space or None, name=name)
+            if title and not own:  # (called after its first ask for now: the summary's title takes over)
+                with self.book.tx() as c:
+                    c.execute('UPDATE kept SET titled = 0 WHERE id = ?', (kid,))
+        sp = next((x for x in self.state.get('spaces') or [] if x['id'] == (space or K.nearest(spaces, cwd))), None)
+        if not group:
+            g = (sp or {}).get('group') or ''
+            group = way.group(sp, {'id': kid}, g if g and g.startswith('tmux:') == (way.mux == 'tmux') else None).removeprefix('tmux:')
         marker = os.urandom(6).hex()
-        env = [f'STURNUS_NEW={marker}'] + ([f'AMAIL_NAME={name}'] if name else [])
-        tab = name or f'{tx("终端", "shell") if kind == "shell" else kind}·{os.path.basename(cwd) or "~"}'
-        way = T.WAYS['tmux-window' if mux == 'tmux' else 'zellij-tab']  # (the group is the person's pick here: opened as what it is)
+        env = [f'STURNUS_NEW={marker}'] + ([f'STURNUS_SESSION={kid}'] if kid else []) + ([f'AMAIL_NAME={name}'] if name else [])
+        tab = name or (kid and K.line(title, 24)) or f'{tx("终端", "shell") if kind == "shell" else kind}·{os.path.basename(cwd) or "~"}'
         ok, made, loc = way.start(group, tab, cwd, env, argv, marker)
         if not ok:
+            if kid:  # (nothing was started for it: it never was)
+                self.book.set(kid, archived=True)
+                self.book.drop(kid)
             return False, made
-        return self.started(b, kind, name, tab, f'tmux:{group}' if mux == 'tmux' else group, cwd, marker, made, loc)
+        return self.started({**b, 'kept': kid}, kind, name, tab, f'tmux:{group}' if way.mux == 'tmux' else group, cwd, marker, made, loc)
 
     def started(self, b, kind, name, tab, group, cwd, marker, made, loc=None):
         if kind == 'shell':  # (not an agent: no card; the page opens it in its terminal once it runs)
@@ -3218,12 +3655,14 @@ class Deck:
             return True, tx(f'{made}在 {group.removeprefix("tmux:")} 里开了终端「{tab}」', f'{made}Opened terminal “{tab}” in {group.removeprefix("tmux:")}')
         if kind == 'codex' and name:
             self.pending[marker] = name  # (a Codex thread takes its name once it shows up)
-        self.launched[marker] = {'kind': kind, 'name': name or tab, 'group': group, 'cwd': cwd, 'at': time.time()}
+        self.launched[marker] = {'kind': kind, 'name': name or tab, 'group': group, 'cwd': cwd, 'at': time.time(), 'kept': b.get('kept')}
         if b.get('task'):
             self.linking[marker] = {'task': b['task'], 'loc': loc, 'at': time.time()}
         if b.get('jump'):
             threading.Thread(target=self._jump_when_up, args=(marker, tab), daemon=True).start()
-        return True, tx(f'{made}在 {group.removeprefix("tmux:")} 里开了「{tab}」（{ {"claude": "Claude Code", "codex": "Codex", "cursor": "Cursor"}[kind]}，{cwd.replace(os.path.expanduser("~"), "~")}）', f'{made}Opened “{tab}” in {group.removeprefix("tmux:")} ({ {"claude": "Claude Code", "codex": "Codex", "cursor": "Cursor"}[kind]}, {cwd.replace(os.path.expanduser("~"), "~")})')
+        msg = tx(f'{made}在 {group.removeprefix("tmux:")} 里开了「{tab}」（{ {"claude": "Claude Code", "codex": "Codex", "cursor": "Cursor"}[kind]}，{cwd.replace(os.path.expanduser("~"), "~")}）', f'{made}Opened “{tab}” in {group.removeprefix("tmux:")} ({ {"claude": "Claude Code", "codex": "Codex", "cursor": "Cursor"}[kind]}, {cwd.replace(os.path.expanduser("~"), "~")})')
+        self.note(msg)
+        return True, {'msg': msg, 'kept': b.get('kept'), 'marker': marker}
 
     def type_in(self, s, text, enter):
         """Type into a session's pane as if at its keyboard (and press Enter)."""
@@ -4341,10 +4780,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({'ok': True, 'task': DECK.task_view((parse_qs(urlparse(self.path).query).get('id') or [''])[0])})
             except ValueError as e:
                 return self.send_json({'ok': False, 'msg': str(e)}, 404)
+        if self.path.startswith('/api/kept'):  # (one session that lasts, with its conversations and terminals; or all of them, the archived too)
+            from urllib.parse import urlparse, parse_qs
+            kid = (parse_qs(urlparse(self.path).query).get('id') or [''])[0]
+            if not kid:
+                return self.send_json({'ok': True, 'kept': list(DECK.kept.values())})
+            v = DECK.kept_page(kid)
+            return self.send_json(v or {'ok': False, 'msg': tx('找不到这条会话', 'Session not found')}, 200 if v else 404)
         if self.path.startswith('/api/transcript'):
             from urllib.parse import urlparse, parse_qs
             q = parse_qs(urlparse(self.path).query)
             sid, sub = (q.get('id') or [''])[0], (q.get('sub') or [''])[0]
+            if (q.get('kept') or [''])[0]:  # (a session that lasts: all its conversations, one after another)
+                return self.send_json({'items': DECK.kept_items(q['kept'][0])})
             s = DECK.find(sid)
             path = transcript_of(s) if s else None
             if path and sub:  # (one of its sub-agents' conversations, from beside its own)
@@ -4445,6 +4893,7 @@ def serve():
     threading.Thread(target=DECK.queue_loop, daemon=True).start()
     threading.Thread(target=DECK.mind_loop, daemon=True).start()
     threading.Thread(target=DECK.projects.facts_loop, args=(DECK,), daemon=True).start()
+    threading.Thread(target=DECK.index_loop, daemon=True).start()
     cfg = DECK.cfg
     global ACCESS_
     ACCESS_ = Access()
@@ -4784,6 +5233,105 @@ def upgrade(argv):
     os.execv(sys.executable, [sys.executable, os.path.join(src, 'sturnus'), 'install', '--from', src] + (['--no-service'] if '--no-service' in argv else []))
 
 
+# ---------- the sessions at a terminal: `sturnus ls`, `sturnus open` ----------
+
+def cell(s, n):
+    """Text cut and padded to n columns of a terminal (a Chinese character takes two)."""
+    import unicodedata
+    width = lambda ch: 2 if unicodedata.east_asian_width(ch) in ('W', 'F') else 1
+    s = str(s)
+    full = sum(map(width, s))
+    if full <= n:
+        return s + ' ' * (n - full)
+    out, w = '', 0
+    for ch in s:
+        if w + width(ch) > n - 1:
+            break
+        out, w = out + ch, w + width(ch)
+    return out + '…' + ' ' * (n - w - 1)
+
+
+LS_FILE = os.path.join(CACHE, 'ls.json')  # (the list as last printed: `sturnus open 3` means its third)
+
+
+def ls_rows(book, every=False):
+    """The sessions as a terminal lists them: the running ones first, then the latest; with --all the archived too. One
+    that the record has running, but whose pane is gone (the service was not there to see it end), is shown stopped."""
+    names = {sp['id']: sp['name'] for sp in book.spaces()}
+    out = []
+    for k in book.all():
+        if k['archived'] and not every:
+            continue
+        t = k.get('term')
+        loc = T.loc_of(t) if t else None
+        running = bool(t) and k['state'] != 'stopped' and (T.there(loc) is not False if loc else True)
+        state = k['state'] if running else 'stopped'
+        where = (f'{t["mux"]} {t["grp"].removeprefix("tmux:")}' if loc else (t['origin'] or tx('不在 Zellij 或 tmux 里', 'not in Zellij or tmux'))) if running else tx('没有', 'none')
+        out.append({'id': k['id'], 'title': k['title'] or k['name'] or k['id'], 'space': names.get(k['space']) or tx('未归入', 'none'), 'state': state,
+                    'where': where, 'at': k['at'], 'archived': bool(k['archived'])})
+    rank = {'waiting': 0, 'working': 1, 'idle': 2, 'stopped': 3}
+    out.sort(key=lambda r: (r['archived'], rank.get(r['state'], 3) == 3, -r['at']))
+    return out if every else out[:40]
+
+
+def ls_text(every=False):
+    rows = ls_rows(K.Book(), every)
+    if not rows:
+        return tx('还没有会话。在页面上开一个，或者在终端里直接运行 claude / codex。', 'No sessions yet. Start one from the page, or just run claude / codex in a terminal.')
+    os.makedirs(CACHE, exist_ok=True)
+    A.put(LS_FILE, [r['id'] for r in rows])
+    words = {'working': tx('工作中', 'working'), 'waiting': tx('等你', 'needs you'), 'idle': tx('空闲', 'idle'), 'stopped': tx('已停止', 'stopped')}
+    head = f'{"":>3}  {cell(tx("会话", "session"), 34)} {cell(tx("工作区", "workspace"), 16)} {cell(tx("状态", "state"), 9)} {tx("终端", "terminal")}'
+    lines = [f'{i:>3}  {cell(r["title"], 34)} {cell(r["space"], 16)} {cell(words[r["state"]] + (tx("，已归档", ", archived") if r["archived"] else ""), 9)} {r["where"]}'
+             for i, r in enumerate(rows, 1)]
+    return '\n'.join([head] + lines + ['', tx('sturnus open 编号或名字：这个终端进到那条会话；已停止的先新开终端接着做', 'sturnus open NUMBER or TITLE: this terminal goes to that session; a stopped one gets a new terminal first and goes on')])
+
+
+def pick_session(book, words):
+    """The session a person means at a terminal: its number in the list last printed, its id, its title (whole, else the
+    one title that holds the words). Returns (session, None) or (None, why)."""
+    rows = [k for k in book.all() if not k['archived']]
+    if words.isdigit():
+        ids = A.get(LS_FILE, []) or [r['id'] for r in ls_rows(book)]
+        hit = next((k for k in rows if 0 < int(words) <= len(ids) and k['id'] == ids[int(words) - 1]), None)
+        return (hit, None) if hit else (None, tx(f'列表里没有第 {words} 条：先 sturnus ls', f'No number {words} in the list: run sturnus ls first'))
+    name = lambda k: k['title'] or k['name'] or ''
+    hits = [k for k in rows if k['id'] == words] or [k for k in rows if name(k) == words] or [k for k in rows if words.lower() in name(k).lower()]
+    if len(hits) == 1:
+        return hits[0], None
+    if not hits:
+        return None, tx(f'没有叫这个的会话：{words}', f'No session by that name: {words}')
+    return None, tx('有几条都对得上，用编号或写全一点：\n', 'Several match; use a number or more of the title:\n') + '\n'.join(f'  {name(k)}' for k in hits[:12])
+
+
+def open_session(words):
+    """This terminal goes to a session's terminal; a stopped session is given a new one first, on with its conversation.
+    Returns what to exit with (words on failure)."""
+    book = K.Book()
+    k, why = pick_session(book, words.strip())
+    if not k:
+        return why
+    t = k.get('term')
+    loc = T.loc_of(t) if t else None
+    if t and k['state'] != 'stopped' and not loc:
+        return tx(f'这条会话正在跑，但不在 Zellij 或 tmux 里（{t["origin"] or "来源不明"}），这里进不去', f'This session is running, but not in Zellij or tmux ({t["origin"] or "origin unknown"}): it cannot be entered from here')
+    if not (loc and k['state'] != 'stopped' and T.there(loc)):
+        ok, r = launch_session(book, config(), k['id'], prefer=(k.get('last_term') or {}).get('grp') or '')
+        if not ok:
+            return r
+        print(r['msg'], flush=True)
+        loc = r['loc']
+        for _ in range(40):
+            loc = loc or marked(r['marker'])
+            if loc:
+                break
+            time.sleep(.25)
+        if not loc:
+            return tx('终端开了，但还没找到它在哪：过一会儿再运行一次', 'The terminal was opened but not found yet: run this again in a moment')
+    ok, msg = T.enter(loc)
+    return None if ok else (msg or tx('切不过去', 'Could not switch there'))
+
+
 def main(argv):
     c = argv[0] if argv else 'help'
     if c == 'serve':
@@ -4800,6 +5348,12 @@ def main(argv):
         reach = tailnet_urls(cfg)
         print(f'sturnus {VERSION} ({APP})\nservice: {service("state")}' + (f' (log: {LOG})' if MAC else '') +
               f'\nhttp://{cfg["host"]}:{cfg["port"]}' + (f'\ntailnet: {reach}' if reach else ''))
+    elif c == 'ls':
+        _REQ.lang = 'en' if config().get('work_lang') == 'en' else 'zh'
+        print(ls_text('--all' in argv))
+    elif c == 'open' and len(argv) > 1:
+        _REQ.lang = 'en' if config().get('work_lang') == 'en' else 'zh'
+        sys.exit(open_session(' '.join(argv[1:])))
     elif c == 'open':
         cfg = config()
         url = f'http://{cfg["host"]}:{cfg["port"]}'

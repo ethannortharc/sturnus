@@ -18,8 +18,10 @@ import threading
 import time
 import uuid
 
-PATH = os.environ.get('STURNUS_SESSIONS') or os.path.expanduser('~/.local/state/sturnus/sessions.db')  # (beside the tasks)
-QUIET = 20  # (seconds a session may be out of the deck's sight before its terminal counts as ended: a blip is not an end)
+# (beside the tasks; a deck to try things on, with its own tasks, gets its own sessions with no more said)
+PATH = os.environ.get('STURNUS_SESSIONS') or os.path.join(os.path.dirname(os.environ.get('STURNUS_TASKS') or os.path.expanduser('~/.local/state/sturnus/tasks.db')), 'sessions.db')
+# (seconds a session may be out of the deck's sight before its terminal counts as ended: a blip is not an end)
+QUIET = float(os.environ.get('STURNUS_QUIET') or 20)
 AGENTS = ('claude', 'codex', 'cursor')
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS spaces (id TEXT PRIMARY KEY, name TEXT NOT NULL, grp TEXT NOT NULL DEFAULT '', made REAL NOT NULL,
@@ -43,6 +45,15 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 # seen), 'clear' (the same terminal went on with a new conversation), 'handover' (another agent took the work on).
 # why a terminal ended: 'restart' (the machine restarted), 'closed' (its pane is gone), 'exited' (the agent quit, the pane
 # is still there), 'moved' (the session went on in another pane), 'stopped' (the person archived it), 'ended' (not known).
+
+
+class No(ValueError):
+    """Something asked that cannot be: its first word says what (the deck puts it in the person's language) —
+    'name', 'there', 'folder', 'taken' (path, the workspace that has it), 'space', 'place', 'session', 'archive'."""
+
+    @property
+    def code(self):
+        return self.args[0]
 
 
 def norm(p):
@@ -79,6 +90,7 @@ class Book:
         self.path = path or PATH
         self.lock = threading.RLock()
         self.missing = {}  # (kept id -> when the deck first did not see it)
+        self.stopping = {}  # (kept id -> (when the person stopped it, its process): what is still seen of that process for a moment is on its way out)
         os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
         with contextlib.closing(self._open()) as c:
             c.executescript(SCHEMA)
@@ -131,11 +143,11 @@ class Book:
         """A new workspace with its folders; returns its id. A folder another workspace already has is refused."""
         name, at = line(name, 60), at or time.time()
         if not name:
-            raise ValueError('a workspace needs a name')
+            raise No('name')
         sid = sid or 'w-' + uuid.uuid4().hex[:8]
         with self.tx() as c:
             if c.execute('SELECT 1 FROM spaces WHERE id = ?', (sid,)).fetchone():
-                raise ValueError(f'workspace {sid} is already there')
+                raise No('there', sid)
             c.execute('INSERT INTO spaces (id, name, grp, made, at) VALUES (?, ?, ?, ?, ?)', (sid, name, grp, at, at))
             for i, p in enumerate(dict.fromkeys(norm(p) for p in paths if p)):
                 self._place(c, sid, p, at, main=not i)
@@ -144,19 +156,19 @@ class Book:
     @staticmethod
     def _place(c, sid, p, at, main=False):
         if not p or p == '/':
-            raise ValueError('not a folder a workspace can cover')
+            raise No('folder', p)
         other = c.execute('SELECT s.name FROM places p JOIN spaces s ON s.id = p.space WHERE p.path = ? AND p.host = ? AND p.space != ?', (p, '', sid)).fetchone()
         if other:
-            raise ValueError(f'{p} is already in workspace {other["name"]}')
+            raise No('taken', p, other['name'])
         c.execute('INSERT OR IGNORE INTO places (space, path, host, main, at) VALUES (?, ?, ?, ?, ?)', (sid, p, '', int(main), at))
 
     def space_set(self, sid, name=None, grp=None, archived=None):
         with self.tx() as c:
             if not c.execute('SELECT 1 FROM spaces WHERE id = ?', (sid,)).fetchone():
-                raise ValueError('no such workspace')
+                raise No('space')
             if name is not None:
                 if not line(name, 60):
-                    raise ValueError('a workspace needs a name')
+                    raise No('name')
                 c.execute('UPDATE spaces SET name = ?, at = ? WHERE id = ?', (line(name, 60), time.time(), sid))
             if grp is not None:
                 c.execute('UPDATE spaces SET grp = ? WHERE id = ?', (grp, sid))
@@ -167,7 +179,7 @@ class Book:
         p = norm(path)
         with self.tx() as c:
             if not c.execute('SELECT 1 FROM spaces WHERE id = ?', (sid,)).fetchone():
-                raise ValueError('no such workspace')
+                raise No('space')
             first = not c.execute('SELECT 1 FROM places WHERE space = ?', (sid,)).fetchone()
             self._place(c, sid, p, time.time(), main=first)
         return p
@@ -186,7 +198,7 @@ class Book:
         p = norm(path)
         with self.tx() as c:
             if not c.execute('SELECT 1 FROM places WHERE space = ? AND path = ?', (sid, p)).fetchone():
-                raise ValueError('that folder is not in this workspace')
+                raise No('place', p)
             c.execute('UPDATE places SET main = (path = ?) WHERE space = ?', (p, sid))
 
     def space_drop(self, sid):
@@ -245,7 +257,7 @@ class Book:
         with self.tx() as c:
             k = c.execute('SELECT * FROM kept WHERE id = ?', (kid,)).fetchone()
             if not k:
-                raise ValueError('no such session')
+                raise No('session')
             now = time.time()
             if 'title' in f:
                 t = line(f['title'], 120)
@@ -253,7 +265,7 @@ class Book:
             if 'space' in f:
                 sp = f['space'] or None
                 if sp and not c.execute('SELECT 1 FROM spaces WHERE id = ?', (sp,)).fetchone():
-                    raise ValueError('no such workspace')
+                    raise No('space')
                 c.execute('UPDATE kept SET space = ?, spaced = ? WHERE id = ?', (sp or nearest(self._spaces(c), k['folder']), int(bool(sp)), kid))
             if 'pinned' in f:
                 c.execute('UPDATE kept SET pinned = ? WHERE id = ?', (now if f['pinned'] else None, kid))
@@ -269,9 +281,9 @@ class Book:
         with self.tx() as c:
             k = c.execute('SELECT archived FROM kept WHERE id = ?', (kid,)).fetchone()
             if not k:
-                raise ValueError('no such session')
+                raise No('session')
             if not k['archived']:
-                raise ValueError('archive it first')
+                raise No('archive')
             for t in ('segs', 'terms'):
                 c.execute(f'DELETE FROM {t} WHERE kept = ?', (kid,))
             c.execute('DELETE FROM kept WHERE id = ?', (kid,))
@@ -285,13 +297,14 @@ class Book:
 
     def learn(self, convs, now=None):
         """Conversations found on disk that no session has yet: each becomes a stopped session, as it was left. convs:
-        [{kind, conv, path, folder, began, at, title, note}]. Returns how many were new."""
+        [{kind, conv, path, folder, began, at, title, note}]. One written in the last ten minutes is left for now: it
+        is running, and the deck binds it to the session it runs for. Returns how many were new."""
         now, n = now or time.time(), 0
         with self.tx() as c:
             spaces = self._spaces(c)
             have = {(r['kind'], r['conv']) for r in c.execute('SELECT kind, conv FROM segs')}
             for v in convs:
-                if not v.get('conv') or v.get('kind') not in AGENTS or (v['kind'], v['conv']) in have:
+                if not v.get('conv') or v.get('kind') not in AGENTS or (v['kind'], v['conv']) in have or (v.get('at') or 0) > now - 600:
                     continue
                 have.add((v['kind'], v['conv']))
                 kid, at = 's-' + uuid.uuid4().hex[:8], v.get('at') or now
@@ -336,7 +349,8 @@ class Book:
                     c.execute('INSERT INTO kept (id, folder, kind, name, made, at, state) VALUES (?, ?, ?, ?, ?, ?, ?)',
                               (kid, norm(s.get('home') or s.get('cwd')), s['kind'], s.get('name') or '', at, s.get('at') or now, s['state']))
                     kept[kid] = dict(c.execute('SELECT * FROM kept WHERE id = ?', (kid,)).fetchone())
-                if kid in seen:  # (two rows of one session: the first one seen is it)
+                halt = self.stopping.get(kid)
+                if kid in seen or (halt and now - halt[0] < 30 and halt[1] in (None, pid)):  # (two rows of one session: the first one seen is it; a process just stopped is not it running again)
                     out[s['id']] = kid
                     continue
                 seen.add(kid)
@@ -396,7 +410,11 @@ class Book:
 
     def close(self, kid, why='stopped', now=None):
         """A session's open terminal marked over (the person stopped it): the deck does not wait to see it gone."""
+        now = now or time.time()
         with self.tx() as c:
-            c.execute('UPDATE terms SET ended = ?, why = ? WHERE kept = ? AND ended IS NULL', (now or time.time(), why, kid))
+            t = c.execute('SELECT pid FROM terms WHERE kept = ? AND ended IS NULL', (kid,)).fetchone()
+            c.execute('UPDATE terms SET ended = ?, why = ? WHERE kept = ? AND ended IS NULL', (now, why, kid))
             c.execute("UPDATE kept SET state = 'stopped' WHERE id = ?", (kid,))
         self.missing.pop(kid, None)
+        self.stopping = {k: v for k, v in self.stopping.items() if now - v[0] < 30}
+        self.stopping[kid] = (now, t and t['pid'])

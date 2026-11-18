@@ -157,13 +157,16 @@ class Tmux:
         sock = next(iter(self.sockets()), None) or os.path.join(os.environ.get('TMUX_TMPDIR') or '/tmp', f'tmux-{os.getuid()}', 'default')
         envs = [x for kv in env for x in ('-e', kv)]
         have = any(k == f'tmux:{name}' for k, _ in self.sessions())
+        # (no server yet, and since a restart no folder for its socket either: named outright, tmux does not make the
+        # folder, says so, and still exits with 0)
+        os.makedirs(os.path.dirname(sock), mode=0o700, exist_ok=True)
         r = self.tm(sock, *(['new-window', '-t', f'={name}:'] if have else ['new-session', '-d', '-s', name]), '-n', tab, '-c', cwd,
                     '-P', '-F', '#{pane_id}', *envs, '--', *argv, timeout=10)
         self.cache.pop(sock, None)
-        if r.returncode != 0:
-            return False, (r.stderr or r.stdout).strip()[:200], None
         pane = r.stdout.strip()
-        return True, '' if have else tx(f'新建了 tmux 组 {name}，', f'Created tmux group {name}. '), self.place(sock, pane) if pane.startswith('%') else None
+        if r.returncode != 0 or not pane.startswith('%'):
+            return False, (r.stderr or r.stdout).strip()[:200], None
+        return True, '' if have else tx(f'新建了 tmux 组 {name}，', f'Created tmux group {name}. '), self.place(sock, pane)
 
 
 TMUX = Tmux()

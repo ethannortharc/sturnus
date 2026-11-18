@@ -245,14 +245,24 @@ class Keeping(unittest.TestCase):
         b.close(kid, now=220)
         k = b.get(kid)
         self.assertEqual((k['state'], k['terms'][0]['why'], k['terms'][0]['ended']), ('stopped', 'stopped', 220))
+        b.bind([row()], now=222)  # (still seen for a moment while it goes: not a new terminal)
+        k = b.get(kid)
+        self.assertEqual((k['state'], len(k['terms'])), ('stopped', 1))
+        b.bind([row(pid=777, pid_at=221, loc={'mux': 'zellij', 'session': 'work', 'pane': '8'})], now=224)  # (another process for it, at once: it goes on)
+        k = b.get(kid)
+        self.assertEqual((k['state'], [t['pane'] for t in k['terms']]), ('idle', ['3', '8']))
+        b.close(kid, now=230)
+        b.bind([row()], now=270)  # (still there much later: it did not stop after all)
+        k = b.get(kid)
+        self.assertEqual((k['state'], len(k['terms'])), ('idle', 3))
 
     def test_conversations_on_disk_become_stopped_sessions_once(self):
         b = book()
         w = b.space_add('Sturnus', ['/r/sturnus'])
         convs = [{'kind': 'claude', 'conv': 'old1', 'path': '/t/old1.jsonl', 'folder': '/r/sturnus', 'began': 10, 'at': 50, 'title': 'An old one', 'note': 'left\nhere'},
                  {'kind': 'codex', 'conv': 'old2', 'path': '/t/old2.jsonl', 'folder': '/elsewhere', 'began': 20, 'at': 60}]
-        self.assertEqual(b.learn(convs), 2)
-        self.assertEqual(b.learn(convs), 0)
+        self.assertEqual(b.learn(convs + [{'kind': 'claude', 'conv': 'now', 'folder': '/r/sturnus', 'at': 995}], now=1000), 2)  # (one still being written is the deck's to bind)
+        self.assertEqual(b.learn(convs, now=1000), 0)
         a = {k['seg']['conv']: k for k in b.all()}
         self.assertEqual((a['old1']['space'], a['old1']['title'], a['old1']['state'], a['old1']['note'], a['old1']['at'], a['old1']['term']), (w, 'An old one', 'stopped', 'left here', 50, None))
         self.assertIsNone(a['old2']['space'])
