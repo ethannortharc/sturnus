@@ -119,7 +119,7 @@ function kDrawSide() {
       list = (pinned.length ? `<div class="ks-g"><div class="ks-sub">${tt('置顶', 'Pinned')}</div>${pinned.map(k => kRow(k)).join('')}</div>` : '')
         + spaces.slice().sort((a, b) => (b.live > 0) - (a.live > 0) || a.name.localeCompare(b.name)).map(w => kGroup(w.id, `<div class="ks-gh"><span class="ks-tile">${esc(w.name.slice(0, 1).toUpperCase())}</span>
             <a class="nm" href="#/w/${encodeURIComponent(w.id)}" title="${esc(w.places.map(p => p.show).join('\n'))}">${esc(w.name)}</a>
-            <a class="ks-ib" href="#/" data-knew="${esc(w.id)}" title="${tt(`在 ${w.name} 里开新会话`, `New session in ${w.name}`)}" aria-label="${tt(`在 ${w.name} 里开新会话`, `New session in ${w.name}`)}">${I.plus}</a></div>`, rest.filter(k => k.space === w.id))).join('')
+            <a class="ks-ib" href="#/" data-knew="${esc(w.id)}" title="${esc(tt(`在 ${w.name} 里开新会话`, `New session in ${w.name}`))}" aria-label="${esc(tt(`在 ${w.name} 里开新会话`, `New session in ${w.name}`))}">${I.plus}</a></div>`, rest.filter(k => k.space === w.id))).join('')
         + (none.length ? kGroup('~none', `<div class="ks-gh"><span class="ks-tile none"></span><span class="nm">${tt('未归入工作区', 'In no workspace')}</span></div>`, none) : '');
     }
     $('#ks').innerHTML = `<div class="ks-brand"><a href="#/" class="ks-logo" aria-label="Sturnus"><img class="logo" src="icon.svg" alt=""><b>Sturnus</b></a>
@@ -261,11 +261,11 @@ ${!s && !k.archived ? `<button role="menuitem" data-khand>${tt('换一个 agent 
 // (a line across the conversation where the session's terminal changed, and where another conversation began)
 function kTermLine(terms, i) {
   const t0 = terms[i], prev = terms[i - 1];
-  return `<div class="kdiv"><span><b>${tt('换了终端', 'Another terminal')}</b>${esc(kDay(t0.began))}${prev && prev.why ? tt(`，${KWHY[prev.why] ? KWHY[prev.why][0] : prev.why}`, `, ${KWHY[prev.why] ? KWHY[prev.why][1] : prev.why}`) : ''}${tt(`；在第 ${t0.n} 个终端（${kMux(t0)}）里接着做`, `; going on in terminal ${t0.n} (${kMux(t0)})`)}</span></div>`;
+  return `<div class="kdiv"><span><b>${tt('换了终端', 'Another terminal')}</b>${esc(kDay(t0.began))}${prev && prev.why ? esc(tt(`，${KWHY[prev.why] ? KWHY[prev.why][0] : prev.why}`, `, ${KWHY[prev.why] ? KWHY[prev.why][1] : prev.why}`)) : ''}${tt(`；在第 ${t0.n} 个终端（${kMux(t0)}）里接着做`, `; going on in terminal ${t0.n} (${kMux(t0)})`)}</span></div>`;
 }
 function kSegLine(seg) {
   if (!seg || !['clear', 'handover'].includes(seg.how)) return '';
-  return `<div class="kdiv"><span>${seg.how === 'clear' ? `<b>${tt('清空了对话', 'Conversation cleared')}</b>${tt('上面的不再在它的上下文里，记录都还在', 'What is above is out of its context; the record is all here')}` : `<b>${tt(`换成 ${FULL[seg.kind] || seg.kind} 继续`, `${FULL[seg.kind] || seg.kind} takes it on`)}</b>`}</span></div>`;
+  return `<div class="kdiv"><span>${seg.how === 'clear' ? `<b>${tt('清空了对话', 'Conversation cleared')}</b>${tt('上面的不再在它的上下文里，记录都还在', 'What is above is out of its context; the record is all here')}` : `<b>${esc(tt(`换成 ${FULL[seg.kind] || seg.kind} 继续`, `${FULL[seg.kind] || seg.kind} takes it on`))}</b>`}</span></div>`;
 }
 function kChatHtml(k, items, full) {
   const terms = (full.terms || []).slice().sort((a, b) => a.n - b.n), segs = full.segs || [];
@@ -342,15 +342,15 @@ function kDrawDiff(k, s, box) {
     const open = new Set([...box.querySelectorAll('details.kdf[open]')].map(x => x.dataset.kdf)), keep = $('#kDiffSay') ? $('#kDiffSay').value : '';
     const files = (d && d.files) || [], add = files.reduce((n, f) => n + f.add, 0), del = files.reduce((n, f) => n + f.del, 0);
     box.innerHTML = kSideTabs() + (!d ? `<p class="hint">${tt('读取中……', 'Loading…')}</p>` : !d.ok ? `<p class="hint">${esc(d.msg || '')}</p>` : `
-      <section><h3>${d.branch === d.main ? tt(`${d.branch} 上还没提交的改动`, `Changes not committed on ${d.branch}`) : tt(`分支 ${d.branch} 相对 ${d.main} 的改动`, `Branch ${d.branch} against ${d.main}`)}</h3>
+      <section><h3>${esc(d.branch === d.main ? tt(`${d.branch} 上还没提交的改动`, `Changes not committed on ${d.branch}`) : tt(`分支 ${d.branch} 相对 ${d.main} 的改动`, `Branch ${d.branch} against ${d.main}`))}</h3>
         <p class="hint">${files.length ? tt(`${files.length} 个文件`, `${files.length} file${files.length > 1 ? 's' : ''}`) + ` <b class="ka">+${add}</b> <b class="kd">−${del}</b>` + (d.ahead ? tt(`，${d.ahead} 个提交`, `, ${d.ahead} commit${d.ahead > 1 ? 's' : ''}`) : '') : tt('没有改动。', 'No changes.')}</p>
         ${files.map(f => `<details class="kdf" data-kdf="${esc(f.path)}"${open.has(f.path) ? ' open' : ''}><summary>${chev(false)}<span class="p" title="${esc(f.path)}">${esc(f.path)}</span>${f.state === 'new' ? `<em>${tt('新文件', 'new')}</em>` : `<b class="ka">+${f.add}</b><b class="kd">−${f.del}</b>`}${f.loose ? `<em title="${tt('上次提交后又改过', 'Changed again since its last commit')}">${tt('未提交', 'loose')}</em>` : ''}</summary>
           <pre class="kdiffp">${KV.diff.files[f.path] !== undefined ? kDiffHtml(KV.diff.files[f.path]) : tt('读取中……', 'Loading…')}</pre></details>`).join('')}${d.more ? `<p class="hint">${tt(`还有 ${d.more} 个文件没列出`, `${d.more} more files not listed`)}</p>` : ''}</section>
       <section><h3>${tt('对这些改动有话说', 'Something to say about these')}</h3><textarea id="kDiffSay" class="area" rows="3" aria-label="${tt('对改动的意见', 'Words about the changes')}" placeholder="${s ? tt('写下来，发给这条会话', 'Write it down and send it to this session') : tt('写下来：发送后它先新开终端，再接着做', 'Write it down: it gets a new terminal first, then goes on')}">${esc(keep)}</textarea>
         <button class="btn" data-kdiffsay>${I.arrow}${tt('发给它', 'Send to it')}</button></section>
       ${d.own ? `<section><h3>${tt('它自己的 worktree', 'Its own worktree')}</h3><p class="hint mono">${esc(d.show)}</p>
-        <p class="hint">${tt(`做完以后：把 ${d.branch} 合进 ${d.main}（只做快进合并），再把这个 worktree 和分支清掉。要先停止会话，改动要都提交了。`, `When it is done: merge ${d.branch} into ${d.main} (fast-forward only), then clear this worktree and branch away. Stop the session first, with everything committed.`)}</p>
-        <button class="btn" data-kmerge ${s ? 'disabled' : ''}>${I.branch}${tt(`合并进 ${d.main} 并清理`, `Merge into ${d.main} and clear`)}</button></section>` : ''}`);
+        <p class="hint">${esc(tt(`做完以后：把 ${d.branch} 合进 ${d.main}（只做快进合并），再把这个 worktree 和分支清掉。要先停止会话，改动要都提交了。`, `When it is done: merge ${d.branch} into ${d.main} (fast-forward only), then clear this worktree and branch away. Stop the session first, with everything committed.`))}</p>
+        <button class="btn" data-kmerge ${s ? 'disabled' : ''}>${I.branch}${esc(tt(`合并进 ${d.main} 并清理`, `Merge into ${d.main} and clear`))}</button></section>` : ''}`);
     for (const el of box.querySelectorAll('details.kdf[open]')) kDiffFile(k, el);
   });
 }
@@ -471,7 +471,7 @@ function kDrawSpace() {
       body.innerHTML = `<div class="h-title"><h2>${tt('关联的位置', 'What it covers')}</h2><span class="sub">${tt('在这些目录里开的会话（包括子目录），自动归到这个工作区；开新会话时也从这里选目录。', 'Sessions opened in these folders (or below them) are in this workspace; a new session picks its folder from here.')}</span></div>
         <div class="wk-rows">${sp.places.map(p => `<div class="wk-row"><span class="mark sm pj">${I.folder}</span><span class="t"><b class="mono">${esc(p.show)}</b><small>${tt('本机目录', 'A folder on this machine')}${p.there ? '' : tt('，现在不在了', ', no longer there')}</small></span>
             ${p.main ? `<span class="tag">${tt('新会话默认开在这里', 'New sessions open here')}</span>` : `<button class="btn" data-spmain="${esc(p.path)}">${tt('设为默认', 'Make default')}</button>`}
-            <button class="ks-ib" data-spdrop="${esc(p.path)}" title="${tt('把这个目录从工作区里拿掉', 'Take this folder out of the workspace')}" aria-label="${tt(`把 ${p.show} 从工作区里拿掉`, `Take ${p.show} out of the workspace`)}">${KI.x}</button></div>`).join('')}
+            <button class="ks-ib" data-spdrop="${esc(p.path)}" title="${tt('把这个目录从工作区里拿掉', 'Take this folder out of the workspace')}" aria-label="${esc(tt(`把 ${p.show} 从工作区里拿掉`, `Take ${p.show} out of the workspace`))}">${KI.x}</button></div>`).join('')}
           <form class="wk-row add" id="spAdd" autocomplete="off"><input class="field" id="spAddPath" list="spDirs" placeholder="${tt('再加一个本机目录：~/projects/…', 'Another folder on this machine: ~/projects/…')}" aria-label="${tt('要加的目录', 'Folder to add')}"><datalist id="spDirs">${(S.dirs || []).map(d => `<option value="${esc(d)}">`).join('')}</datalist>
             <button class="btn" type="submit">${I.plus}${tt('添加', 'Add')}</button><span class="hint">${tt('远程存储以后再支持', 'Remote storage comes later')}</span></form></div>
         <p class="hint">${tt('拿掉一个目录不会动磁盘上的任何东西；开在里面的会话会变成「未归入工作区」。', 'Taking a folder out touches nothing on disk; sessions opened in it are then in no workspace.')}</p>
@@ -522,7 +522,7 @@ function kDrawAll() {
 const kEvery = e => { const m = String(e).match(/^(daily|weekdays|hours) (.+)$/) || []; return m[1] === 'hours' ? tt(`每隔 ${m[2]} 小时`, `every ${m[2]} h`) : m[1] === 'weekdays' ? tt(`工作日 ${m[2]}`, `weekdays at ${m[2]}`) : tt(`每天 ${m[2]}`, `every day at ${m[2]}`); };
 function kBuildPlans() {
   const spaces = (S && S.spaces || []).filter(w => !w.archived), kinds = Object.keys((S && S.launch) || {}).filter(k => FULL[k]);
-  $('#view').innerHTML = `<div class="page narrow"><div class="h-title"><h2>${tt('定时', 'By the clock')}</h2><span class="sub">${tt('到点就开一条新会话去做一件事。做完歇十分钟，它的终端会停掉；会话留着，随时能看、能继续。', 'When its time comes, a new session is started to do one thing. Ten minutes after it comes to rest its terminal is stopped; the session stays, to read and to go on with.')}</span></div>
+  $('#view').innerHTML = `<div class="page narrow"><div class="h-title"><h2>${tt('定时', 'By the clock')}</h2><span class="sub">${tt('到点就开一条新会话去做一件事。做完后空闲半小时，它的终端会自动停掉；会话留着，随时能看、能继续。你在里面说过话、或者把它置顶了，就不会自动停。', 'When its time comes, a new session is started to do one thing. Half an hour after it comes to rest its terminal is stopped; the session stays, to read and to go on with. One you have spoken in, or pinned, is not stopped.')}</span></div>
     <form class="pl-new" id="plNew" autocomplete="off"><input class="field" id="plTitle" aria-label="${tt('名字', 'Name')}" placeholder="${tt('名字，比如：每天早上看一眼构建', 'A name: Look at the build every morning, say')}">
       <textarea class="area" id="plPrompt" rows="3" aria-label="${tt('到点时交给它的话', 'What it is told when the time comes')}" placeholder="${tt('到点时交给它的话', 'What it is told when the time comes')}"></textarea>
       <div class="row"><select class="sel" id="plWhere" aria-label="${tt('在哪个目录做', 'In which folder')}">${spaces.flatMap(w => w.places.map(p => `<option value="${esc(w.id)}|${esc(p.path)}">${esc(w.name)} · ${esc(p.show)}</option>`)).join('') || `<option value="">${tt('先建一个工作区', 'Make a workspace first')}</option>`}</select>
@@ -547,7 +547,7 @@ function kDrawPlans() {
         <small>${p.live && p.next ? tt('下一次：', 'Next: ') + esc(kDay(p.next)) : tt('已关掉', 'Switched off')}${p.runs.length ? tt('；做过的：', '; runs: ') + p.runs.slice(0, 5).map(r => kOf(r.kept) ? `<a class="lnk" href="#/k/${encodeURIComponent(r.kept)}">${esc(kDay(r.at))}</a>` : esc(kDay(r.at))).join(tt('、', ', ')) : ''}</small></div>
       <label class="check"><input type="checkbox" data-plon="${esc(p.id)}" ${p.live ? 'checked' : ''}> ${tt('开着', 'On')}</label>
       <button class="btn" data-plrun="${esc(p.id)}">${KI.play}${tt('现在做一次', 'Run now')}</button>
-      <button class="ks-ib" data-pldel="${esc(p.id)}" title="${tt('删除', 'Delete')}" aria-label="${tt(`删除「${p.title}」`, `Delete “${p.title}”`)}">${KI.x}</button></div>`).join('')}</div>`
+      <button class="ks-ib" data-pldel="${esc(p.id)}" title="${tt('删除', 'Delete')}" aria-label="${esc(tt(`删除「${p.title}」`, `Delete “${p.title}”`))}">${KI.x}</button></div>`).join('')}</div>`
       : `<div class="calm">${KI.clock}${tt('还没有定时的事。', 'Nothing is set by the clock yet.')}</div>`;
   });
 }
@@ -736,7 +736,11 @@ document.addEventListener('click', async e => {
   if (q('[data-kmerge]')) {
     const k = cur(), d = KV.diff.data || {};
     if (!k || !confirm(tt(`把分支 ${d.branch} 合进 ${d.main}（只做快进合并），然后清掉这条会话的 worktree 和分支？`, `Merge branch ${d.branch} into ${d.main} (fast-forward only), then clear this session’s worktree and branch away?`))) return;
-    await kDo('kept', { id: k.id, do: 'merge' });
+    let j = await kDo('kept', { id: k.id, do: 'merge' });
+    if (!j.ok && j.ask === 'ignored') {  // (files git ignores would go with the folder: only on the person's word)
+      const names = j.files.join('\n') + (j.more ? tt(`\n……还有 ${j.more} 个`, `\n… and ${j.more} more`) : '');
+      if (confirm(tt(`这个 worktree 里还有 git 不管的文件，目录清掉后它们就没了：\n\n${names}\n\n确定合并并清掉？`, `This worktree still holds files git ignores; they go with the folder:\n\n${names}\n\nMerge and clear it away all the same?`))) j = await kDo('kept', { id: k.id, do: 'merge', drop: true });
+    }
     kDiffLoad(k, true);
     return;
   }

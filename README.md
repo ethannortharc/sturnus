@@ -113,6 +113,35 @@ A session belongs to the workspace and project of the folder it was started in, 
 
 Single-key shortcuts apply when you are not typing. Double-click a session in the side column to open its browser terminal.
 
+## Sessions that last, in workspaces of your own
+
+From 0.23 a session in Sturnus is yours, not a process's: one thing you are getting done with an agent. It outlasts the
+terminal it runs in and the agent's own conversation.
+
+- **A session keeps going.** Close its tab, restart the machine: it stays in the sidebar, stopped, with its whole
+  conversation. **Go on** opens a new terminal and resumes the agent's own conversation (`claude --resume`,
+  `codex resume`). Its page shows the conversation in one piece, with a line where the terminal changed, and lists the
+  terminals it has run in and why each ended. Sessions the last restart ended are offered once, to go on together.
+- **Any agent started anywhere is a session.** One you start by hand in a terminal is picked up the same way, and
+  conversations already on disk are listed as stopped sessions you can take up again.
+- **Workspaces are yours.** A workspace is a name and the folders it covers. A session belongs to the workspace whose
+  folder it was opened in; the sidebar groups by workspace, or shows one list. The workspaces Sturnus used to find by
+  itself are carried over once.
+- **A terminal is only where a session runs.** New terminals open as a tab in the workspace's Zellij group, a window in
+  its tmux group, or a tmux session of its own (Settings → Terminals; change it at any time, nothing is moved).
+  `sturnus ls` lists the sessions; `sturnus open NUMBER|TITLE` takes the terminal you are in to that session, and gives a
+  stopped one a new terminal first.
+- **Another agent can take a session on.** Stop it, pick the other agent, and Sturnus writes a handover (what the
+  session is for, what was settled, the last words, a file with everything said) that you can change before it is sent.
+  The other agent's context is not moved: the note and the file are how it picks up.
+- **A worktree of its own.** A new session can get a branch and folder under the repository's `.claude/worktrees/`;
+  its page shows what it changed against main, and merges it back (fast-forward only) and clears it away when done.
+- **By the clock.** Something set for every day, weekdays, or every few hours starts a new session each time.
+- **Archiving is by hand**, as in Codex and Claude Desktop: nothing is archived by time. Archiving a running session
+  stops it; only an archived one can be deleted (the agents' own conversation files are never touched).
+
+Sturnus still never owns an agent: each runs as its own CLI in a terminal, and you can always work there directly.
+
 ## Tasks that outlast the sessions
 
 A session is temporary; what it was working toward is not. Each project and workspace keeps a list of tasks, as lists and cards on the **Tasks** page, on the project's page and on the workspace dashboard. Each says where it stands, where to pick it up, what was settled, what came out of it, and which sessions worked on it. A task shows as under way while a session works on it, and as ready to pick up once that session ends.

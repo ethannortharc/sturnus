@@ -213,6 +213,7 @@ class Sessions(unittest.TestCase):
         os.makedirs(repo)
         git = lambda *a, cwd=repo: subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@t', *a], cwd=cwd, capture_output=True, text=True, env=self.env)
         git('init', '-q', '-b', 'main')
+        open(f'{repo}/.gitignore', 'w').write('.env\n')
         open(f'{repo}/a.txt', 'w').write('one\n')
         git('add', '.'), git('commit', '-q', '-m', 'first')
         self.assertFalse(self.call('/api/new', {'kind': 'claude', 'cwd': f'{self.dir}/elsewhere', 'worktree': True})['ok'])  # (no repository there)
@@ -225,6 +226,7 @@ class Sessions(unittest.TestCase):
         self.assertEqual(git('status', '--porcelain').stdout, '')  # (the worktrees folder is out of the repository's own view)
         open(f'{work}/b.txt', 'w').write('two\nthree\n')
         open(f'{work}/a.txt', 'a').write('more\n')
+        open(f'{work}/.env', 'w').write('KEY=1\n')  # (a file git ignores: it would go with the folder)
         d = self.call(f'/api/diff?kept={kid}')
         self.assertEqual((d['branch'], d['main'], d['own'], [(f['path'], f['add'], f['state']) for f in d['files']]), ('add-b-file', 'main', True, [('a.txt', 1, 'changed'), ('b.txt', 0, 'new')]))
         self.assertIn('+more', self.call(f'/api/diff?kept={kid}&file=a.txt')['diff'])
@@ -235,8 +237,22 @@ class Sessions(unittest.TestCase):
         self.until(lambda: (lambda k: k and not k['live'])(self.kept(kid)), 'it did not stop')
         self.assertFalse(self.call('/api/kept', {'id': kid, 'do': 'merge'})['ok'])  # (changes not committed)
         git('add', '.', cwd=work), git('commit', '-q', '-m', 'b', cwd=work)
+        # another agent at work in its worktree: the folder is not taken from under it
+        self.assertEqual(self.tmux('new-session', '-d', '-s', 'guest', '-c', work, sys.executable, AGENT, 'guest').returncode, 0)
+        guest = self.until(lambda: next((k for k in self.call('/api/state').get('kept') or [] if k['folder'] == work and k['live'] and k['id'] != kid), None), 'the guest did not become a session')
         j = self.call('/api/kept', {'id': kid, 'do': 'merge'})
+        self.assertEqual((j['ok'], os.path.exists(work), os.path.exists(f'{repo}/b.txt')), (False, True, False), j)
+        self.assertFalse(self.call(f'/api/diff?kept={guest["id"]}')['own'])  # (a worktree it only works in is not its to merge:
+        self.assertFalse(self.call('/api/kept', {'id': guest['id'], 'do': 'merge'})['ok'])  # running or not)
+        self.tmux('kill-session', '-t', 'guest')
+        self.until(lambda: (lambda k: k and not k['live'])(self.kept(guest['id'])), 'the guest did not end')
+        self.assertFalse(self.call('/api/kept', {'id': guest['id'], 'do': 'merge'})['ok'])
+        # files git ignores are in it: nothing is done until the person says so
+        j = self.call('/api/kept', {'id': kid, 'do': 'merge'})
+        self.assertEqual((j['ok'], j.get('ask'), j.get('files'), os.path.exists(f'{work}/.env'), os.path.exists(f'{repo}/b.txt')), (False, 'ignored', ['.env'], True, False), j)
+        j = self.call('/api/kept', {'id': kid, 'do': 'merge', 'drop': True})
         self.assertTrue(j['ok'], j)
+        self.assertFalse(self.call('/api/kept', {'id': kid, 'do': 'merge'})['ok'])  # (merged and gone: not its any more)
         self.assertEqual((open(f'{repo}/b.txt').read(), os.path.exists(work), git('branch', '--list', 'add-b-file').stdout), ('two\nthree\n', False, ''))
 
     def test_an_agent_started_by_hand_is_a_session_too(self):
@@ -247,6 +263,16 @@ class Sessions(unittest.TestCase):
         self.assertEqual((k['space'], k['term']['grp'], k['nsegs']), (None, 'tmux:hand', 1))
         self.assertEqual(self.call(f'/api/kept?id={k["id"]}')['kept']['segs'][0]['how'], 'found')
         self.assertIn('done: by hand', self.said(k['id']))
+        # one started by hand in a terminal that carries a session's words (that session's agent opened the terminal): a session of its own
+        j = self.call('/api/new', {'kind': 'claude', 'cwd': f'{self.dir}/proj', 'prompt': 'mine', 'title': 'Mine'})
+        self.assertTrue(j['ok'], j)
+        mine = j['kept']
+        self.until(lambda: (lambda m: m and m['live'] and not m['live'].startswith('new:'))(self.kept(mine)), 'the session did not start')
+        r = self.tmux('new-session', '-d', '-s', 'leak', '-c', there, 'env', f'STURNUS_SESSION={mine}', f'STURNUS_NEW={j["marker"]}', sys.executable, AGENT, 'leaked')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        other = self.until(lambda: next((x for x in self.call('/api/state').get('kept') or [] if x['live'] and (x['term'] or {}).get('grp') == 'tmux:leak'), None), 'the one that inherited a session’s words did not show')
+        self.assertNotIn(other['id'], (mine, k['id']))
+        self.assertEqual((len(self.call(f'/api/kept?id={mine}')['kept']['segs']), self.kept(mine)['live'] != other['live']), (1, True))
 
 
 if __name__ == '__main__':

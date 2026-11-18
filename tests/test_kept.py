@@ -147,9 +147,10 @@ class Binding(unittest.TestCase):
         b = book()
         kid = b.add(title='Write the notes', folder='/r/sturnus', kind='codex')
         self.assertEqual((b.get(kid)['titled'], b.get(kid)['state']), (1, 'stopped'))
-        window = row(id='codex-window:77', kind='codex', session=None, pid=None, window_pid=77, want=kid, transcript=None)
+        b.start('m1', kid)
+        window = row(id='codex-window:77', kind='codex', session=None, pid=None, window_pid=77, want=kid, mark='m1', transcript=None)
         self.assertEqual(b.bind([window], now=200), {'codex-window:77': kid})  # (no conversation yet: known by what it was started for)
-        got = b.bind([row(id='codex:t1', kind='codex', session='t1', pid=None, window_pid=77, want=kid, title='Something else')], now=230)
+        got = b.bind([row(id='codex:t1', kind='codex', session='t1', pid=None, window_pid=77, want=kid, mark='m1', title='Something else')], now=230)
         k = b.get(kid)
         self.assertEqual((got, [(s['conv'], s['how']) for s in k['segs']], len(k['terms']), k['title']), ({'codex:t1': kid}, [('t1', 'new')], 1, 'Write the notes'))
 
@@ -158,7 +159,8 @@ class Binding(unittest.TestCase):
         kid = b.bind([row()], now=200)['claude:c1']
         b.bind([], now=300)
         b.bind([], now=330)
-        got = b.bind([row(id='codex:t9', kind='codex', session='t9', pid=None, window_pid=88, want=kid)], now=400)
+        b.start('m2', kid)
+        got = b.bind([row(id='codex:t9', kind='codex', session='t9', pid=None, window_pid=88, want=kid, mark='m2')], now=400)
         k = b.get(kid)
         self.assertEqual((got['codex:t9'], k['kind'], [(s['kind'], s['how']) for s in k['segs']]), (kid, 'codex', [('claude', 'found'), ('codex', 'handover')]))
 
@@ -166,7 +168,45 @@ class Binding(unittest.TestCase):
         b = book()
         a = b.bind([row()], now=200)['claude:c1']
         other = b.add(title='Other', folder='/r/x', kind='claude')
-        self.assertEqual(b.bind([row(want=other)], now=210)['claude:c1'], a)
+        b.start('m3', other)
+        self.assertEqual(b.bind([row(want=other, mark='m3')], now=210)['claude:c1'], a)
+
+    def test_what_a_session_s_process_starts_is_not_that_session(self):
+        b = book()
+        kid = b.add(title='Mine', folder='/r/sturnus', kind='claude')
+        b.start('m1', kid)
+        mine = row(pid=500, want=kid, mark='m1')
+        self.assertEqual(b.bind([mine], now=200), {'claude:c1': kid})
+        # (an agent started by hand in a terminal that inherited both words: a session of its own)
+        other = row(id='claude:c9', session='c9', pid=777, pid_at=150, name='by-hand', want=kid, mark='m1', loc={'mux': 'tmux', 'session': 'tmux:x', 'pane': '%9'})
+        got = b.bind([mine, other], now=210)
+        self.assertNotEqual(got['claude:c9'], kid)
+        b.bind([other], now=300)
+        b.bind([other], now=330)  # (and with the first one gone, still its own)
+        self.assertEqual(([s['conv'] for s in b.get(kid)['segs']], [s['conv'] for s in b.get(got['claude:c9'])['segs']]), (['c1'], ['c9']))
+        self.assertIsNone(b.bind([row(id='claude:w', session=None, pid=901, want=kid, mark='never-issued')], now=340).get('claude:w'))
+
+    def test_a_cleared_conversation_stays_with_the_session_its_terminal_shows(self):
+        b = book()
+        k1 = b.add(title='One', folder='/r/sturnus', kind='claude')
+        b.start('m1', k1)
+        b.bind([row(want=k1, mark='m1')], now=200)
+        k2 = b.bind([row(id='claude:c2', session='c2', pid=600, name='two', loc={'mux': 'zellij', 'session': 'work', 'pane': '5'})], now=210)['claude:c2']
+        b.bind([], now=300)
+        b.bind([], now=330)
+        # (the first one's process now shows the second one's conversation — /resume in its terminal — and is then cleared)
+        self.assertEqual(b.bind([row(id='claude:c2', session='c2', want=k1, mark='m1')], now=400)['claude:c2'], k2)
+        self.assertEqual(b.bind([row(id='claude:c3', session='c3', want=k1, mark='m1')], now=410)['claude:c3'], k2)
+
+    def test_a_place_not_found_for_a_pass_is_no_other_terminal(self):
+        b = book()
+        kid = b.bind([row()], now=200)['claude:c1']
+        for i, loc in enumerate((None, {'mux': 'zellij', 'session': 'work', 'pane': '3'}, None, {'mux': 'zellij', 'session': 'work', 'pane': '3'})):
+            b.bind([row(loc=loc)], now=210 + i)
+        self.assertEqual(len(b.get(kid)['terms']), 1)
+        late = b.bind([row(id='claude:c7', session='c7', pid=700, loc=None, origin='x')], now=300)['claude:c7']
+        b.bind([row(id='claude:c7', session='c7', pid=700, loc={'mux': 'tmux', 'session': 'tmux:g', 'pane': '%2', 'sock': '/s'})], now=302)
+        self.assertEqual([(t['mux'], t['pane'], t['ended']) for t in b.get(late)['terms']], [('tmux', '%2', None)])  # (found a pass later: the same terminal)
 
     def test_runs_others_started_and_ended_ones_are_no_sessions(self):
         b = book()
@@ -305,6 +345,9 @@ class Keeping(unittest.TestCase):
         self.assertEqual((a['old1']['space'], a['old1']['title'], a['old1']['state'], a['old1']['note'], a['old1']['at'], a['old1']['term']), (w, 'An old one', 'stopped', 'left here', 50, None))
         self.assertIsNone(a['old2']['space'])
         self.assertEqual(b.bind([row(id='claude:old1', session='old1')], now=300)['claude:old1'], a['old1']['id'])  # (resumed: it is that session)
+        b.set(a['old2']['id'], archived=True)
+        b.drop(a['old2']['id'])
+        self.assertEqual((b.learn(convs, now=1000), len(b.all())), (0, 1))  # (deleted by the person: not found on disk again)
 
     def test_what_was_said_is_kept_in_order_found_again_and_goes_with_the_session(self):
         b = book()

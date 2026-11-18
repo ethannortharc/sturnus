@@ -681,6 +681,29 @@ def codex_convs(known):
     return out
 
 
+PLAN_REST = float(os.environ.get('STURNUS_PLAN_REST') or 1800)  # (seconds a session the clock started rests before its terminal is stopped)
+
+
+def open_book():
+    """The record of the sessions that last. One that cannot be read as a database is set aside under another name (it is
+    not deleted) and a new one begun: the deck, and the phone's view with it, still come up. A record another process
+    holds for a moment is waited for."""
+    for i in range(4):
+        try:
+            return K.Book()
+        except sqlite3.OperationalError as e:
+            if i == 3 or 'locked' not in str(e):
+                raise
+            time.sleep(2)
+        except sqlite3.DatabaseError as e:
+            aside = f'{K.PATH}.broken-{time.strftime("%Y%m%d-%H%M%S")}'
+            os.replace(K.PATH, aside)
+            for x in ('-wal', '-shm'):
+                with contextlib.suppress(OSError):
+                    os.replace(K.PATH + x, aside + x)
+            print(f'sturnus: the record of sessions could not be read ({e}): set aside as {aside}, a new one begun', file=sys.stderr, flush=True)
+
+
 # ---------- a session's own worktree, and what it has changed ----------
 
 def repo_of(folder):
@@ -725,6 +748,19 @@ def worktree_add(folder, want):
     return True, path, branch
 
 
+def git_status(top, ignored=False):
+    """A checkout's status as [(two letters, path)]: '??' a file git does not know, '!!' one it ignores (with IGNORED)."""
+    out = run(['git', '-C', top, 'status', '--porcelain', '-z', *(['--ignored'] if ignored else [])], timeout=30)
+    rows, skip = [], False
+    for e in out.stdout.split('\0') if out.returncode == 0 else []:
+        if skip or len(e) < 4:
+            skip = False  # (a renamed file's old name follows it)
+            continue
+        rows.append((e[:2], e[3:]))
+        skip = e[0] in 'RC'
+    return rows
+
+
 def worktree_gone(path, branch, force=False):
     """A session's worktree and its branch taken away again: only a clean worktree, and a branch already merged (or one
     just made, with FORCE)."""
@@ -735,18 +771,24 @@ def worktree_gone(path, branch, force=False):
     run(['git', '-C', r[0], 'branch', '-D' if force else '-d', branch], timeout=30)
 
 
-def worktree_done(folder):
-    """A session's worktree merged into the main branch and taken away: only by a fast-forward, only from a clean
-    worktree, only while the main checkout is on the main branch. Returns (ok, words)."""
+def worktree_done(folder, made='', drop=False):
+    """A session's worktree merged into the main branch and taken away: the one sturnus made for it (FOLDER, on the
+    branch MADE for it), only by a fast-forward, only from a clean worktree, only while the main checkout is on the main
+    branch. Files in it that git ignores (.env, node_modules) would go with the folder: with any there, nothing is done
+    until the person has said so (DROP). Returns (ok, words), or (False, {'ask': 'ignored', 'files': […], 'more': n})."""
     r = repo_of(folder)
-    if not r or r[0] == r[1] or f'{os.sep}.claude{os.sep}worktrees{os.sep}' not in r[1] + os.sep:
+    if not r or r[0] == r[1] or r[1] != os.path.realpath(folder) or f'{os.sep}.claude{os.sep}worktrees{os.sep}' not in r[1] + os.sep:
         return False, tx('这条会话不在自己的 worktree 里', 'This session is not in a worktree of its own')
     root, top, _ = r
     main, branch = main_branch(root), git(top, 'symbolic-ref', '--short', '-q', 'HEAD') or ''
-    if not branch or branch == main:
-        return False, tx('它的 worktree 不在自己的分支上', 'Its worktree is not on a branch of its own')
-    if (git(top, 'status', '--porcelain') or '').strip():
+    if not branch or branch == main or (made and branch != made):
+        return False, tx(f'它的 worktree 不在给它开的分支{f"（{made}）" if made else ""}上，没有合并', f'Its worktree is not on the branch made for it{f" ({made})" if made else ""}: nothing merged')
+    st = git_status(top, ignored=True)
+    if any(x != '!!' for x, _ in st):
         return False, tx('它的 worktree 里还有没提交的改动：先让它提交（或者丢掉），再合并', 'Its worktree has changes not committed: have them committed (or dropped) first, then merge')
+    left = [f for x, f in st if x == '!!']
+    if left and not drop:
+        return False, {'ask': 'ignored', 'files': left[:12], 'more': max(0, len(left) - 12)}
     if (git(root, 'symbolic-ref', '--short', '-q', 'HEAD') or '') != main:
         return False, tx(f'主工作区不在 {main} 上，没有合并', f'The main checkout is not on {main}: nothing merged')
     ahead = len((git(root, 'rev-list', f'{main}..{branch}') or '').split())
@@ -783,8 +825,7 @@ def changes(folder, one=''):
     for l in (git(top, 'diff', '--numstat', base) or '').splitlines() if base else []:
         a, d, p = (l.split('\t') + ['', '', ''])[:3]
         files[p] = {'path': p, 'add': int(a) if a.isdigit() else 0, 'del': int(d) if d.isdigit() else 0, 'state': 'changed'}
-    for l in (git(top, 'status', '--porcelain') or '').splitlines():
-        st, p = l[:2], l[3:].strip('"')
+    for st, p in git_status(top):
         if st == '??':
             files.setdefault(p, {'path': p, 'add': 0, 'del': 0, 'state': 'new'})
         elif p in files:
@@ -828,6 +869,7 @@ def launch_session(book, cfg, kid, prompt='', group='', prefer='', taken=(), kin
     fits = lambda g: bool(g) and g.startswith('tmux:') == (way.mux == 'tmux')
     g = way.group(sp, k, next((x for x in (group, prefer, last and last['grp']) if fits(x)), None))
     tab = K.line(k['title'], 24) or name or f'{kind}·{os.path.basename(cwd) or "~"}'
+    book.start(marker, kid)  # (the first process seen with this mark is the session's; what that one starts is not)
     ok, made, loc = way.start(g, tab, cwd, env, agent_argv(cfg, kind, seg['conv'] if seg else '', name, prompt), marker)
     if not ok:
         return False, made
@@ -2215,7 +2257,7 @@ class Deck:
         self.names = {}  # (a session's id -> its name: a Claude session renamed takes its channel places along)
         self.born_at = {}  # (a session's id -> when it began: found once, so the column's order holds still)
         self.lock = threading.Lock()
-        self.book = K.Book()  # (the sessions that last, and their workspaces)
+        self.book = open_book()  # (the sessions that last, and their workspaces)
         self.kept, self.wants, self.items = {}, {}, {}  # (the sessions as the page lists them; (pid, when it started) -> the session it was started for; conversation file -> its items as last read)
         self.keep_lock = threading.Lock()  # (one reader of a conversation file at a time: what it reads goes after what is there)
         self.recovered = self.book.meta('recover')  # (the restart whose sessions the person has already been offered)
@@ -3518,10 +3560,10 @@ class Deck:
             if not K.bindable(s):
                 continue
             pid = s.get('window_pid') or (s.get('pid') if s['kind'] != 'codex' else None)
-            s['pid'], s['pid_at'] = pid, ((born.get(pid) or (A.proc(pid) or (0, 0, 0))[2] or 0) if pid else 0)
+            s['proc'], s['pid_at'] = pid, ((born.get(pid) or (A.proc(pid) or (0, 0, 0))[2] or 0) if pid else 0)
             if pid and (pid, s['pid_at']) not in self.wants:
-                self.wants[(pid, s['pid_at'])] = env_of(pid, 'STURNUS_SESSION') or ''
-            s['want'] = self.wants.get((pid, s['pid_at'])) or None
+                self.wants[(pid, s['pid_at'])] = (env_of(pid, 'STURNUS_SESSION') or '', env_of(pid, 'STURNUS_NEW') or '')
+            s['want'], s['mark'] = [x or None for x in self.wants.get((pid, s['pid_at'])) or ('', '')]
         if len(self.wants) > 3000:
             self.wants.clear()
         got = self.book.bind(sessions, now, boot_time(), lambda t: T.there(T.loc_of(t)))
@@ -3548,7 +3590,7 @@ class Deck:
             if l and not t and not l.get('starting'):
                 l = None  # (stopped a moment ago: what is still seen of it is on its way out)
             v = {f: k[f] for f in ('id', 'title', 'space', 'spaced', 'folder', 'kind', 'name', 'branch', 'made', 'at', 'pinned', 'archived', 'state', 'note', 'nsegs', 'nterms')}
-            v.update(live=l and l['id'], conv=(k.get('seg') or {}).get('conv'), show=tilde(k['folder']),
+            v.update(live=l and l['id'], conv=(k.get('seg') or {}).get('conv'), show=tilde(k['folder']), wt=k.get('wt') or '',
                      term=t and {x: t[x] for x in ('n', 'mux', 'grp', 'pane', 'origin', 'began')},
                      ended=None if t or not lt else {'at': lt['ended'], 'why': lt['why']})
             out.append(v)
@@ -3586,12 +3628,15 @@ class Deck:
 
     def keep_talk(self, only=None, room=8 << 20):
         """Each session's latest conversation, copied into the record as far as its file has grown (kept.py's said): at
-        most ROOM bytes of a file a pass. A long file first met is read from its last six megabytes on."""
-        left = 3 * room
+        most ROOM bytes of a file a pass. A long file first met is read from its last six megabytes on. The conversation
+        before the latest is read to its end too: its last words may not have been read when it was left."""
+        left, pairs = 3 * room, []
         for k in ([self.book.get(only)] if only else self.book.all()):
-            seg = k and (k['segs'][-1] if only and k['segs'] else k.get('seg'))
-            if not seg or left <= 0:
-                continue
+            if k:
+                pairs += [(k, seg) for seg in (k['segs'][-2:] if only else (k.get('prev'), k.get('seg'))) if seg]
+        for k, seg in pairs:
+            if left <= 0:
+                break
             path = seg['path'] if seg['path'] and os.path.exists(seg['path']) else transcript_of({'kind': seg['kind'], 'session': seg['conv']})
             if not path or path.endswith('/store.db'):
                 continue
@@ -3600,6 +3645,8 @@ class Deck:
                     size = os.path.getsize(path)
                     r = self.book.reading(path)
                     off, first = (r['off'], False) if r else (max(0, size - 6 * (1 << 20)), True)
+                    if size < off:  # (the file was cut short or written anew: on from its end as it is, not from the middle of a line later)
+                        self.book.say(k['id'], seg['n'], path, size, [])
                     if size <= off:
                         continue
                     with open(path, 'rb') as f:
@@ -3758,7 +3805,10 @@ class Deck:
         pid = s.get('window_pid') or (s.get('pid') if s['kind'] != 'codex' else None)
         if not pid:
             return False
-        for p in [pid] + [p for p in A.pids() if any(a == pid for a, _ in A.ancestors(p)[1:])]:
+        at = (A.proc(pid) or (0, 0, 0))[2]
+        if at and s.get('pid_at') and abs(at - s['pid_at']) > 2:
+            return False  # (that number is another process's by now: not this session's to end)
+        for p in ([pid] + [p for p in A.pids() if any(a == pid for a, _ in A.ancestors(p)[1:])]) if at else []:
             with contextlib.suppress(OSError):
                 os.kill(p, signal.SIGTERM)
         if kid:
@@ -3792,8 +3842,21 @@ class Deck:
                 if s:
                     return False, tx('它还在跑：先停止，再合并', 'It is still running: stop it first, then merge')
                 k = self.book.get(kid)
-                ok, words = worktree_done(k['work'] or k['folder'])
-                self.projects.places.clear()
+                if not k['wt'] or not os.path.isdir(k['wt']):
+                    return False, tx('这条会话没有 Sturnus 给它开的 worktree', 'This session has no worktree that Sturnus made for it')
+                top = os.path.realpath(k['wt'])
+                inside = lambda f: bool(f) and (os.path.realpath(f) + os.sep).startswith(top + os.sep)
+                with self.lock:
+                    rows = list(self.everyone)
+                other = next((x for x in rows if x.get('kept') != kid and x['state'] not in ('gone', 'ended') and any(inside(x.get(f)) for f in ('cwd', 'home', 'work'))), None)
+                if other:
+                    who = other.get('title') or other.get('name') or other['id']
+                    return False, tx(f'「{who}」还在这个 worktree 里跑：先停掉它，再合并', f'“{who}” is still running in this worktree: stop it first, then merge')
+                ok, words = worktree_done(top, k['wt_branch'], drop=bool(b.get('drop')))
+                if ok:
+                    self.book.set(kid, wt='')
+                    self.projects.places.clear()
+                    self.kept_refresh()
                 return ok, words
             else:
                 return False, tx(f'不认识的操作 {do}', f'Unknown action {do}')
@@ -3882,9 +3945,14 @@ class Deck:
 
     def plan_run(self, p, due=True):
         """One run of something set by the clock: a new session with what it says, in its folder."""
-        ok, r = self.new_session({'kind': p['kind'], 'cwd': p['folder'], 'prompt': p['prompt'], 'space': p['space'] or '',
-                                  'title': f'{p["title"]} · {time.strftime("%m-%d %H:%M")}'})
-        self.book.plan_ran(p['id'], r.get('kept') if ok and isinstance(r, dict) else None, due=due)
+        ok, r = False, ''
+        try:
+            ok, r = self.new_session({'kind': p['kind'], 'cwd': p['folder'], 'prompt': p['prompt'], 'space': p['space'] or '',
+                                      'title': f'{p["title"]} · {time.strftime("%m-%d %H:%M")}'})
+        except Exception as e:
+            r = repr(e)
+        finally:  # (run or not, its next time is set: one that fails is not tried again every half minute)
+            self.book.plan_ran(p['id'], r.get('kept') if ok and isinstance(r, dict) else None, due=due)
         if not ok:
             self.note(tx(f'定时的「{p["title"]}」没开起来：{r}', f'“{p["title"]}”, set by the clock, could not be started: {r}'), False)
         with self.lock:
@@ -3893,18 +3961,24 @@ class Deck:
 
     def plan_loop(self):
         """What is set by the clock is started when its time comes (one that came due while the deck was down: once, late).
-        A session the clock started is stopped once it has rested ten minutes: it is still there to read and go on with."""
+        A session the clock started is stopped once it has rested half an hour (PLAN_REST), while nobody but the clock
+        has said anything in it: it is still there to read and go on with. One the person has spoken in, or pinned, is
+        theirs to stop."""
         time.sleep(20)
         while True:
             try:
                 now = time.time()
                 for p in self.book.plans():
                     if p['live'] and p['next'] and p['next'] <= now:
-                        self.plan_run(p)
+                        try:
+                            self.plan_run(p)
+                        except Exception as e:  # (one that fails does not hold the others up)
+                            self.note(tx(f'定时的「{p["title"]}」出错：{e!r}', f'“{p["title"]}”, set by the clock, failed: {e!r}'), False)
                 mine = self.book.plan_kept(now - 3 * 86400)
                 for s in self.everyone if mine else []:
                     k = self.kept.get(s.get('kept')) if s.get('kept') in mine else None
-                    if k and not k['pinned'] and k['live'] == s['id'] and s['state'] == 'idle' and not s.get('starting') and now - (s.get('since') or now) > 600:
+                    if (k and not k['pinned'] and k['live'] == s['id'] and s['state'] == 'idle' and not s.get('starting') and now - (s.get('since') or now) > PLAN_REST
+                            and self.book.asks(k['id']) <= 1):
                         self.stop(s, k['id'])
             except Exception as e:
                 self.note(tx(f'定时任务出错：{e!r}', f'The clock failed: {e!r}'), False)
@@ -3916,7 +3990,7 @@ class Deck:
         while True:
             try:
                 with self.book.read() as c:
-                    known = {(r['kind'], r['conv']) for r in c.execute('SELECT kind, conv FROM segs')}
+                    known = {(r['kind'], r['conv']) for r in c.execute('SELECT kind, conv FROM segs UNION SELECT kind, conv FROM dropped')}
                 self.book.learn(claude_convs(known) + codex_convs(known))
             except Exception as e:
                 self.note(tx(f'读磁盘上的旧对话出错：{e!r}', f'Reading the conversations on disk failed: {e!r}'), False)
@@ -3959,17 +4033,19 @@ class Deck:
             prompt = prompt or self.task_brief(task)
         if prompt and kind != 'shell':
             argv.append(prompt)
-        own = None
+        wt = None
         if b.get('worktree') and kind != 'shell':  # (a worktree and branch of its own, off the main branch)
             ok, where, branch = worktree_add(cwd, title or name)
             if not ok:
                 return False, where
             if not space and K.nearest(spaces, cwd):
                 space = K.nearest(spaces, cwd)  # (its workspace is the one of the folder it was asked for)
-            cwd, own = where, (where, branch)
+            cwd, wt = where, (where, branch)
         kid = None
         if kind != 'shell':
             kid = self.book.add(title=title, folder=cwd, kind=kind, space=space or None, name=name)
+            if wt:  # (the worktree made for it: the only one that is its to merge and clear away)
+                self.book.set(kid, wt=wt[0], wt_branch=wt[1])
             if title and not own:  # (called after its first ask for now: the summary's title takes over)
                 with self.book.tx() as c:
                     c.execute('UPDATE kept SET titled = 0 WHERE id = ?', (kid,))
@@ -3980,13 +4056,18 @@ class Deck:
         marker = os.urandom(6).hex()
         env = [f'STURNUS_NEW={marker}'] + ([f'STURNUS_SESSION={kid}'] if kid else []) + ([f'AMAIL_NAME={name}'] if name else [])
         tab = name or (kid and K.line(title, 24)) or f'{tx("终端", "shell") if kind == "shell" else kind}·{os.path.basename(cwd) or "~"}'
-        ok, made, loc = way.start(group, tab, cwd, env, argv, marker)
+        try:
+            if kid:
+                self.book.start(marker, kid)  # (the first process seen with this mark is the session's; what that one starts is not)
+            ok, made, loc = way.start(group, tab, cwd, env, argv, marker)
+        except Exception as e:
+            ok, made, loc = False, tx(f'终端没开起来：{e!r}', f'The terminal could not be opened: {e!r}'), None
         if not ok:
             if kid:  # (nothing was started for it: it never was)
                 self.book.set(kid, archived=True)
                 self.book.drop(kid)
-            if own:
-                worktree_gone(*own, force=True)
+            if wt:
+                worktree_gone(*wt, force=True)
             return False, made
         return self.started({**b, 'kept': kid}, kind, name, tab, f'tmux:{group}' if way.mux == 'tmux' else group, cwd, marker, made, loc)
 
@@ -5136,7 +5217,9 @@ class Handler(BaseHTTPRequestHandler):
             from urllib.parse import urlparse, parse_qs
             q = parse_qs(urlparse(self.path).query)
             k = DECK.book.get((q.get('kept') or [''])[0])
-            v = k and changes(k['work'] if k['work'] and os.path.isdir(k['work']) else k['folder'], (q.get('file') or [''])[0])
+            v = k and changes(k['wt'] if k['wt'] and os.path.isdir(k['wt']) else k['work'] if k['work'] and os.path.isdir(k['work']) else k['folder'], (q.get('file') or [''])[0])
+            if v and 'top' in v:  # (its to merge and clear away: only the worktree sturnus made for it)
+                v['own'] = bool(k['wt']) and os.path.realpath(k['wt']) == v['top']
             return self.send_json({'ok': bool(v), **(v or {'msg': tx('它的目录不在 git 仓库里', 'Its folder is in no git repository') if k else tx('找不到这条会话', 'Session not found')})})
         if self.path.startswith('/api/search'):  # (where something was said, in any session's conversations)
             from urllib.parse import urlparse, parse_qs

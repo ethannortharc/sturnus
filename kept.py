@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS places (space TEXT NOT NULL, path TEXT NOT NULL, host
 CREATE TABLE IF NOT EXISTS kept (id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', titled INTEGER NOT NULL DEFAULT 0,
     space TEXT, spaced INTEGER NOT NULL DEFAULT 0, folder TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT '',
     name TEXT NOT NULL DEFAULT '', branch TEXT NOT NULL DEFAULT '', work TEXT NOT NULL DEFAULT '', made REAL NOT NULL, at REAL NOT NULL,
-    pinned REAL, archived REAL, state TEXT NOT NULL DEFAULT 'stopped', note TEXT NOT NULL DEFAULT '');
+    pinned REAL, archived REAL, state TEXT NOT NULL DEFAULT 'stopped', note TEXT NOT NULL DEFAULT '',
+    wt TEXT NOT NULL DEFAULT '', wt_branch TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS segs (kept TEXT NOT NULL, n INTEGER NOT NULL, kind TEXT NOT NULL, conv TEXT NOT NULL, path TEXT NOT NULL DEFAULT '',
     began REAL NOT NULL, ended REAL, how TEXT NOT NULL DEFAULT '', PRIMARY KEY (kept, n));
 CREATE UNIQUE INDEX IF NOT EXISTS segs_conv ON segs (kind, conv);
@@ -46,7 +47,13 @@ CREATE TABLE IF NOT EXISTS reads (path TEXT PRIMARY KEY, off INTEGER NOT NULL, k
 CREATE TABLE IF NOT EXISTS plans (id TEXT PRIMARY KEY, title TEXT NOT NULL, prompt TEXT NOT NULL, kind TEXT NOT NULL, folder TEXT NOT NULL, space TEXT,
     every TEXT NOT NULL, live INTEGER NOT NULL DEFAULT 1, made REAL NOT NULL, last REAL, next REAL);
 CREATE TABLE IF NOT EXISTS plan_runs (plan TEXT NOT NULL, kept TEXT NOT NULL, at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS starts (mark TEXT PRIMARY KEY, kept TEXT NOT NULL, at REAL NOT NULL, pid INTEGER, pid_at REAL);
+CREATE TABLE IF NOT EXISTS dropped (kind TEXT NOT NULL, conv TEXT NOT NULL, at REAL NOT NULL, PRIMARY KEY (kind, conv));
 '''
+# starts: each terminal sturnus opens for a session carries a mark of its own (STURNUS_NEW) beside the session's id
+# (STURNUS_SESSION). Both are inherited by whatever that process starts, so the session's id alone proves nothing: it
+# counts only for the first process seen with the mark issued for it. dropped: the conversations of sessions the person
+# deleted, so the look through the disk does not bring them back.
 # said: what was said in a session, copied from the agents' own conversation files as they grow (reads: how far each file
 # has been read), so a session's words outlast those files, read the same whichever agent wrote them, and can be searched.
 WORDS = "CREATE VIRTUAL TABLE IF NOT EXISTS words USING fts5(text, kept UNINDEXED, seg UNINDEXED, n UNINDEXED, tokenize='trigram')"
@@ -117,6 +124,10 @@ class Book:
         os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
         with contextlib.closing(self._open()) as c:
             c.executescript(SCHEMA)
+            have = {r['name'] for r in c.execute('PRAGMA table_info(kept)')}
+            for col in ('wt', 'wt_branch'):  # (a record made before a session could have a worktree of its own)
+                if col not in have:
+                    c.execute(f"ALTER TABLE kept ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
             try:  # (searching by any three characters in a row: where this SQLite has it; else a plain look through)
                 c.execute(WORDS)
                 self.fts = True
@@ -248,6 +259,14 @@ class Book:
                       (kid, line(title, 120), int(bool(title)), sp, int(bool(space)), norm(folder), kind, name, at, at, 'stopped'))
         return kid
 
+    def start(self, mark, kid, now=None):
+        """A terminal is about to be opened for a session, with this mark: the first process seen carrying it is the
+        session's."""
+        now = now or time.time()
+        with self.tx() as c:
+            c.execute('DELETE FROM starts WHERE at < ?', (now - 30 * 86400,))
+            c.execute('INSERT OR REPLACE INTO starts (mark, kept, at) VALUES (?, ?, ?)', (mark, kid, now))
+
     @staticmethod
     def _full(c, kid):
         r = c.execute('SELECT * FROM kept WHERE id = ?', (kid,)).fetchone()
@@ -263,14 +282,14 @@ class Book:
             return self._full(c, kid)
 
     def all(self):
-        """Every session with what it runs on now: its latest conversation, its open terminal (if any), and how many of
-        each it has had. The newest first."""
+        """Every session with what it runs on now: its latest conversation (and the one before), its open terminal (if
+        any), and how many of each it has had. The newest first."""
         with self.read() as c:
-            out = {r['id']: {**dict(r), 'seg': None, 'term': None, 'nsegs': 0, 'nterms': 0} for r in c.execute('SELECT * FROM kept')}
+            out = {r['id']: {**dict(r), 'seg': None, 'prev': None, 'term': None, 'nsegs': 0, 'nterms': 0} for r in c.execute('SELECT * FROM kept')}
             for r in c.execute('SELECT * FROM segs ORDER BY n'):
                 k = out.get(r['kept'])
                 if k:
-                    k['seg'], k['nsegs'] = dict(r), k['nsegs'] + 1
+                    k['prev'], k['seg'], k['nsegs'] = k['seg'], dict(r), k['nsegs'] + 1
             for r in c.execute('SELECT * FROM terms ORDER BY n'):
                 k = out.get(r['kept'])
                 if k:
@@ -303,6 +322,8 @@ class Book:
                     c.execute('UPDATE kept SET pinned = NULL WHERE id = ?', (kid,))
             if 'kind' in f:
                 c.execute('UPDATE kept SET kind = ? WHERE id = ?', (f['kind'], kid))
+            if 'wt' in f:  # (the worktree sturnus made for it, and its branch; '' once it is merged and gone)
+                c.execute('UPDATE kept SET wt = ?, wt_branch = ? WHERE id = ?', (norm(f['wt']), f.get('wt_branch') or '', kid))
 
     def drop(self, kid):
         """A session deleted for good: only an archived one (the conversations' own files are the agents', and stay)."""
@@ -312,6 +333,7 @@ class Book:
                 raise No('session')
             if not k['archived']:
                 raise No('archive')
+            c.executemany('INSERT OR REPLACE INTO dropped (kind, conv, at) VALUES (?, ?, ?)', [(r['kind'], r['conv'], time.time()) for r in c.execute('SELECT kind, conv FROM segs WHERE kept = ?', (kid,))])
             for t in ('segs', 'terms', 'said', 'reads') + (('words',) if self.fts else ()):
                 c.execute(f'DELETE FROM {t} WHERE kept = ?', (kid,))
             c.execute('DELETE FROM kept WHERE id = ?', (kid,))
@@ -330,7 +352,7 @@ class Book:
         now, n = now or time.time(), 0
         with self.tx() as c:
             spaces = self._spaces(c)
-            have = {(r['kind'], r['conv']) for r in c.execute('SELECT kind, conv FROM segs')}
+            have = {(r['kind'], r['conv']) for r in c.execute('SELECT kind, conv FROM segs UNION SELECT kind, conv FROM dropped')}
             for v in convs:
                 if not v.get('conv') or v.get('kind') not in AGENTS or (v['kind'], v['conv']) in have or (v.get('at') or 0) > now - 600:
                     continue
@@ -345,9 +367,10 @@ class Book:
 
     def bind(self, live, now=None, boot=0, there=None):
         """The deck's rows, bound to the sessions here; returns {row id: session id}. A row is the session whose
-        conversation it shows; else the one it was started for (STURNUS_SESSION in its environment, the row's 'want');
-        else the one whose terminal the same process was a moment ago (it went on with a new conversation); else a new
-        session. Its terminal is noted when it moves into one, and closed when the row has been out of sight for a
+        conversation it shows; else the one whose terminal the same process is (it went on with a new conversation);
+        else the one it was started for (the row's 'want', its STURNUS_SESSION, when its 'mark', its STURNUS_NEW, is the
+        one issued for that session and no other process has shown up with it: both are inherited by what it starts);
+        else a new session. Its terminal is noted when it moves into one, and closed when the row has been out of sight for a
         while: why, by BOOT (when the machine started) and THERE (whether a terminal's pane still exists: True, False,
         or None when that cannot be told)."""
         now, out = now or time.time(), {}
@@ -357,18 +380,27 @@ class Book:
             nseg = {r['kept']: r['n'] for r in c.execute('SELECT kept, COUNT(*) n FROM segs GROUP BY kept')}
             opened = {r['kept']: dict(r) for r in c.execute('SELECT * FROM terms WHERE ended IS NULL')}
             by_pid = {(t['pid'], int(t['pid_at'] or 0)): k for k, t in opened.items() if t['pid']}
+            starts = {r['mark']: dict(r) for r in c.execute('SELECT * FROM starts')}
             spaces = self._spaces(c)
             seen = set()
             for s in live:
                 if not bindable(s):
                     continue
-                conv, pid = s.get('session') or '', s.get('window_pid') or s.get('pid')
+                # (its process: the one the deck names as showing one conversation at a time, 'proc'; a row without that word, its own)
+                conv, pid = s.get('session') or '', s['proc'] if 'proc' in s else s.get('window_pid') or s.get('pid')
                 pid_at = int(s.get('pid_at') or 0)
                 kid, how = by_conv.get((s['kind'], conv)) if conv else None, ''
-                if not kid and s.get('want') in kept:
-                    kid, how = s['want'], 'clear' if nseg.get(s['want']) and kept[s['want']]['kind'] == s['kind'] else 'handover' if nseg.get(s['want']) else 'new'
+                again = lambda k: 'clear' if nseg.get(k) and kept[k]['kind'] == s['kind'] else 'handover' if nseg.get(k) else 'new'
                 if not kid and pid and (pid, pid_at) in by_pid:
-                    kid, how = by_pid[(pid, pid_at)], 'clear'
+                    kid = by_pid[(pid, pid_at)]
+                    how = again(kid)
+                st = starts.get(s.get('mark') or '')
+                if not kid and st and st['kept'] == s.get('want') and st['kept'] in kept and pid and (st['pid'] is None or (st['pid'], int(st['pid_at'] or 0)) == (pid, pid_at)):
+                    kid = st['kept']
+                    how = again(kid)
+                    if st['pid'] is None:  # (this process is the one it was started as: no other is, from here on)
+                        c.execute('UPDATE starts SET pid = ?, pid_at = ? WHERE mark = ?', (pid, pid_at or None, st['mark']))
+                        st['pid'], st['pid_at'] = pid, pid_at
                 if not kid:
                     if not conv:
                         continue  # (nothing to know it by yet: a window before its first word)
@@ -393,7 +425,14 @@ class Book:
                 # its terminal: the pane it is in now (or, in none, how it was started)
                 loc, t = s.get('loc') or {}, opened.get(kid)
                 here = (loc.get('mux') or '', loc.get('session') or '', str(loc.get('pane') or ''))
-                if t and ((t['mux'], t['grp'], t['pane']) != here or (pid and t['pid'] and (t['pid'], int(t['pid_at'] or 0)) != (pid, pid_at))):
+                same = bool(t) and not (pid and t['pid'] and (t['pid'], int(t['pid_at'] or 0)) != (pid, pid_at))
+                if t and same and (t['mux'], t['grp'], t['pane']) != here:
+                    if not here[0]:  # (its place not found this pass: it is where it was)
+                        here = (t['mux'], t['grp'], t['pane'])
+                    elif not t['mux']:  # (its place found only now: the same terminal, known better)
+                        c.execute('UPDATE terms SET mux = ?, grp = ?, pane = ?, sock = ? WHERE kept = ? AND n = ?', (*here, loc.get('sock') or '', kid, t['n']))
+                        t = {**t, 'mux': here[0], 'grp': here[1], 'pane': here[2]}
+                if t and (not same or (t['mux'], t['grp'], t['pane']) != here):
                     c.execute('UPDATE terms SET ended = ?, why = ? WHERE kept = ? AND n = ?', (now, 'moved', kid, t['n']))
                     t = None
                 if not t:
@@ -457,6 +496,15 @@ class Book:
             r = c.execute('SELECT * FROM reads WHERE path = ?', (path,)).fetchone()
             return r and dict(r)
 
+    def asks(self, kid):
+        """How many times a person (or what started it) has spoken in a session, as far as its conversations are copied."""
+        with self.read() as c:
+            return c.execute("SELECT COUNT(*) n FROM said WHERE kept = ? AND who = 'user'", (kid,)).fetchone()['n']
+
+    def readings(self):
+        with self.read() as c:
+            return {r['path']: dict(r) for r in c.execute('SELECT * FROM reads')}
+
     def say(self, kid, seg, path, off, items, clipped=False):
         """More of a conversation, read up to OFF of its file: items [{who, text, at}] go after what the record has."""
         with self.tx() as c:
@@ -469,7 +517,7 @@ class Book:
                 c.execute('INSERT INTO said (kept, seg, n, who, text, at) VALUES (?, ?, ?, ?, ?, ?)', (kid, seg, n, it.get('who') or '', text, it.get('at')))
                 if self.fts and it.get('who') in ('user', 'assistant'):
                     c.execute('INSERT INTO words (text, kept, seg, n) VALUES (?, ?, ?, ?)', (text, kid, seg, n))
-            c.execute('INSERT INTO reads (path, off, kept, seg, clipped) VALUES (?, ?, ?, ?, ?) ON CONFLICT (path) DO UPDATE SET off = excluded.off', (path, off, kid, seg, int(clipped)))
+            c.execute('INSERT INTO reads (path, off, kept, seg, clipped) VALUES (?, ?, ?, ?, ?) ON CONFLICT (path) DO UPDATE SET off = excluded.off, kept = excluded.kept, seg = excluded.seg', (path, off, kid, seg, int(clipped)))
 
     def said(self, kid, limit=200, talk=False):
         """The last of what was said in a session, across its conversations, oldest first: [{who, text, at, seg, kind}];
