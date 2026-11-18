@@ -74,10 +74,15 @@ class Sessions(unittest.TestCase):
         cls.log.close()
         r = subprocess.run(['tmux', 'display-message', '-p', '#{pid}'], env=cls.env, capture_output=True, text=True)  # (this folder's own server)
         if r.returncode == 0 and r.stdout.strip().isdigit():
+            pid = int(r.stdout.strip())
             try:
-                os.kill(int(r.stdout.strip()), signal.SIGTERM)
+                os.kill(pid, signal.SIGTERM)
+                for _ in range(40):  # (gone, and what ran in it with it, before the folder is: an agent on its way out still writes there)
+                    os.kill(pid, 0)
+                    time.sleep(.1)
             except OSError:
                 pass
+            time.sleep(1)
         shutil.rmtree(cls.dir, ignore_errors=True)
 
     def call(self, path, body=None):
