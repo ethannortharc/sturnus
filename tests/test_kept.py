@@ -1,0 +1,270 @@
+"""The sessions that last and their workspaces (kept.py): what the deck's rows are bound to, pass after pass.
+
+    python3 -m unittest discover -s tests
+
+Everything runs on a temporary file; no deck, no terminal."""
+import importlib.machinery
+import importlib.util
+import os
+import tempfile
+import unittest
+
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TMP = os.path.realpath(tempfile.mkdtemp(prefix='sturnus-kept-'))
+
+
+def load(name):
+    loader = importlib.machinery.SourceFileLoader(name.split('.')[0], os.path.join(HERE, name))
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+    loader.exec_module(module)
+    return module
+
+
+K = load('kept.py')
+N = [0]
+
+
+def book():
+    N[0] += 1
+    return K.Book(os.path.join(TMP, f'b{N[0]}.db'))
+
+
+def row(**kw):
+    """A row as the deck collects it: a Claude session idle in pane 3 of group work."""
+    s = {'id': 'claude:c1', 'kind': 'claude', 'session': 'c1', 'name': 'work-1', 'state': 'idle', 'at': 100, 'since': 90, 'born': 80,
+         'home': '/r/sturnus', 'cwd': '/r/sturnus', 'loc': {'mux': 'zellij', 'session': 'work', 'pane': '3'}, 'pid': 500, 'pid_at': 70,
+         'transcript': '/t/c1.jsonl', 'title': '', 'summary': ''}
+    s.update(kw)
+    return s
+
+
+class Workspaces(unittest.TestCase):
+    def test_a_workspace_has_a_name_and_folders_and_the_first_is_its_default(self):
+        b = book()
+        w = b.space_add('Sturnus', ['/r/sturnus', '/r/sturnus-ios'])
+        sp = b.spaces()[0]
+        self.assertEqual((sp['id'], sp['name'], [(p['path'], p['main']) for p in sp['places']]), (w, 'Sturnus', [('/r/sturnus', True), ('/r/sturnus-ios', False)]))
+        b.place_main(w, '/r/sturnus-ios')
+        self.assertEqual([p['path'] for p in b.spaces()[0]['places'] if p['main']], ['/r/sturnus-ios'])
+
+    def test_a_folder_is_in_one_workspace_only(self):
+        b = book()
+        b.space_add('A', ['/r/a'])
+        with self.assertRaises(ValueError):
+            b.space_add('B', ['/r/a'])
+        w = b.space_add('B', ['/r/b'])
+        with self.assertRaises(ValueError):
+            b.place_add(w, '/r/a')
+        with self.assertRaises(ValueError):
+            b.space_add('', ['/r/c'])
+
+    def test_the_nearest_folder_above_decides(self):
+        b = book()
+        wide, near = b.space_add('software', ['/r']), b.space_add('Sturnus', ['/r/sturnus'])
+        sp = b.spaces()
+        self.assertEqual(K.nearest(sp, '/r/sturnus/web'), near)
+        self.assertEqual(K.nearest(sp, '/r/sturnus'), near)
+        self.assertEqual(K.nearest(sp, '/r/sturnus-ios'), wide)  # (a name that only starts the same is another folder)
+        self.assertIsNone(K.nearest(sp, '/elsewhere'))
+
+    def test_the_default_folder_gone_the_oldest_left_is_it(self):
+        b = book()
+        w = b.space_add('S', ['/r/a', '/r/b'])
+        b.place_drop(w, '/r/a')
+        self.assertEqual([(p['path'], p['main']) for p in b.spaces()[0]['places']], [('/r/b', True)])
+
+
+class Binding(unittest.TestCase):
+    def test_a_row_first_seen_becomes_a_session_with_its_conversation_and_terminal(self):
+        b = book()
+        w = b.space_add('Sturnus', ['/r/sturnus'])
+        got = b.bind([row(title='Make sessions last')], now=200)
+        k = b.get(got['claude:c1'])
+        self.assertEqual((k['space'], k['folder'], k['kind'], k['name'], k['state'], k['title']), (w, '/r/sturnus', 'claude', 'work-1', 'idle', 'Make sessions last'))
+        self.assertEqual([(s['kind'], s['conv'], s['how'], s['ended']) for s in k['segs']], [('claude', 'c1', 'found', None)])
+        self.assertEqual([(t['mux'], t['grp'], t['pane'], t['pid'], t['ended']) for t in k['terms']], [('zellij', 'work', '3', 500, None)])
+        self.assertEqual(b.bind([row()], now=202), got)  # (the next pass: the same session, nothing new)
+        k = b.get(got['claude:c1'])
+        self.assertEqual((len(k['segs']), len(k['terms'])), (1, 1))
+
+    def test_out_of_sight_for_a_moment_is_not_an_end_but_for_long_is(self):
+        b = book()
+        kid = b.bind([row()], now=200)['claude:c1']
+        b.bind([], now=205)
+        self.assertIsNone(b.get(kid)['terms'][0]['ended'])
+        self.assertEqual(b.get(kid)['state'], 'idle')
+        b.bind([row()], now=210)  # (back: the count starts again)
+        b.bind([], now=215)
+        b.bind([], now=230)
+        self.assertIsNone(b.get(kid)['terms'][0]['ended'])
+        b.bind([], now=240, there=lambda t: False)
+        k = b.get(kid)
+        self.assertEqual((k['terms'][0]['ended'], k['terms'][0]['why'], k['state']), (215, 'closed', 'stopped'))
+
+    def test_why_a_terminal_ended(self):
+        for there, boot, why in ((lambda t: True, 0, 'exited'), (lambda t: False, 0, 'closed'), (None, 0, 'ended'), (lambda t: True, 250, 'restart')):
+            b = book()
+            kid = b.bind([row()], now=200)['claude:c1']
+            b.bind([], now=300, boot=boot, there=there)
+            b.bind([], now=330, boot=boot, there=there)
+            self.assertEqual(b.get(kid)['terms'][0]['why'], why)
+
+    def test_a_restart_ends_it_at_its_last_stir_at_once(self):
+        b = book()
+        kid = b.bind([row(at=180)], now=200)['claude:c1']
+        b.bind([], now=900, boot=600)
+        t = b.get(kid)['terms'][0]
+        self.assertEqual((t['ended'], t['why']), (200, 'restart'))
+
+    def test_resumed_in_another_terminal_is_the_same_session_with_a_second_terminal(self):
+        b = book()
+        kid = b.bind([row()], now=200)['claude:c1']
+        b.bind([], now=300, there=lambda t: False)
+        b.bind([], now=330, there=lambda t: False)
+        again = row(loc={'mux': 'tmux', 'session': 'tmux:st', 'pane': '%4', 'sock': '/s'}, pid=900, pid_at=400)
+        self.assertEqual(b.bind([again], now=500)['claude:c1'], kid)
+        k = b.get(kid)
+        self.assertEqual([(t['mux'], t['pane'], t['why']) for t in k['terms']], [('zellij', '3', 'closed'), ('tmux', '%4', '')])
+        self.assertEqual((len(k['segs']), k['state']), (1, 'idle'))
+
+    def test_a_cleared_conversation_in_the_same_process_stays_the_session(self):
+        b = book()
+        kid = b.bind([row()], now=200)['claude:c1']
+        got = b.bind([row(id='claude:c2', session='c2', transcript='/t/c2.jsonl')], now=260)
+        self.assertEqual(got, {'claude:c2': kid})
+        k = b.get(kid)
+        self.assertEqual([(s['conv'], s['how'], s['ended']) for s in k['segs']], [('c1', 'found', 260), ('c2', 'clear', None)])
+        self.assertEqual(len(k['terms']), 1)
+
+    def test_another_process_with_another_conversation_is_another_session(self):
+        b = book()
+        a = b.bind([row()], now=200)['claude:c1']
+        got = b.bind([row(), row(id='claude:c2', session='c2', pid=501, name='work-2', loc={'mux': 'zellij', 'session': 'work', 'pane': '4'})], now=210)
+        self.assertNotEqual(got['claude:c2'], a)
+        self.assertEqual(len(b.all()), 2)
+
+    def test_started_for_a_session_it_is_that_session(self):
+        b = book()
+        kid = b.add(title='Write the notes', folder='/r/sturnus', kind='codex')
+        self.assertEqual((b.get(kid)['titled'], b.get(kid)['state']), (1, 'stopped'))
+        window = row(id='codex-window:77', kind='codex', session=None, pid=None, window_pid=77, want=kid, transcript=None)
+        self.assertEqual(b.bind([window], now=200), {'codex-window:77': kid})  # (no conversation yet: known by what it was started for)
+        got = b.bind([row(id='codex:t1', kind='codex', session='t1', pid=None, window_pid=77, want=kid, title='Something else')], now=230)
+        k = b.get(kid)
+        self.assertEqual((got, [(s['conv'], s['how']) for s in k['segs']], len(k['terms']), k['title']), ({'codex:t1': kid}, [('t1', 'new')], 1, 'Write the notes'))
+
+    def test_another_agent_taking_a_session_on_is_a_handover(self):
+        b = book()
+        kid = b.bind([row()], now=200)['claude:c1']
+        b.bind([], now=300)
+        b.bind([], now=330)
+        got = b.bind([row(id='codex:t9', kind='codex', session='t9', pid=None, window_pid=88, want=kid)], now=400)
+        k = b.get(kid)
+        self.assertEqual((got['codex:t9'], k['kind'], [(s['kind'], s['how']) for s in k['segs']]), (kid, 'codex', [('claude', 'found'), ('codex', 'handover')]))
+
+    def test_the_conversation_decides_over_what_it_was_started_for(self):
+        b = book()
+        a = b.bind([row()], now=200)['claude:c1']
+        other = b.add(title='Other', folder='/r/x', kind='claude')
+        self.assertEqual(b.bind([row(want=other)], now=210)['claude:c1'], a)
+
+    def test_runs_others_started_and_ended_ones_are_no_sessions(self):
+        b = book()
+        rows = [row(id='claude:k', session='k', parent='work-1'), row(id='codex:x', kind='codex', session='x', **{'from': {'mux': 'zellij'}}),
+                row(id='claude:g', session='g', state='gone'), row(id='new:1', session=None, starting=True), row(id='shell:1', kind='shell', session='s')]
+        self.assertEqual(b.bind(rows, now=200), {})
+        self.assertEqual(b.all(), [])
+
+    def test_two_rows_of_one_conversation_are_one_session(self):
+        b = book()
+        got = b.bind([row(), row(id='claude-window:500', unknown=True)], now=200)
+        self.assertEqual(len(set(got.values())), 1)
+        self.assertEqual(len(b.all()), 1)
+
+    def test_moving_to_another_pane_closes_the_old_terminal(self):
+        b = book()
+        kid = b.bind([row()], now=200)['claude:c1']
+        b.bind([row(loc={'mux': 'zellij', 'session': 'other', 'pane': '9'})], now=250)
+        self.assertEqual([(t['grp'], t['why'], t['ended']) for t in b.get(kid)['terms']], [('work', 'moved', 250), ('other', '', None)])
+
+    def test_in_no_pane_it_notes_how_it_was_started(self):
+        b = book()
+        kid = b.bind([row(loc=None, origin='终端窗口（Ghostty）')], now=200)['claude:c1']
+        t = b.get(kid)['terms'][0]
+        self.assertEqual((t['mux'], t['origin']), ('', '终端窗口（Ghostty）'))
+
+
+class Keeping(unittest.TestCase):
+    def test_a_title_the_person_gave_stays_and_one_taken_back_follows_again(self):
+        b = book()
+        kid = b.bind([row(title='From the summary')], now=200)['claude:c1']
+        b.set(kid, title='Mine')
+        b.bind([row(title='Summary again')], now=210)
+        self.assertEqual(b.get(kid)['title'], 'Mine')
+        b.set(kid, title='')
+        b.bind([row(title='Summary again')], now=220)
+        self.assertEqual(b.get(kid)['title'], 'Summary again')
+
+    def test_its_workspace_follows_the_folders_unless_the_person_placed_it(self):
+        b = book()
+        kid = b.bind([row()], now=200)['claude:c1']
+        self.assertIsNone(b.get(kid)['space'])
+        w = b.space_add('Sturnus', ['/r/sturnus'])
+        b.bind([], now=201)
+        self.assertEqual(b.get(kid)['space'], w)
+        other = b.space_add('Other', ['/r/other'])
+        b.set(kid, space=other)
+        b.bind([row()], now=202)
+        self.assertEqual(b.get(kid)['space'], other)
+        b.set(kid, space='')
+        self.assertEqual(b.get(kid)['space'], w)
+        b.place_drop(w, '/r/sturnus')
+        b.bind([], now=203)
+        self.assertIsNone(b.get(kid)['space'])
+
+    def test_archived_only_by_the_person_and_deleted_only_once_archived(self):
+        b = book()
+        kid = b.bind([row()], now=200)['claude:c1']
+        with self.assertRaises(ValueError):
+            b.drop(kid)
+        b.set(kid, pinned=True)
+        b.set(kid, archived=True)
+        k = b.get(kid)
+        self.assertTrue(k['archived'] and not k['pinned'])
+        b.bind([row()], now=k['archived'] + 5)  # (still stopping: it stays archived)
+        self.assertTrue(b.get(kid)['archived'])
+        b.bind([row()], now=k['archived'] + 100)  # (running again later: back among the open ones)
+        self.assertIsNone(b.get(kid)['archived'])
+        b.set(kid, archived=True)
+        b.drop(kid)
+        self.assertIsNone(b.get(kid))
+
+    def test_stopping_closes_its_terminal_at_once(self):
+        b = book()
+        kid = b.bind([row()], now=200)['claude:c1']
+        b.close(kid, now=220)
+        k = b.get(kid)
+        self.assertEqual((k['state'], k['terms'][0]['why'], k['terms'][0]['ended']), ('stopped', 'stopped', 220))
+
+    def test_conversations_on_disk_become_stopped_sessions_once(self):
+        b = book()
+        w = b.space_add('Sturnus', ['/r/sturnus'])
+        convs = [{'kind': 'claude', 'conv': 'old1', 'path': '/t/old1.jsonl', 'folder': '/r/sturnus', 'began': 10, 'at': 50, 'title': 'An old one', 'note': 'left\nhere'},
+                 {'kind': 'codex', 'conv': 'old2', 'path': '/t/old2.jsonl', 'folder': '/elsewhere', 'began': 20, 'at': 60}]
+        self.assertEqual(b.learn(convs), 2)
+        self.assertEqual(b.learn(convs), 0)
+        a = {k['seg']['conv']: k for k in b.all()}
+        self.assertEqual((a['old1']['space'], a['old1']['title'], a['old1']['state'], a['old1']['note'], a['old1']['at'], a['old1']['term']), (w, 'An old one', 'stopped', 'left here', 50, None))
+        self.assertIsNone(a['old2']['space'])
+        self.assertEqual(b.bind([row(id='claude:old1', session='old1')], now=300)['claude:old1'], a['old1']['id'])  # (resumed: it is that session)
+
+    def test_the_list_is_newest_first_with_what_each_runs_on(self):
+        b = book()
+        b.bind([row(), row(id='claude:c2', session='c2', pid=501, at=300, loc={'mux': 'zellij', 'session': 'work', 'pane': '4'})], now=310)
+        a = b.all()
+        self.assertEqual([k['seg']['conv'] for k in a], ['c2', 'c1'])
+        self.assertEqual((a[0]['term']['pane'], a[0]['nsegs'], a[0]['nterms']), ('4', 1, 1))
+
+
+if __name__ == '__main__':
+    unittest.main()
