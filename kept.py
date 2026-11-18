@@ -111,9 +111,9 @@ def next_at(every, after):
 
 def bindable(s):
     """A row of the deck that is a session of its own: an agent the person talks to, not one another session started, a
-    run with no window, or a card for something still starting."""
+    sub-agent's thread (with or without its starter in sight), a run with no window, or a card for something still starting."""
     return (s.get('kind') in AGENTS and s.get('state') not in ('gone', 'ended') and not s.get('starting')
-            and not s.get('parent') and not s.get('parent_id') and not s.get('from'))
+            and not s.get('parent') and not s.get('parent_id') and not s.get('from') and not s.get('sub'))
 
 
 class Book:

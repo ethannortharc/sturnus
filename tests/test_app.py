@@ -473,6 +473,37 @@ class OverHttp(unittest.TestCase):
         self.assertEqual(self.call('/api/say', {'id': 'x', 'text': 'hi'}, key=j['key'], deck_header=False)[0], 403)
 
 
+class Family(unittest.TestCase):
+    """Codex's sub-agent threads fire a session's hooks; each goes with the thread that started it, and is no session of its own."""
+
+    def test_codex_sub_agent_threads_go_with_the_thread_that_started_them(self):
+        spawn = lambda parent, nick, path: {'source': {'subagent': {'thread_spawn': {'parent_thread_id': parent, 'depth': 1, 'agent_path': path, 'agent_nickname': nick, 'agent_role': None}}},
+                                            'thread_source': 'subagent', 'cwd': '/r/a'}
+        metas = {'main': {'source': 'vscode', 'thread_source': 'user', 'originator': 'Codex Desktop', 'cwd': '/r/a'},
+                 'other': {'source': 'vscode', 'thread_source': 'user', 'originator': 'codex-tui', 'cwd': '/r/b'},
+                 'kid': spawn('T-main', 'Goodall', '/root/platform_ui'), 'grandkid': spawn('T-kid', 'Darwin', '/root/platform_ui/api'),
+                 'review': {'source': {'subagent': 'review'}, 'thread_source': 'subagent', 'cwd': '/r/a'},
+                 'guard': {'source': {'subagent': {'other': 'guardian'}}, 'thread_source': 'guardian_review', 'parent_thread_id': 'T-main', 'cwd': '/r/zzz'},
+                 'orphan': spawn('T-gone', 'Curie', '/root/x'), 'lone': {'source': {'subagent': 'review'}, 'cwd': '/r/nobody'}}
+        rows = [session(id=f'codex:T-{k}', kind='codex', session=f'T-{k}', name=k, cwd='/elsewhere', at=60 + i) for i, k in enumerate(metas)]
+        subs = S.codex_family(rows, lambda s: metas[s['name']])
+        got = {s['name']: (s.get('sub'), s.get('parent')) for s in rows}
+        self.assertEqual(got, {'main': (None, None), 'other': (None, None), 'kid': ('Goodall · platform_ui', 'main'), 'grandkid': ('Darwin · api', 'main'),
+                               'review': (S.tx('审查', 'review'), 'main'), 'guard': (S.tx('守护检查', 'guardian check'), 'main'),
+                               'orphan': ('Curie · x', None), 'lone': (S.tx('审查', 'review'), None)})
+        self.assertEqual(sorted(s['name'] for s in subs), ['grandkid', 'guard', 'kid', 'lone', 'orphan', 'review'])
+        self.assertEqual(sorted(s['name'] for s in rows if S.K.bindable(s)), ['main', 'other'])  # (only the person's own threads are sessions)
+        self.assertIsNone(S.codex_sub({'source': 'exec', 'originator': 'codex_exec', 'thread_source': 'user'}))
+
+    def test_a_helper_of_the_desktop_app_is_no_window(self):
+        asked = lambda *a: S.codex_asked(['codex', *a])
+        self.assertEqual(asked('-c', 'forced_login_method="chatgpt"', 'exec-server', '--concurrent-requests', '32'), 'exec-server')  # (the app's helper: no window)
+        self.assertIn(asked('-c', 'forced_login_method="chatgpt"', 'exec-server'), S.CODEX_NOT_TUI)
+        self.assertEqual((asked(), asked('--model', 'gpt-x'), asked('resume', 'abc'), asked('-C', '/r', 'fix the bug')), (None, None, 'resume', 'fix the bug'))
+        self.assertNotIn(asked('-C', '/r', 'fix the bug'), S.CODEX_NOT_TUI)
+        self.assertEqual(S.codex_sub({'thread_source': 'guardian_review'}), {'parent': None, 'role': S.tx('子 agent', 'sub-agent')})
+
+
 class Models(unittest.TestCase):
     """The model a session runs on, read from the end of its conversation file."""
 

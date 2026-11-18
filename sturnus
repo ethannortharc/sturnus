@@ -319,6 +319,52 @@ def codex_meta(path, _seen={}):
     return _seen[path]
 
 
+def codex_sub(meta):
+    """Whether a Codex thread is a sub-agent's — one that another thread spawned, a review, its guardian — as its file's
+    first line says: {parent: the thread that started it (None when the file does not name one), role: what to call it}.
+    None for a thread of the person's own. (Each such thread fires the hooks of a session, so it would pass for one.)"""
+    src = meta.get('source')
+    sub = src.get('subagent') if isinstance(src, dict) else None
+    if sub is None and not meta.get('parent_thread_id') and meta.get('thread_source') not in ('subagent', 'guardian_review'):
+        return None
+    spawn = sub.get('thread_spawn') if isinstance(sub, dict) and isinstance(sub.get('thread_spawn'), dict) else {}
+    parent = meta.get('parent_thread_id') or spawn.get('parent_thread_id')
+    place = os.path.basename(str(spawn.get('agent_path') or '').rstrip('/'))
+    name = ' · '.join(x for x in (spawn.get('agent_nickname'), spawn.get('agent_role'), place) if isinstance(x, str) and x)
+    what = sub if isinstance(sub, str) else sub.get('other') if isinstance(sub, dict) and isinstance(sub.get('other'), str) else ''
+    role = name or {'review': tx('审查', 'review'), 'guardian': tx('守护检查', 'guardian check')}.get(what, what) or tx('子 agent', 'sub-agent')
+    return {'parent': parent if isinstance(parent, str) and parent else None, 'role': str(role)[:60]}
+
+
+def codex_family(codex, meta_of):
+    """Codex's sub-agent threads among its live ones, each given to the thread that started it: marked 'sub' (what to
+    call it) and, where that thread is among them, 'parent' (its name). One whose file names no parent (a review, a
+    guardian check of older Codex versions) is given to the thread of the person's in the same folder that stirred
+    last; one with no such thread keeps the mark alone, and is no session of its own."""
+    by = {s.get('session'): s for s in codex if s.get('session')}
+    subs = []
+    for s in codex:
+        sub = codex_sub(meta_of(s))
+        if sub:
+            s['sub'] = sub['role']
+            subs.append((s, sub))
+    mine = [s for s in codex if not s.get('sub')]
+    for s, sub in subs:
+        p = by.get(sub['parent']) if sub['parent'] else None
+        seen = set()
+        while p is not None and p.get('sub') and id(p) not in seen:  # (a sub-agent's own sub-agent: shown with the thread at the top)
+            seen.add(id(p))
+            up = codex_sub(meta_of(p))
+            p = by.get(up['parent']) if up and up['parent'] else None
+        if p is None and not sub['parent']:
+            home = meta_of(s).get('cwd') or s.get('cwd')
+            near = [x for x in mine if (meta_of(x).get('cwd') or x.get('cwd')) == home]
+            p = max(near, key=lambda x: x.get('at') or 0, default=None)
+        if p is not None and p is not s and not p.get('sub'):
+            s['parent'] = p['name']
+    return [s for s, _ in subs]
+
+
 def codex_launch_thread(start, cwd):
     """The thread a Codex window began with, for a window its hooks never saw (opened before they were installed):
     Codex starts one as the window opens, in its folder. ponytail: a later /new in that window is not followed."""
@@ -2275,6 +2321,24 @@ ORDER_RANK = {'waiting': 0, 'working': 1, 'idle': 2}
 CODEX_NOT_TUI = {'app-server', 'exec', 'e', 'review', 'queue', 'archive', 'unarchive', 'delete', 'mcp', 'login', 'logout',
                  'agents', 'plugin', 'debug', 'sandbox', 'apply', 'cloud', 'features', 'completion', 'doctor', 'update', 'fork',
                  'exec-server', 'migrate-rollouts', 'remote-control'}
+# (options of the codex command that take a value: the word after one is its value, not what the command is asked to do)
+CODEX_VALUED = {'-c', '--config', '-C', '--cd', '-m', '--model', '-p', '--profile', '-s', '--sandbox', '-a', '--ask-for-approval', '-i', '--image',
+                '--add-dir', '--remote', '--enable', '--disable', '--local-provider', '--listen'}
+
+
+def codex_asked(args):
+    """What a codex command line asks for: its subcommand (exec, app-server, resume …), or None for the plain window
+    (with or without a first ask). The value after an option that takes one is passed over: `codex -c x=1 exec-server`
+    asks for exec-server."""
+    skip = False
+    for x in args[1:]:
+        if skip:
+            skip = False
+        elif x in CODEX_VALUED:
+            skip = True
+        elif not x.startswith('-'):
+            return x
+    return None
 
 
 def post_at(f):
@@ -2372,8 +2436,7 @@ class Deck:
             a = p['args']
             if p['comm'] != 'codex' or not a:
                 continue
-            sub = next((x for x in a[1:] if not x.startswith('-')), None)
-            if sub in CODEX_NOT_TUI or any('app-server' in x for x in a):
+            if codex_asked(a) in CODEX_NOT_TUI or any('app-server' in x for x in a):
                 continue
             loc, cwd = place_of(p['pid']), cwd_of(p['pid'])
             d = next((a[i + 1] for i, x in enumerate(a[:-1]) if x in ('-C', '--cd')), None) or next((x[5:] for x in a if x.startswith('--cd=')), None)
@@ -2383,6 +2446,7 @@ class Deck:
             tid = a[a.index('resume') + 1] if resume and a.index('resume') + 1 < len(a) and not a[a.index('resume') + 1].startswith('-') else None
             tuis.append({'pid': p['pid'], 'loc': loc, 'cwd': cwd, 'thread': tid, 'resume': resume, 'marker': env_of(p['pid'], 'STURNUS_NEW'), 'start': p['start']})
         codex = [s for s in sessions if s['kind'] == 'codex' and s['state'] not in ('gone', 'ended')]
+        codex_family(codex, lambda s: codex_meta(transcript_of(s) or ''))  # (sub-agent threads: with the thread that started them, not sessions of their own)
         # (a window shows a thread that has stirred since it opened; one opened with `codex resume` and no id, an older one
         # too: the person picks it there. A new window has none until its first message: Codex registers a thread then)
         # (a thread's folder: where it began, as its file's first line says; its hooks report each command's folder instead)
@@ -2392,7 +2456,7 @@ class Deck:
         for t in sorted(tuis, key=lambda t: -t['start']):  # (the newest window first: a thread begun since it opened is its)
             hit = next((s for s in codex if t['thread'] and s['session'] == t['thread']), None)
             if not hit and t['loc']:  # (a window outside any multiplexer is known by its resume id only)
-                same = [s for s in codex if may_show(t, s) and not s.get('loc') and not s.get('parent')]
+                same = [s for s in codex if may_show(t, s) and not s.get('loc') and not s.get('parent') and not s.get('sub')]
                 hit = max(same, key=lambda s: (self.began(s, born) >= t['start'] - 5, s['at']), default=None)
             if hit:
                 hit['loc'], hit['window_pid'] = t['loc'], t['pid']
@@ -2406,7 +2470,7 @@ class Deck:
                 th = codex_launch_thread(t['start'], t['cwd']) or (None, None)
                 sessions.append(self.window('codex', t['pid'], t['loc'], t['start'], t['cwd'], *th))
         for s in codex:  # (a thread of a Codex window that no window shows now: quit, closed, or /new; Codex says nothing then)
-            if s.get('window_pid') or s.get('parent') or s.get('from') or codex_meta(transcript_of(s) or '').get('originator') != 'codex-tui':
+            if s.get('window_pid') or s.get('parent') or s.get('sub') or s.get('from') or codex_meta(transcript_of(s) or '').get('originator') != 'codex-tui':
                 continue
             if time.time() - (s['at'] or 0) > 120 and not any(t['pid'] not in shown and may_show(t, s) for t in tuis):
                 s['state'] = 'gone'  # (not one that stirred in the last two minutes: a doubt costs a stray row for a while, not a page)
@@ -2515,10 +2579,14 @@ class Deck:
             s['stale'] = s['state'] != 'working' and now - (s['at'] or s['since'] or 0) > 24 * 3600  # (a day without a stir: out of the way, still there to open)
             s['hidden'] = s['state'] in ('gone', 'ended')  # (a session that has exited leaves the page)
             p = by_name.get(s.get('parent')) or by_pid.get(s.get('parent_pid')) or starter(s)
+            if s.get('sub') and not s['title']:
+                s['title'] = s['sub']  # (a sub-agent has no summary of its own to name it: what its starter called it)
             if p and p is not s:
                 s['parent'] = p['name']  # (started by another session: shown with it; when done, there for half an hour more)
                 s['parent_id'], s['stale'] = p['id'], False
                 s['hidden'] = s['hidden'] and now - (s['at'] or 0) > 1800
+            elif s.get('sub'):
+                s['hidden'] = True  # (a sub-agent whose starter is not here: no session of the person's, so not on the page)
             elif not s.get('loc') and not s['hidden'] and not s.get('starting'):
                 s['origin'] = self.origins.get(s.get('pid')) or self.origins.setdefault(s.get('pid'), origin_of(s.get('pid')))
             if s['kind'] == 'claude' and s['state'] not in ('gone', 'ended'):
@@ -4178,6 +4246,25 @@ class Deck:
                 self.note(tx(f'定时任务出错：{e!r}', f'The clock failed: {e!r}'), False)
             time.sleep(min(30, REST_EVERY))
 
+    def subs_out(self):
+        """Sessions in the record that are Codex sub-agent threads, kept as sessions before the deck could tell them
+        apart: taken out of the record (Codex's own files are not touched). Only one whose every conversation is such a
+        thread, that is not running and not pinned. Returns how many."""
+        n = 0
+        for k in self.book.all():
+            if k['kind'] != 'codex' or k['pinned'] or k.get('term'):
+                continue
+            segs = (self.book.get(k['id']) or {}).get('segs') or []
+            if segs and all(x['kind'] == 'codex' and codex_sub(codex_meta((x['path'] if x['path'] and os.path.exists(x['path']) else transcript_of({'kind': 'codex', 'session': x['conv']})) or '')) for x in segs):
+                with contextlib.suppress(K.No):
+                    self.book.set(k['id'], archived=True)
+                    self.book.drop(k['id'])
+                    n += 1
+        if n:
+            self.note(tx(f'{n} 条其实是 Codex 子 agent 的记录，已从会话列表里拿掉', f'{n} record(s) that were Codex sub-agent threads were taken out of the sessions'))
+            self.kept_refresh()
+        return n
+
     def index_loop(self):
         """The conversations on disk, looked through now and then: one no session has yet becomes a stopped session."""
         time.sleep(8)
@@ -4186,6 +4273,7 @@ class Deck:
                 with self.book.read() as c:
                     known = {(r['kind'], r['conv']) for r in c.execute('SELECT kind, conv FROM segs UNION SELECT kind, conv FROM dropped')}
                 self.book.learn(claude_convs(known) + codex_convs(known))
+                self.subs_out()
             except Exception as e:
                 self.note(tx(f'读磁盘上的旧对话出错：{e!r}', f'Reading the conversations on disk failed: {e!r}'), False)
             time.sleep(600)
