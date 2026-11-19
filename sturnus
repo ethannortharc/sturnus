@@ -4806,7 +4806,8 @@ def app_view(deck):
         dirs = list(state.get('dirs') or [])[:30]
     current = dict(getattr(deck, 'tasks_current', None) or {})  # (the task each session is on: the one it touched last)
     pname = lambda s: (deck.projects.known.get(s.get('project')) or {}).get('name') or ''
-    live = [s for s in sessions if not (s.get('hidden') or s.get('stale') or s['state'] in ('gone', 'ended'))]
+    # (a session that lasts stays in the list however long it has been quiet: its row with it)
+    live = [s for s in sessions if not (s.get('hidden') or s['state'] in ('gone', 'ended')) and (not s.get('stale') or (s.get('kept') and not s.get('parent_id')))]
     kids = Counter(s['parent_id'] for s in live if s.get('parent_id'))
     rows = []
     for s in live:
@@ -4818,14 +4819,14 @@ def app_view(deck):
                      'branch': s.get('branch') or '', 'since': s.get('since'), 'at': s.get('at'),
                      'born': s.get('born'), 'say': say_how(s), 'pane': bool((s.get('loc') or {}).get('pane')), 'kids': kids.get(s['id'], 0),
                      'group': (s.get('loc') or {}).get('session') or '',  # (a tmux group's name carries its tmux: already)
-                     'parent': s.get('parent_id') or ''})
+                     'parent': s.get('parent_id') or '', 'kept': '' if s.get('parent_id') else s.get('kept') or ''})
     rows.sort(key=lambda r: (APP_RANK.get(r['standing'], 9), r['born'] or 0))  # (within a standing, by when it began: rows keep their places)
     items = [{k: v for k, v in i.items() if k != 'asks'} for i in phone_items(sessions, pname, groups)]
     name, _ = tailnet_self()
     # (and where a new session can start: the groups there are, the folders sessions ran in lately)
     made = sorted(groups)
     view = {'machine': {'name': (name or socket.gethostname()).split('.')[0], 'version': VERSION, 'me': ME_NAME}, 'sessions': rows, 'inbox': items,
-            'groups': made, 'dirs': dirs, **app_places(state, {r['id'] for r in rows})}
+            'groups': made, 'dirs': dirs, **app_places(state, {r['id'] for r in rows}), **app_lasting(state, rows)}
     # (a working session stirs every few seconds, and the project and workspace it is in with it; a window no hook saw
     # has its file's time as `since`; the recent folders reorder as sessions take turns: none of that is news worth
     # waking every phone for. A phone gets it with the next news, or at the end of its wait.)
@@ -4842,6 +4843,43 @@ def no_stir(v):
 
 
 APP_PROJECTS, APP_WORKS = 30, 6  # (a workspace's projects on the phone, those with sessions first; a project's work items besides its main)
+APP_KEPT = 150  # (the sessions that last on the phone: the pinned and running ones, then the latest; all of them are at /api/kept)
+
+
+def app_lasting(st, rows):
+    """The sessions that last as the phone lists them, and the workspaces the person keeps: each session with how it stands
+    (its running row's standing, or stopped) and the title the page gives it; each workspace with its folders and the
+    keys its tasks and channels are kept under (its own, and those of the projects and old workspaces in its folders).
+    Also what runs by the clock, the sessions a restart ended (offered once, to go on), and the agents a new session can
+    be. In the order they were made, so that one at work moving up the record wakes no phone."""
+    by = {r['id']: r for r in rows}
+    out = []
+    for k in (st.get('kept') or [])[:APP_KEPT]:
+        r, t, e = by.get(k.get('live') or ''), k.get('term') or {}, k.get('ended') or {}
+        out.append({'id': k['id'], 'title': k.get('title') or (r or {}).get('title') or k.get('name') or tx('还没有名字', 'Not named yet'),
+                    'kind': k.get('kind') or '', 'space': k.get('space') or '', 'spaced': bool(k.get('spaced')), 'show': k.get('show') or '',
+                    'branch': k.get('branch') or '', 'name': k.get('name') or '', 'made': k.get('made') or 0, 'at': k.get('at') or 0,
+                    'pinned': bool(k.get('pinned')), 'live': r['id'] if r else '', 'standing': r['standing'] if r else 'idle' if k.get('live') else 'stopped',
+                    'note': (k.get('note') or '')[:300], 'model': k.get('model') or {}, 'wt': bool(k.get('wt')),
+                    'term': {'mux': t.get('mux') or '', 'grp': t.get('grp') or '', 'origin': t.get('origin') or ''} if t else None,
+                    'ended': {'at': e.get('at') or 0, 'why': e.get('why') or ''} if e else None})
+    out.sort(key=lambda k: (-(k['made'] or 0), k['id']))
+    projects, olds = st.get('projects') or {}, st.get('workspaces') or []
+    inside = lambda sp, p: bool(p) and any(p == x['path'] or p.startswith(x['path'].rstrip('/') + '/') for x in sp.get('places') or [])
+    spaces = [{'id': sp['id'], 'name': sp.get('name') or sp['id'], 'n': sp.get('n') or 0, 'live': sp.get('live') or 0, 'group': sp.get('group') or '',
+               'places': [{'path': x['path'], 'show': x.get('show') or tilde(x['path']), 'main': bool(x.get('main')), 'there': bool(x.get('there', True))}
+                          for x in sp.get('places') or []],
+               'scopes': list(dict.fromkeys([sp['id']] + sorted(k for k, p in projects.items() if inside(sp, p.get('path')))
+                                            + [w['key'] for w in olds if inside(sp, w.get('path'))])),
+               'dash': any(w.get('key') == sp['id'] for w in olds)}
+              for sp in st.get('spaces') or [] if not sp.get('archived')]
+    plans = [{'id': p['id'], 'title': p.get('title') or '', 'prompt': (p.get('prompt') or '')[:400], 'kind': p.get('kind') or '',
+              'folder': tilde(p.get('folder') or ''), 'space': p.get('space') or '', 'every': p.get('every') or '', 'live': bool(p.get('live')),
+              'next': p.get('next') if p.get('live') else None, 'runs': [{'kept': r.get('kept') or '', 'at': r.get('at') or 0} for r in p.get('runs') or []][:5]}
+             for p in st.get('plans') or []]
+    return {'kept': out, 'spaces': spaces, 'plans': plans, 'recover': list(st.get('recover') or []),
+            'kinds': [k for k in (st.get('launch') or DEFAULTS['launch']) if k in ('claude', 'codex', 'cursor')],
+            'terminal': (st.get('terminal') or {}).get('way') or ''}
 
 
 def app_places(st, on):
@@ -4877,13 +4915,14 @@ def app_places(st, on):
     spaces.sort(key=lambda w: (-w['live'], -hour(w['at']), w['name'].lower()))
     brief = lambda t: {'id': t['id'], 'scope': t.get('scope') or '', 'scope_name': t.get('scope_name') or '', 'title': t.get('title') or '',
                        'status': t.get('status') or '', 'shown': t.get('shown') or t.get('status') or '', 'now': (t.get('now') or '')[:300],
-                       'next': (t.get('next') or '')[:300], 'at': t.get('at') or 0, 'closed': t.get('closed'),
+                       'next': (t.get('next') or '')[:300], 'at': t.get('at') or 0, 'closed': t.get('closed'), 'orphan': bool(t.get('orphan')),
                        'sessions': [{'name': x.get('name') or '', 'sid': x.get('sid') or '', 'live': bool(x.get('live')), 'st': x.get('st') or ''}
                                     for x in t.get('sessions') or []][:6]}
     tasks, closed = st.get('tasks') or [], ('done', 'dropped')
     shut = sorted((t for t in tasks if t.get('status') in closed), key=lambda t: -(t.get('closed') or 0))
-    # (what was put aside is left out here: the phone app knows the states it was made with)
-    tasks = [brief(t) for t in tasks if t.get('status') not in closed and t.get('status') != 'backlog'][:150] + [brief(t) for t in shut[:30]]
+    # (still to do; then what was put aside; then what ended lately)
+    tasks = ([brief(t) for t in tasks if t.get('status') not in closed and t.get('status') != 'backlog'][:150]
+             + [brief(t) for t in tasks if t.get('status') == 'backlog'][:60] + [brief(t) for t in shut[:30]])
     chans = [{'key': k, 'name': b.get('name') or k, 'kind': b.get('kind') or 'project', 'unread': b.get('unread') or 0, 'calls': b.get('calls') or 0,
               'last': {'from': b['last'].get('from') or '', 'text': (b['last'].get('text') or '')[:200], 'at': b['last'].get('at') or 0} if b.get('last') else None,
               'topics': [{'id': t.get('id') or '', 'title': t.get('title') or '', 'n': t.get('n') or 0, 'at': t.get('at') or 0}
@@ -4918,6 +4957,42 @@ def app_session(deck, sid):
             'tasks': [{k: t.get(k) for k in ('id', 'title', 'status', 'shown', 'now', 'next', 'scope', 'scope_name', 'at')} for t in mine][:20],
             'kids': kids, 'msgs': msgs, 'mail': [{'id': m.get('id'), 'text': (m.get('text') or '')[:1500], 'at': m.get('at')} for m in mail],
             'cwd': tilde(s.get('home') or s.get('cwd') or ''), 'pane': (s.get('loc') or {}).get('pane') or ''}
+
+
+def app_kept_page(deck, kid):
+    """One session that lasts as its page on the phone shows it beyond the list: what it is, the terminals it has run in
+    and its conversations; its report and its story (of the row that runs it, else of its latest conversation, as the
+    page reads them); and while it runs, what app_session says of that row, with Claude Code's own sub-agents. None when
+    the record has no such session."""
+    page = deck.kept_page(kid)
+    if not page:
+        return None
+    k, lid = page['kept'], page['kept'].get('live') or ''
+    s = deck.find(lid) if lid else None
+    base = (app_session(deck, lid) if s else None) or {'ok': True, 'id': '', 'asks': [], 'tasks': [], 'kids': [], 'msgs': [], 'mail': [], 'cwd': k.get('show') or '', 'pane': ''}
+    conv = (k.get('segs') or [{}])[-1].get('conv') or ''
+    rid = lid or (f"{k.get('kind')}:{conv}" if conv else '')  # (a stopped one's report and story were kept under its last conversation)
+    with deck.lock:
+        st = deck.state
+        rep, reporting = (st.get('reports') or {}).get(rid) or {}, rid in (st.get('reporting') or [])
+    stories = getattr(deck, 'stories', None)
+    if stories is not None and s and rid not in stories.data:
+        stories.asked.add(rid)  # (as /api/story: asking for one it lacks makes the deck build it)
+    meta = (getattr(deck, 'kept', None) or {}).get(kid) or {}
+    par = s and s.get('parent_id') and deck.find(s['parent_id'])
+    return {**base, 'report': rep.get('r'), 'report_at': rep.get('at') or 0, 'reporting': reporting, 'rid': rid,
+            'story': stories.view(rid) if stories is not None and rid else None,
+            'summary': ((s or {}).get('summary') or k.get('note') or '')[:1500], 'origin': (s or {}).get('origin') or '',
+            'started_by': {'id': par['id'], 'title': app_title(par)} if par else None,
+            'subs': [{'id': x.get('id') or '', 'what': x.get('task') or x.get('type') or '', 'state': x.get('state') or '', 'at': x.get('at') or 0}
+                     for x in (s or {}).get('subs') or []][:40],
+            'kept': {**{f: k.get(f) for f in ('id', 'title', 'kind', 'space', 'spaced', 'show', 'branch', 'name', 'made', 'at', 'note')},
+                     'pinned': bool(k.get('pinned')), 'archived': bool(k.get('archived')), 'live': lid, 'conv': conv, 'wt': bool(k.get('wt')),
+                     'model': meta.get('model') or {},
+                     'terms': [{'n': t['n'], 'mux': t.get('mux') or '', 'grp': (t.get('grp') or '').removeprefix('tmux:'), 'pane': t.get('pane') or '',
+                                'origin': t.get('origin') or '', 'began': t.get('began') or 0, 'ended': t.get('ended'), 'why': t.get('why') or '',
+                                'words': t.get('words') or ''} for t in k.get('terms') or []],
+                     'segs': [{'n': x['n'], 'kind': x.get('kind') or '', 'how': x.get('how') or ''} for x in k.get('segs') or []]}}
 
 
 def tilde(p):
@@ -5550,7 +5625,9 @@ class Handler(BaseHTTPRequestHandler):
                 _REQ.lang = None
         if self.path.startswith('/api/app/session'):  # (one session's page on the phone: its asks, report, tasks, sub-agents, messages)
             from urllib.parse import urlparse, parse_qs
-            v = app_session(DECK, (parse_qs(urlparse(self.path).query).get('id') or [''])[0])
+            q = parse_qs(urlparse(self.path).query)
+            kid = (q.get('kept') or [''])[0]  # (a session that lasts: by its own id, running or not)
+            v = app_kept_page(DECK, kid) if kid else app_session(DECK, (q.get('id') or [''])[0])
             return self.send_json(v or {'ok': False, 'msg': tx('这个会话已经不在了', 'That session is gone')}, 200 if v else 404)
         if self.path.split('?')[0] in ('/api/phone/summary', '/api/phone/inbox'):  # (Columba, the iPhone app)
             _REQ.lang = 'en' if self.headers.get('X-Lang') == 'en' else 'zh'

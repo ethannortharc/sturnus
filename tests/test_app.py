@@ -74,6 +74,29 @@ def places(**kw):
     return st
 
 
+def lasting(**kw):
+    """A deck's sessions that last, as kept_view leaves them in its state: k1 running in the row claude:abc, k2 stopped by
+    a restart; workspace s1 over /r (s2 archived); one thing by the clock."""
+    st = {'kept': [{'id': 'k2', 'title': 'Old work', 'space': 's1', 'spaced': 0, 'show': '/r/sturnus', 'kind': 'codex', 'name': '', 'branch': 'old',
+                    'made': 50, 'at': 200, 'pinned': None, 'archived': None, 'state': 'stopped', 'note': 'It had stopped here', 'nsegs': 1, 'nterms': 1,
+                    'live': None, 'conv': 'c2', 'wt': '', 'model': {}, 'term': None, 'ended': {'at': 190, 'why': 'restart'}},
+                   {'id': 'k1', 'title': '', 'space': 's1', 'spaced': 0, 'show': '/r/sturnus', 'kind': 'claude', 'name': 'work-1', 'branch': 'main',
+                    'made': 100, 'at': 300, 'pinned': None, 'archived': None, 'state': 'running', 'note': '', 'nsegs': 1, 'nterms': 1,
+                    'live': 'claude:abc', 'conv': 'c1', 'wt': '/r/sturnus/.claude/worktrees/x', 'model': {'model': 'claude-opus-5-5', 'effort': 'high'},
+                    'term': {'n': 1, 'mux': 'zellij', 'grp': 'work', 'pane': '3', 'origin': '', 'began': 40}, 'ended': None}],
+          'spaces': [{'id': 's1', 'name': 'Software', 'grp': '', 'archived': None, 'made': 1, 'group': 'work', 'n': 2, 'live': 1,
+                      'places': [{'path': '/r', 'show': '/r', 'main': 1, 'there': True}]},
+                     {'id': 's2', 'name': 'Put away', 'grp': '', 'archived': 9, 'made': 2, 'group': '', 'n': 0, 'live': 0, 'places': []}],
+          'plans': [{'id': 'p-1', 'title': 'Morning build', 'prompt': 'Look at the build', 'kind': 'codex', 'folder': '/r', 'space': 's1',
+                     'every': 'daily 09:00', 'live': 1, 'made': 1, 'last': None, 'next': 400, 'runs': [{'kept': 'k2', 'at': 100}]}],
+          'recover': ['k2'], 'launch': {'claude': ['claude'], 'codex': ['codex'], 'cursor': ['cursor-agent']}, 'terminal': {'way': 'zellij-tab'},
+          'projects': {'p1': {'key': 'p1', 'name': 'sturnus', 'path': '/r/sturnus', 'git': True, 'live': 1, 'at': 300, 'facts': None},
+                       'p2': {'key': 'p2', 'name': 'columba', 'path': '/x/columba', 'git': True, 'live': 0, 'at': 10, 'facts': None}},
+          'workspaces': [{'key': 'w1', 'name': 'software', 'path': '/r', 'live': 1, 'at': 300, 'projects': ['p1']}]}
+    st.update(kw)
+    return st
+
+
 class Pairing(unittest.TestCase):
     def setUp(self):
         if os.path.exists(S.ACCESS):
@@ -270,6 +293,61 @@ class View(unittest.TestCase):
         self.assertEqual((v['tasks'], v['boards'], v['mail'], v['locks']), ([], [], [], []))
         self.assertEqual([(w['key'], w['projects']) for w in v['workspaces']], [('w1', [])])
 
+    def kept_view(self, sessions, **kw):
+        deck = FakeDeck(sessions)
+        deck.state.update(lasting(**kw))
+        return S.app_view(deck)
+
+    def test_sessions_that_last_come_with_how_they_stand_and_the_workspaces_they_are_in(self):
+        v = self.kept_view([session(kept='k1', title='Phone app', state='working')])
+        self.assertEqual([k['id'] for k in v['kept']], ['k1', 'k2'], 'the newest made first')
+        k1, k2 = v['kept']
+        self.assertEqual((k1['title'], k1['live'], k1['standing'], k1['wt'], k1['term']['grp']), ('Phone app', 'claude:abc', 'working', True, 'work'))
+        self.assertEqual((k2['title'], k2['live'], k2['standing'], k2['ended']['why'], k2['term']), ('Old work', '', 'stopped', 'restart', None))
+        self.assertEqual(v['sessions'][0]['kept'], 'k1')
+        [sp] = v['spaces']
+        self.assertEqual((sp['id'], sp['name'], sp['places'][0]['main'], sp['dash']), ('s1', 'Software', True, False), 'the archived one is left out')
+        self.assertEqual(sp['scopes'], ['s1', 'p1', 'w1'], 'its own key, and those of the project and the old workspace in its folder')
+        self.assertEqual([(p['id'], p['live'], p['next'], p['runs'][0]['kept']) for p in v['plans']], [('p-1', True, 400, 'k2')])
+        self.assertEqual((v['recover'], v['kinds'], v['terminal']), (['k2'], ['claude', 'codex', 'cursor'], 'zellij-tab'))
+
+    def test_a_sub_agent_names_no_lasting_session_and_a_quiet_lasting_one_keeps_its_row(self):
+        v = self.kept_view([session(kept='k1', stale=True), session(id='e', parent_id='claude:abc', kept='k1'), session(id='f', stale=True)])
+        self.assertEqual([(r['id'], r['kept']) for r in v['sessions']], [('claude:abc', 'k1'), ('e', '')])
+
+    def test_a_lasting_session_moving_up_the_record_is_no_news(self):
+        a = self.kept_view([session(kept='k1')])['rev']
+        st = lasting()
+        moved = [dict(st['kept'][1], at=999), st['kept'][0]]
+        self.assertEqual(a, self.kept_view([session(kept='k1')], kept=moved)['rev'])
+        self.assertNotEqual(a, self.kept_view([session(kept='k1')], kept=[dict(st['kept'][0], pinned=5), st['kept'][1]])['rev'])
+        self.assertNotEqual(a, self.kept_view([session(kept='k1')], recover=[])['rev'])
+
+    def test_what_was_put_aside_comes_after_what_is_still_to_do(self):
+        t = lambda i, status, **kw: {'id': i, 'scope': 'p1', 'scope_name': 'sturnus', 'title': i, 'status': status, 'shown': kw.pop('shown', status), 'at': 1, 'sessions': [], **kw}
+        v = self.placed([session()], tasks=[t('a', 'backlog'), t('b', 'done', closed=5), t('c', 'waiting', shown='needs', orphan=True), t('d', 'todo')])
+        self.assertEqual([(x['id'], x['orphan']) for x in v['tasks']], [('c', True), ('d', False), ('a', False), ('b', False)])
+
+    def test_a_lasting_session_s_page_running_or_stopped(self):
+        deck = FakeDeck([session(kept='k1', asks=[{'id': 'a1', 'what': 'Pick', 'at': 5}], summary='Doing it', subs=[{'id': 'ag1', 'task': 'Look', 'state': 'working', 'at': 7}])])
+        deck.state.update(lasting(reports={'codex:c2': {'at': 9, 'r': {'goal': 'Old goal'}}, 'claude:abc': {'at': 8, 'r': {'goal': 'Now'}}}, reporting=['claude:abc']))
+        rec = {k['id']: k for k in lasting()['kept']}
+        rec['k1'].update(segs=[{'n': 1, 'kind': 'claude', 'conv': 'c1', 'how': ''}], terms=[{'n': 1, 'mux': 'zellij', 'grp': 'work', 'pane': '3', 'began': 40, 'ended': None, 'why': '', 'words': 'zellij attach work'}])
+        rec['k2'].update(live=None, segs=[{'n': 1, 'kind': 'codex', 'conv': 'c2', 'how': ''}], terms=[{'n': 1, 'mux': 'tmux', 'grp': 'tmux:t', 'pane': '%1', 'began': 10, 'ended': 190, 'why': 'restart'}])
+        deck.kept_page = lambda kid: {'ok': True, 'kept': rec[kid]} if kid in rec else None
+        deck.kept = {'k1': {'model': {'model': 'claude-opus-5-5'}}}
+        deck.stories = type('St', (), {'data': {'codex:c2': {}}, 'asked': set(), 'view': lambda self, sid: {'turns': [], 'topics': [], 'for': sid}})()
+        v = S.app_kept_page(deck, 'k2')
+        self.assertEqual((v['rid'], v['report']['goal'], v['reporting'], v['asks'], v['summary']), ('codex:c2', 'Old goal', False, [], 'It had stopped here'))
+        self.assertEqual((v['kept']['live'], v['kept']['conv'], v['kept']['terms'][0]['grp'], v['kept']['terms'][0]['why']), ('', 'c2', 't', 'restart'))
+        self.assertEqual(v['story']['for'], 'codex:c2')
+        self.assertEqual(deck.stories.asked, set(), 'a stopped one\'s story is not made anew')
+        v = S.app_kept_page(deck, 'k1')
+        self.assertEqual((v['rid'], v['report']['goal'], v['reporting'], [a['id'] for a in v['asks']], v['summary']), ('claude:abc', 'Now', True, ['a1'], 'Doing it'))
+        self.assertEqual((v['kept']['model']['model'], v['kept']['terms'][0]['words'], v['subs'][0]['what']), ('claude-opus-5-5', 'zellij attach work', 'Look'))
+        self.assertEqual(deck.stories.asked, {'claude:abc'}, 'a running one without a story gets one')
+        self.assertIsNone(S.app_kept_page(deck, 'nobody'))
+
     def test_a_session_page_has_its_asks_report_tasks_kids_and_messages(self):
         deck = FakeDeck([session(asks=[{'id': 'a1', 'what': 'Pick a colour', 'quote': 'red or blue?', 'at': 5}], home=os.path.expanduser('~/x')),
                          session(id='claude:kid', name='kid-1', parent_id='claude:abc', pid=42, state='working', title='Review')])
@@ -435,8 +513,11 @@ class OverHttp(unittest.TestCase):
         self.assertTrue(j['machine']['version'])
         st, v = self.call('/api/app/state', key=key)
         self.assertEqual(st, 200)
-        self.assertEqual(set(v), {'machine', 'sessions', 'inbox', 'rev', 'groups', 'dirs', 'workspaces', 'tasks', 'boards', 'mail', 'locks'})
+        self.assertEqual(set(v), {'machine', 'sessions', 'inbox', 'rev', 'groups', 'dirs', 'workspaces', 'tasks', 'boards', 'mail', 'locks',
+                                  'kept', 'spaces', 'plans', 'recover', 'kinds', 'terminal'})
         st, j = self.call('/api/app/session?id=claude:none', key=key)  # (a session's page: none by that id)
+        self.assertEqual((st, j['ok']), (404, False))
+        st, j = self.call('/api/app/session?kept=k-none', key=key)  # (nor a session that lasts by that id)
         self.assertEqual((st, j['ok']), (404, False))
         st, _ = self.call('/api/app/session?id=claude:none')  # (and nothing without a key)
         self.assertEqual(st, 401)
