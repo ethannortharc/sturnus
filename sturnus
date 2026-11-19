@@ -4986,8 +4986,8 @@ def app_kept_page(deck, kid):
             'started_by': {'id': par['id'], 'title': app_title(par)} if par else None,
             'subs': [{'id': x.get('id') or '', 'what': x.get('task') or x.get('type') or '', 'state': x.get('state') or '', 'at': x.get('at') or 0}
                      for x in (s or {}).get('subs') or []][:40],
-            'kept': {**{f: k.get(f) for f in ('id', 'title', 'kind', 'space', 'spaced', 'show', 'branch', 'name', 'made', 'at', 'note')},
-                     'pinned': bool(k.get('pinned')), 'archived': bool(k.get('archived')), 'live': lid, 'conv': conv, 'wt': bool(k.get('wt')),
+            'kept': {**{f: k.get(f) or '' for f in ('id', 'title', 'kind', 'space', 'show', 'branch', 'name', 'note')}, 'made': k.get('made') or 0,
+                     'at': k.get('at') or 0, 'spaced': bool(k.get('spaced')), 'pinned': bool(k.get('pinned')), 'archived': bool(k.get('archived')), 'live': lid, 'conv': conv, 'wt': bool(k.get('wt')),
                      'model': meta.get('model') or {},
                      'terms': [{'n': t['n'], 'mux': t.get('mux') or '', 'grp': (t.get('grp') or '').removeprefix('tmux:'), 'pane': t.get('pane') or '',
                                 'origin': t.get('origin') or '', 'began': t.get('began') or 0, 'ended': t.get('ended'), 'why': t.get('why') or '',
