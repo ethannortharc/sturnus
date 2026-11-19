@@ -145,7 +145,19 @@ class Sessions(unittest.TestCase):
         self.until(lambda: (self.kept(kid) or {}).get('model') == {'model': 'claude-opus-5-5', 'effort': 'low', 'speed': 'fast'}, 'its new model was not read')
         got = self.call(f'/api/transcript?kept={kid}')
         self.assertTrue(got['sig'] and got['items'])
-        self.assertEqual(self.call(f'/api/transcript?kept={kid}&have={got["sig"]}'), {'same': True, 'sig': got['sig']})
+        self.assertEqual(self.call(f'/api/transcript?kept={kid}&have={got["sig"]}'), {'same': True, 'sig': got['sig'], 'more': False})
+
+        # words for it while it works go into its terminal at once, and are in its conversation where they took effect:
+        # after the step it was on, before what it did with them
+        self.assertTrue(self.call('/api/type', {'id': k['live'], 'text': '/work 5', 'enter': True})['ok'])
+        self.until(lambda: (self.kept(kid) or {}).get('state') == 'working', 'it did not get to work')
+        j = self.call('/api/say', {'id': k['live'], 'text': 'one more thing'})
+        self.assertEqual((j['ok'], j.get('how')), (True, 'type'), j)  # (not held until its turn ends)
+        self.until(lambda: 'done: /work 5' in self.said(kid), 'its work did not end')
+        said = self.said(kid)
+        at = said.index('one more thing')
+        self.assertEqual(said[at - 1:at + 3], ['a step', 'one more thing', 'noted: one more thing', 'done: /work 5'], said[-8:])
+        self.assertEqual([i['who'] for i in self.call(f'/api/transcript?kept={kid}')['items'] if i['text'] == 'one more thing'], ['user'])
 
         # a cleared conversation in the same terminal: the same session, a second conversation
         self.assertTrue(self.call('/api/type', {'id': self.kept(kid)['live'], 'text': '/clear', 'enter': True})['ok'])

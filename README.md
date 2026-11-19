@@ -43,13 +43,13 @@ A **work item is a worktree and its branch**. A project collects those work item
 
 ![Project overview showing worktrees, two agents on feat/usage-limits, branch progress, shared decisions, and an output reference.](docs/media/v0.13.1/project.png)
 
-Open a session to read its **Overview**, **Conversation**, or **Report**. Continue in the browser's **Terminal** tab, or use **Switch to it in my terminal** to focus its pane in an attached terminal. What you copy in the browser's terminal lands on the computer you are browsing from: a mouse selection in Zellij, tmux's copy mode, and Claude Code's own copy all reach its clipboard (a Zellij with `copy_command` set copies on its own machine only). Drag with ⌥ held (⇧ on other systems) to select in the page itself, then press ⌘C. Reports gather the goal, current state, and next steps, with a timeline cut at each thing you asked (what got done, what was settled, what came out) and the decisions merged by topic: each topic keeps the word that stands now, with the ones it replaced folded under it.
+Open a session to read its **Conversation** or its **Overview** (what it is doing, its report, what was settled by topic, its timeline; what the session is and where it runs are beside the page, under About it). Continue in the browser's **Terminal** tab, or use **Switch to it in my terminal** to focus its pane in an attached terminal. What you copy in the browser's terminal lands on the computer you are browsing from: a mouse selection in Zellij, tmux's copy mode, and Claude Code's own copy all reach its clipboard (a Zellij with `copy_command` set copies on its own machine only). Drag with ⌥ held (⇧ on other systems) to select in the page itself, then press ⌘C. Reports gather the goal, current state, and next steps, with a timeline cut at each thing you asked (what got done, what was settled, what came out) and the decisions merged by topic: each topic keeps the word that stands now, with the ones it replaced folded under it.
 
 A session can keep working while it waits for your answer. It is then marked **Working · needs you**, and what it asked stays listed on the right of its Overview and Conversation tabs, with its own words, until you mark it handled or a later summary sees that you answered.
 
 ### 3. Keep the next instruction in context
 
-Write directly to a session, queue work for later, or use the project's shared channel when several agents need the same context. The assistant can help choose an existing session—or suggest a new one—for a task.
+Write directly to a session (Enter sends, Shift+Enter makes a new line; a session at work gets your words typed into its terminal at once, and they are in its conversation where they took effect), queue work for later, or use the project's shared channel when several agents need the same context. The assistant can help choose an existing session—or suggest a new one—for a task.
 
 ![Project channel with a shared release discussion between the user, Claude Code, and Codex, including a mention and a migration decision.](docs/media/v0.13.1/channel.png)
 
@@ -112,6 +112,7 @@ A session belongs to the workspace and project of the folder it was started in, 
 | `⌘/Ctrl J` | Open the assistant |
 | `N` | Create a session |
 | `T` / `C` / `O` on a session | Terminal / Conversation / Overview |
+| `Enter` in a box of words for a session | Send them (`Shift Enter`: a new line) |
 
 Single-key shortcuts apply when you are not typing. Double-click a session in the side column to open its browser terminal.
 
@@ -132,9 +133,14 @@ terminal it runs in and the agent's own conversation.
 - **The sidebar is yours to arrange.** Group the sessions by workspace, by how they stand, by agent or by day, or
   not at all, and order them by who needs you, by last activity, by when they were made, or by name. A workspace folds
   shut to its name and counts; the whole sidebar folds to a strip of icons (⌘B), never out of sight.
-- **What you send shows at once.** Words sent from a session's page are under its conversation before they have left,
-  with how they went (typed into its terminal, queued, put in its mailbox); the conversation in sight is read again
-  about every second while its agent works.
+- **What you send shows at once.** Enter sends. Words sent from a session's page are under its conversation before
+  they have left, with how they went (typed into its terminal, put in its mailbox); the conversation in sight is read
+  again about every second while its agent works. Words for a session at work are typed into its terminal at once, not
+  held until its turn ends: the agent's own command line hands them over at its next step, and they sit in the
+  conversation where they took effect, with what the agent did next after them.
+- **All of a conversation is there.** The page opens on the last of it; **Show earlier words** brings in what came
+  before, as far back as the session's beginning. Sturnus keeps its own copy of what was said (the words you sent
+  mid-turn too), so a session's history outlasts its terminal, a restart of the machine, and the agent's own files.
 - **A session at rest gives its terminal back.** One nobody has used for seven days (Settings → Terminals; any number of days, or never) has its terminal closed, so idle agents do not pile up in memory; it stays in the list and goes on in a new terminal when you take it up again. A session running where the page cannot reach it (a plain terminal window, the Codex desktop app) says so on its Terminal tab and can be brought into a terminal here.
 - **A session says what it runs on.** Its head shows the model, the effort and whether fast mode is on, read from the agent's own conversation file. For a Claude Code session at its prompt, a menu there changes them by typing `/model`, `/effort` or `/fast` into its terminal (Claude Code keeps a model and an effort set this way as your default, and bills fast mode from usage credits; the menu says so).
 - **A session's page remembers.** Its conversation, how far you had read, the steps and diffs you had opened and the words you had begun are there when you come back from another session. While its agent works, a line under the conversation says so, with what it is doing and for how long. The side panel is as wide as you drag it.

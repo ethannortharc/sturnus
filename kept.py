@@ -44,7 +44,8 @@ CREATE INDEX IF NOT EXISTS terms_open ON terms (ended);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS said (kept TEXT NOT NULL, seg INTEGER NOT NULL, n INTEGER NOT NULL, who TEXT NOT NULL, text TEXT NOT NULL, at REAL,
     PRIMARY KEY (kept, seg, n));
-CREATE TABLE IF NOT EXISTS reads (path TEXT PRIMARY KEY, off INTEGER NOT NULL, kept TEXT NOT NULL, seg INTEGER NOT NULL, clipped INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS reads (path TEXT PRIMARY KEY, off INTEGER NOT NULL, kept TEXT NOT NULL, seg INTEGER NOT NULL, clipped INTEGER NOT NULL DEFAULT 0,
+    v INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS plans (id TEXT PRIMARY KEY, title TEXT NOT NULL, prompt TEXT NOT NULL, kind TEXT NOT NULL, folder TEXT NOT NULL, space TEXT,
     every TEXT NOT NULL, live INTEGER NOT NULL DEFAULT 1, made REAL NOT NULL, last REAL, next REAL);
 CREATE TABLE IF NOT EXISTS plan_runs (plan TEXT NOT NULL, kept TEXT NOT NULL, at REAL NOT NULL);
@@ -57,6 +58,9 @@ CREATE TABLE IF NOT EXISTS dropped (kind TEXT NOT NULL, conv TEXT NOT NULL, at R
 # deleted, so the look through the disk does not bring them back.
 # said: what was said in a session, copied from the agents' own conversation files as they grow (reads: how far each file
 # has been read), so a session's words outlast those files, read the same whichever agent wrote them, and can be searched.
+# A copy says which reading made it (reads.v): one made by an older reading than SAID_V is made again from the file's start.
+# 2: words sent while the agent was at work are the person's words too (Claude Code keeps them as its own kind of line).
+SAID_V = 2
 WORDS = "CREATE VIRTUAL TABLE IF NOT EXISTS words USING fts5(text, kept UNINDEXED, seg UNINDEXED, n UNINDEXED, tokenize='trigram')"
 # how a conversation came to be a session's: 'new' (started for it), 'found' (already running, or on disk, when first
 # seen), 'clear' (the same terminal went on with a new conversation), 'handover' (another agent took the work on).
@@ -129,6 +133,8 @@ class Book:
             for col in ('wt', 'wt_branch', 'meta'):  # (a record made before a session could have a worktree of its own, or before what model it runs on was kept)
                 if col not in have:
                     c.execute(f"ALTER TABLE kept ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+            if 'v' not in {r['name'] for r in c.execute('PRAGMA table_info(reads)')}:  # (copies made before a reading had a number: all of reading 0)
+                c.execute('ALTER TABLE reads ADD COLUMN v INTEGER NOT NULL DEFAULT 0')
             try:  # (searching by any three characters in a row: where this SQLite has it; else a plain look through)
                 c.execute(WORDS)
                 self.fts = True
@@ -510,9 +516,15 @@ class Book:
         with self.read() as c:
             return {r['path']: dict(r) for r in c.execute('SELECT * FROM reads')}
 
-    def say(self, kid, seg, path, off, items, clipped=False):
-        """More of a conversation, read up to OFF of its file: items [{who, text, at}] go after what the record has."""
+    def say(self, kid, seg, path, off, items, clipped=False, whole=False):
+        """More of a conversation, read up to OFF of its file: items [{who, text, at}] go after what the record has. With
+        WHOLE the file was read again from its start (or, CLIPPED, from as far back as is read at all): the items are
+        all of it, in place of what the record had."""
         with self.tx() as c:
+            if whole:
+                c.execute('DELETE FROM said WHERE kept = ? AND seg = ?', (kid, seg))
+                if self.fts:
+                    c.execute('DELETE FROM words WHERE kept = ? AND seg = ?', (kid, seg))
             n = c.execute('SELECT MAX(n) m FROM said WHERE kept = ? AND seg = ?', (kid, seg)).fetchone()['m'] or 0
             for it in items:
                 text = str(it.get('text') or '')
@@ -522,7 +534,32 @@ class Book:
                 c.execute('INSERT INTO said (kept, seg, n, who, text, at) VALUES (?, ?, ?, ?, ?, ?)', (kid, seg, n, it.get('who') or '', text, it.get('at')))
                 if self.fts and it.get('who') in ('user', 'assistant'):
                     c.execute('INSERT INTO words (text, kept, seg, n) VALUES (?, ?, ?, ?)', (text, kid, seg, n))
-            c.execute('INSERT INTO reads (path, off, kept, seg, clipped) VALUES (?, ?, ?, ?, ?) ON CONFLICT (path) DO UPDATE SET off = excluded.off, kept = excluded.kept, seg = excluded.seg', (path, off, kid, seg, int(clipped)))
+            # (a file first met, or read whole, is of this reading; one only read further stays of the reading that began it)
+            c.execute('INSERT INTO reads (path, off, kept, seg, clipped, v) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (path) DO UPDATE SET off = excluded.off, kept = excluded.kept, seg = excluded.seg'
+                      + (', clipped = excluded.clipped, v = excluded.v' if whole else ''), (path, off, kid, seg, int(clipped), SAID_V))
+
+    def said_in(self, kid, seg):
+        """How many items the record has of one of a session's conversations."""
+        with self.read() as c:
+            return c.execute('SELECT COUNT(*) n FROM said WHERE kept = ? AND seg = ?', (kid, seg)).fetchone()['n']
+
+    def said_n(self, kid):
+        """How much of a session is in the record, and which of its conversations' files were first read from the middle
+        (so there is more of them in the file than here; 2 in reads.clipped: read as far back as can be): (items, paths)."""
+        with self.read() as c:
+            return (c.execute('SELECT COUNT(*) n FROM said WHERE kept = ?', (kid,)).fetchone()['n'],
+                    [r['path'] for r in c.execute('SELECT path FROM reads WHERE kept = ? AND clipped = 1', (kid,))])
+
+    def stale(self):
+        """The copies an older reading made: [{path, kept, seg, off, clipped, v}], to be made again."""
+        with self.read() as c:
+            return [dict(r) for r in c.execute('SELECT * FROM reads WHERE v < ?', (SAID_V,))]
+
+    def reread(self, path):
+        """A file that cannot be read again (gone, or not a session's any more) keeps the copy it has: it counts as of
+        this reading and as read as far back as it can be, so it is not tried each time."""
+        with self.tx() as c:
+            c.execute('UPDATE reads SET v = ?, clipped = CASE WHEN clipped = 1 THEN 2 ELSE clipped END WHERE path = ?', (SAID_V, path))
 
     def said(self, kid, limit=200, talk=False):
         """The last of what was said in a session, across its conversations, oldest first: [{who, text, at, seg, kind}];

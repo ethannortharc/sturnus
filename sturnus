@@ -508,6 +508,20 @@ def line_items(d):
     if not isinstance(d, dict):
         return out
     at = d.get('timestamp')
+    if d.get('type') == 'attachment':
+        # (words sent while the agent was at work: Claude Code hands them to it at its next step and keeps them as a
+        # line of this kind, where they took effect — the person's words all the same. What the harness queues the same
+        # way, a background task's notice, is one line; another session's message is not the person's)
+        a = d.get('attachment')
+        if isinstance(a, dict) and a.get('type') == 'queued_command':
+            t, _ = text_of(a.get('prompt'))
+            who = (a.get('origin') or {}).get('kind') or ('human' if a.get('commandMode') == 'prompt' and not a.get('isMeta') else a.get('commandMode'))
+            note = re.search(r'<summary>(.*?)</summary>', t, re.S) if who == 'task-notification' else None
+            if who == 'human' and t.strip() and not re.match(r'\s*<(task-notification|system-reminder|local-command|command-|cross-session-message)', t):
+                out.append({'who': 'user', 'text': t.strip()[:4000], 'at': at or a.get('timestamp')})
+            elif note:
+                out.append({'who': 'tool', 'text': tx(f'后台通知：{" ".join(note.group(1).split())[:200]}', f'Background notice: {" ".join(note.group(1).split())[:200]}'), 'at': at})
+        return out
     if d.get('type') in ('user', 'assistant') and isinstance(d.get('message'), dict):
         m = d['message']
         c = m.get('content')
@@ -538,6 +552,21 @@ def line_items(d):
         for tool in tools:
             out.append({'who': 'tool', 'text': tool, 'at': at})
     return out
+
+
+def said_of(data, path):
+    """Whole lines of a conversation file (bytes) as the items the record keeps of them: {who, text, at (seconds)}."""
+    lines = [INLINE_DATA.sub(b'"data":""', l) if len(l) > 300000 else l for l in data.split(b'\n') if l.strip() and not NOT_TALK.match(l)]
+    lines = [l.decode('utf-8', 'replace') for l in lines if len(l) <= 300000]
+    items = []
+    for l in cursor_lines(lines) if '/.cursor/projects/' in path else lines:
+        try:
+            items += line_items(json.loads(l))
+        except ValueError:
+            continue
+    for it in items:
+        it['at'] = stamp(it['at']) if isinstance(it.get('at'), str) else it.get('at')
+    return items
 
 
 def transcript_items(path, limit=120):
@@ -3859,23 +3888,76 @@ class Deck:
                     if len(data) == room:  # (one line longer than a pass reads: past it)
                         self.book.say(k['id'], seg['n'], path, off + len(data), [], clipped=first and off > 0)
                     continue
-                lines = [INLINE_DATA.sub(b'"data":""', l) if len(l) > 300000 else l for l in data[head:end].split(b'\n') if l.strip() and not NOT_TALK.match(l)]
-                lines = [l.decode('utf-8', 'replace') for l in lines if len(l) <= 300000]
-                items = []
-                for l in cursor_lines(lines) if '/.cursor/projects/' in path else lines:
-                    try:
-                        items += line_items(json.loads(l))
-                    except ValueError:
-                        continue
-                for it in items:
-                    it['at'] = stamp(it['at']) if isinstance(it.get('at'), str) else it.get('at')
-                self.book.say(k['id'], seg['n'], path, off + end + 1, items, clipped=first and off > 0)
+                self.book.say(k['id'], seg['n'], path, off + end + 1, said_of(data[head:end], path), clipped=first and off > 0)
+
+    def keep_whole(self, kid, seg, room=512 << 20):
+        """One of a session's conversations read again from its file's start, and the record's copy of it replaced in one
+        step: for a long file first read from near its end, when the page is asked for what came before; and for a
+        copy an older reading made (kept.py's SAID_V). A file longer than ROOM is read from ROOM before its end. A file
+        that now holds less than the copy does leaves the copy as it is. Returns whether the copy was made."""
+        path = seg['path'] if seg['path'] and os.path.exists(seg['path']) else transcript_of({'kind': seg['kind'], 'session': seg['conv']})
+        if not path or path.endswith('/store.db'):
+            return False
+        with self.keep_lock:
+            items, carry, done = [], b'', 0
+            try:
+                size = os.path.getsize(path)
+                with open(path, 'rb') as f:
+                    f.seek(max(0, size - room))
+                    if f.tell():
+                        f.readline()  # (begun in the middle of a line: from the next one)
+                    base = f.tell()
+                    while base + done + len(carry) < size:
+                        data = carry + f.read(min(8 << 20, size - base - done - len(carry)))
+                        end = data.rfind(b'\n')
+                        if end < 0:
+                            if len(data) == len(carry):
+                                break  # (the file is shorter than it said)
+                            carry = data  # (a line longer than one read: more of it)
+                            continue
+                        items += said_of(data[:end], path)
+                        done, carry = done + end + 1, data[end + 1:]
+            except OSError:
+                return False
+            # (the record's copy outlasts the file: a file cut short or written anew since it was read has less than the copy, which then stays)
+            if len([1 for it in items if str(it.get('text') or '').strip()]) < self.book.said_in(kid, seg['n']):
+                return False
+            self.book.say(kid, seg['n'], path, base + done, items, clipped=2 if base else 0, whole=True)  # (2: from as far back as is read at all)
+        return True
+
+    def keep_again(self, room=256 << 20):
+        """The copies an older reading made, made again, a few each pass (ROOM bytes of files at most, one file at least):
+        sessions running now first, then the latest. A file that is gone keeps the copy it has."""
+        rows = self.book.stale()
+        if not rows:
+            return
+        kept = {k['id']: k for k in self.book.all()}
+        rows.sort(key=lambda r: (not (kept.get(r['kept']) or {}).get('live'), -((kept.get(r['kept']) or {}).get('at') or 0)))
+        done = False
+        for r in rows:
+            k = self.book.get(r['kept']) if r['kept'] in kept else None
+            seg = next((x for x in (k or {}).get('segs') or [] if x['n'] == r['seg']), None)
+            try:
+                size = os.path.getsize(r['path'])
+            except OSError:
+                size = None
+            if not seg or size is None or (seg['path'] and seg['path'] != r['path']):
+                self.book.reread(r['path'])
+                continue
+            if size > room and done:
+                break  # (too much for what is left of this pass: the next one begins with it)
+            if not self.keep_whole(r['kept'], {**seg, 'path': r['path']}):
+                self.book.reread(r['path'])
+            room, done = room - size, True
+            if room <= 0:
+                break
 
     def keep_loop(self):
         time.sleep(12)
         while True:
             try:
                 self.keep_talk()
+                self.keep_again()
             except Exception as e:
                 self.note(tx(f'抄录对话出错：{e!r}', f'Copying the conversations failed: {e!r}'), False)
             time.sleep(15)
@@ -3986,6 +4068,26 @@ class Deck:
                 hit = self.items[path] = ((st.st_size, st.st_mtime), transcript_items(path, limit))
             out += [{**it, 'seg': seg['n'], 'kind': seg['kind']} for it in hit[1]]
         return out[-limit:]
+
+    def kept_said(self, kid, limit=200):
+        """The last LIMIT of what was said in a session, and whether there is more before it: (items, more). Asked for
+        more than the record holds of a conversation that was first read from near its end, the whole file is read
+        now, once."""
+        limit = max(50, min(int(limit or 200), 20000))
+        items = self.kept_items(kid, limit)
+        try:
+            n, clipped = self.book.said_n(kid)
+            if clipped and limit > 200 and n < limit:
+                segs = {r['path']: r['seg'] for r in self.book.readings().values() if r['kept'] == kid}
+                for path in clipped:
+                    seg = next((x for x in (self.book.get(kid) or {}).get('segs') or [] if x['n'] == segs.get(path)), None)
+                    if not seg or not self.keep_whole(kid, {**seg, 'path': path}):
+                        self.book.reread(path)  # (its beginning cannot be read: not asked for again)
+                items = self.kept_items(kid, limit)
+                n, clipped = self.book.said_n(kid)
+            return items, n > len(items) or bool(clipped)
+        except (sqlite3.Error, OSError):
+            return items, False
 
     @staticmethod
     def kept_words(e):
@@ -4465,16 +4567,16 @@ def at_menu(s):
 
 
 def say_how(s, now=False):
-    """How the person's words for a session get there: typed into its pane when it is idle (or now, if asked); held until
-    its turn ends while it works; not at all while it sits at a permission or choice prompt (they would answer it); by
-    mail when it is in no pane."""
+    """How the person's words for a session get there: typed into its pane, at work or not (the agents' own command
+    lines take words in the middle of a turn, and hand them over at the next step); not at all while it sits at a
+    permission or choice prompt (they would answer it); by mail when it is in no pane."""
     if s['state'] in ('gone', 'ended'):
         return 'gone'
     if at_menu(s):
         return 'menu'
     if not s.get('loc'):
         return 'mail'
-    return 'queue' if s['state'] == 'working' and not now else 'type'
+    return 'type'
 
 
 def codex_set_name(thread, name):
@@ -5511,13 +5613,17 @@ class Handler(BaseHTTPRequestHandler):
             from urllib.parse import urlparse, parse_qs
             q = parse_qs(urlparse(self.path).query)
             sid, sub = (q.get('id') or [''])[0], (q.get('sub') or [''])[0]
-            if (q.get('kept') or [''])[0]:  # (a session that lasts: all its conversations, one after another)
-                items = DECK.kept_items(q['kept'][0])
+            if (q.get('kept') or [''])[0]:  # (a session that lasts: all its conversations, one after another; N of them, the last 200 unless more are asked for)
+                try:
+                    n = int((q.get('n') or ['200'])[0])
+                except ValueError:
+                    n = 200
+                items, more = DECK.kept_said(q['kept'][0], n)
                 # (the page that shows it asks every second or so while it works: what it already has is not sent again)
                 sig = hashlib.sha1(json.dumps([len(items)] + [[i.get('seg'), i.get('at'), i.get('who'), len(i.get('text') or '')] for i in items[-4:]]).encode()).hexdigest()[:16]
                 if (q.get('have') or [''])[0] == sig:
-                    return self.send_json({'same': True, 'sig': sig})
-                return self.send_json({'items': items, 'sig': sig})
+                    return self.send_json({'same': True, 'sig': sig, 'more': more})
+                return self.send_json({'items': items, 'sig': sig, 'more': more})
             s = DECK.find(sid)
             path = transcript_of(s) if s else None
             if path and sub:  # (one of its sub-agents' conversations, from beside its own)

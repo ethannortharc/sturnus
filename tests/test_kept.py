@@ -377,6 +377,27 @@ class Keeping(unittest.TestCase):
         b.drop(kid)
         self.assertEqual((b.find('改成连'), b.said(kid), b.reading('/t/c1.jsonl')), ([], [], None))
 
+    def test_a_conversation_read_again_whole_takes_the_place_of_its_copy(self):
+        b = book()
+        kid = b.bind([row()], now=200)['claude:c1']
+        b.say(kid, 1, '/t/c1.jsonl', 900, [{'who': 'user', 'text': 'the last of it', 'at': 9}], clipped=True)  # (first met: read from near its end)
+        self.assertEqual((b.said_n(kid), b.reading('/t/c1.jsonl')['v'], b.stale()), ((1, ['/t/c1.jsonl']), K.SAID_V, []))
+        b.say(kid, 1, '/t/c1.jsonl', 950, [{'who': 'assistant', 'text': 'and on', 'at': 10}])  # (read further: still one read from the middle)
+        self.assertEqual(b.said_n(kid), (2, ['/t/c1.jsonl']))
+        whole = [{'who': 'user', 'text': 'how it began', 'at': 1}, {'who': 'user', 'text': 'the last of it', 'at': 9}, {'who': 'assistant', 'text': 'and on', 'at': 10}]
+        b.say(kid, 1, '/t/c1.jsonl', 950, whole, clipped=0, whole=True)
+        self.assertEqual(([x['text'] for x in b.said(kid)], b.said_n(kid), [x['text'] for x in b.find('the last of it')]), (['how it began', 'the last of it', 'and on'], (3, []), ['the last of it']))
+        # a record from before a copy said which reading made it: its copies are all to be made again; one that cannot be keeps what it has
+        import sqlite3
+        c = sqlite3.connect(b.path)
+        c.executescript('ALTER TABLE reads RENAME TO r0; CREATE TABLE reads (path TEXT PRIMARY KEY, off INTEGER NOT NULL, kept TEXT NOT NULL, seg INTEGER NOT NULL, clipped INTEGER NOT NULL DEFAULT 0);'
+                        'INSERT INTO reads SELECT path, off, kept, seg, 1 FROM r0; DROP TABLE r0;')
+        c.close()
+        b = K.Book(b.path)
+        self.assertEqual(([(r['path'], r['v']) for r in b.stale()], b.said_n(kid)[1]), ([('/t/c1.jsonl', 0)], ['/t/c1.jsonl']))
+        b.reread('/t/c1.jsonl')
+        self.assertEqual((b.stale(), b.said_n(kid), b.reading('/t/c1.jsonl')['clipped']), ([], (3, []), 2))
+
     def test_the_list_is_newest_first_with_what_each_runs_on(self):
         b = book()
         b.bind([row(), row(id='claude:c2', session='c2', pid=501, at=300, loc={'mux': 'zellij', 'session': 'work', 'pane': '4'})], now=310)

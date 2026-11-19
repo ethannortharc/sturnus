@@ -248,10 +248,23 @@ a.wk-row:hover, .wk-row:hover { background: var(--panel-2); }
 .wk-row.add .field { height: 32px; font-family: var(--font-mono); font-size: 12.5px; background: var(--panel); }
 .wk-row .btn { flex: none; }
 .wk-danger { display: flex; align-items: center; gap: 12px; margin-top: 26px; padding-top: 16px; border-top: 1px solid var(--hair); }
-.wk-new { max-width: 560px; display: flex; flex-direction: column; gap: 14px; }
-.wk-new label { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--muted); }
-.wk-new .row { display: flex; align-items: center; gap: 12px; }
-.wk-new .row .hint { flex: 1; }
+/* a new workspace: one card in the middle of the page, as the new session's box is */
+.kn-in.wkn { max-width: 580px; gap: 20px; }
+.wkn-h p { margin: 8px 0 0; font-size: 13.5px; line-height: 1.6; color: var(--muted); }
+.wkn-card { border: 1px solid color-mix(in srgb, var(--ink) 14%, transparent); border-radius: 16px; background: var(--panel); box-shadow: var(--shadow-1), 0 10px 26px -14px rgba(24, 22, 18, .22); padding: 20px 20px 16px; display: flex; flex-direction: column; gap: 18px; }
+.wkn-f { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.wkn-f label { font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
+.wkn-f .field { flex: none; width: 100%; height: 38px; font-size: 14px; }  /* (in a column the field's own flex: 1 would take its height away) */
+.wkn-f .field.mono { font-family: var(--font-mono); font-size: 13px; }
+.wkn-f .hint { margin: 0; line-height: 1.55; }
+.wkn-dirs { display: flex; flex-wrap: wrap; gap: 6px; }
+.wkn-dirs button { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; height: 28px; padding: 0 10px 0 8px; border-radius: 8px; border: 1px solid var(--hair); background: var(--panel-2); color: var(--ink-2); font: 12px var(--font-mono); }
+.wkn-dirs button:hover { border-color: color-mix(in srgb, var(--ink) 30%, transparent); color: var(--ink); }
+.wkn-dirs button.on { border-color: var(--ink); background: var(--panel); color: var(--ink); }
+.wkn-dirs button svg { flex: none; width: 13px; height: 13px; opacity: .7; }
+.wkn-dirs button span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wkn-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 2px; padding-top: 14px; border-top: 1px solid var(--hair-2); }
+.wkn-foot .btn { height: 34px; padding: 0 14px; }
 #allQ { display: block; width: 100%; max-width: 420px; margin-bottom: 14px; }
 .choice.kway { display: flex; flex-direction: column; gap: 8px; }
 .choice.kway button { text-align: left; }
@@ -356,3 +369,42 @@ a.wk-row:hover, .wk-row:hover { background: var(--panel-2); }
 .kmodel-row button svg, .kmodel-row button .no { display: none; }
 .kmodel-row button.on { background: color-mix(in srgb, var(--ink) 9%, transparent); }
 .kmodel-note { margin: 6px 9px 4px; font-size: 11.5px; line-height: 1.55; color: var(--muted); white-space: normal; }
+
+/* a session's overview: doing now, its report and timeline, what was settled beside them; one column when its place is narrow */
+.kp.tab-overview .kp-scroll { container-type: inline-size; }
+.kov { max-width: 1180px; margin: 0 auto; padding: 22px 28px 60px; }
+.kov-now { display: flex; align-items: baseline; gap: 12px; margin: 0 2px 16px; font-size: 13.5px; line-height: 1.6; }
+.kov-now b { flex: none; font-size: 12px; font-weight: 650; color: var(--muted); }
+.kov-now p { flex: 1; min-width: 0; margin: 0; color: var(--ink); }
+.kov-now time { flex: none; font-size: 12px; color: var(--faint); white-space: nowrap; }
+.kov-grid { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); grid-template-rows: auto 1fr; gap: 18px; align-items: start; }
+.kov-a { grid-column: 1; grid-row: 1; } .kov-b { grid-column: 2; grid-row: 1 / span 2; } .kov-c { grid-column: 1; grid-row: 2; }
+/* (narrow: one column, in reading order — the report, what was settled, then the long timeline) */
+@container (max-width: 860px) { .kov-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; } .kov-a, .kov-b, .kov-c { grid-column: 1; grid-row: auto; } .kov { padding: 18px 20px 48px; } }
+.kov .panel { margin-bottom: 0; }
+.kov-rep { padding: 18px 20px 20px; font-size: 13.5px; line-height: 1.6; border-radius: 16px; }
+.kov-rep h4 .r { display: inline-flex; align-items: center; gap: 10px; }
+.kov-rep h4 .btn { height: 28px; padding: 0 11px; font-size: 12.5px; }
+.kov-rep .goal { font-size: 14.5px; }
+/* ... and what it is, beside it */
+.kp-info h3 { display: flex; align-items: baseline; gap: 8px; }
+.kp-info h3 .lnk { margin-left: auto; font-size: 12px; font-weight: 550; color: var(--muted); text-decoration: none; }
+.kp-info h3 .lnk:hover { color: var(--ink); text-decoration: underline; }
+.kv-ed { flex: none; display: inline-grid; place-items: center; width: 22px; height: 22px; margin: -3px 0 -3px 4px; border: 0; border-radius: 6px; background: none; color: var(--faint); padding: 0; vertical-align: middle; }
+.kv-ed:hover { background: color-mix(in srgb, var(--ink) 8%, transparent); color: var(--ink); }
+.kv-ed svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.kp-info .kv dd.kconv { display: flex; align-items: center; min-width: 0; }
+.kp-info .kv dd.kconv span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kp-info .kname .inline { align-items: center; gap: 6px; }
+.kp-info .kname .field { height: 28px; min-width: 0; font-size: 12px; font-family: var(--font-mono); background: var(--panel); padding: 0 8px; }
+.kp-info .kname .btn { height: 28px; padding: 0 10px; font-size: 12px; align-self: center; }
+.kp-info .tkp-pick { margin-top: 2px; align-items: center; gap: 6px; }
+.kp-info .tkp-pick .sel { flex: 1 1 auto; min-width: 0; }
+.kp-info .tkp-pick .btn, .kp-info .kid-row .btn { height: 28px; padding: 0 10px; font-size: 12px; align-self: center; }
+.kp-info .kid-row b { display: block; font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kp-info .kid-row > div:hover b { text-decoration: underline; }
+.kp-info .lnk { align-self: flex-start; }
+/* the conversation: the words before what is shown, on asking */
+.kmore { display: flex; justify-content: center; min-height: 30px; align-items: center; }
+.kmore .btn { height: 30px; padding: 0 14px; font-size: 12.5px; }
+.kmore .hint { display: inline-flex; align-items: center; }

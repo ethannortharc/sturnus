@@ -163,7 +163,7 @@ function standing(s) {
 const titleOf = s => s.title || (s.summary ? s.summary.split(/[，。；,;：:]/)[0].slice(0, 18) : '') || (s.unknown ? t('还认不出在做什么') : s.name);
 // how words for a session get there (as the deck's say_how): typed when idle, held while it works, never into a prompt
 const asking = s => ['AskUserQuestion', 'ExitPlanMode'].includes(s.tool) && s.state === 'working' && (s.tool_at || 0) > (s.tool_end || 0);
-const sayHow = s => (['gone', 'ended'].includes(s.state) ? 'gone' : s.prompting || asking(s) ? 'menu' : !s.loc ? 'mail' : s.state === 'working' ? 'queue' : 'type');
+const sayHow = s => (['gone', 'ended'].includes(s.state) ? 'gone' : s.prompting || asking(s) ? 'menu' : !s.loc ? 'mail' : 'type');  // (at work or not, words go into its terminal: its own command line takes them mid-turn)
 const projOf = k => (S.projects || {})[k] || null;
 const wsOf = k => (S.workspaces || []).find(w => w.key === k) || null;
 const boardOf = k => (S.boards || {})[k] || null;
@@ -1833,22 +1833,22 @@ function asksPanel(s) {
       <div class="ask-acts"><button class="btn" data-ask-done="${esc(x.id)}">${I.check}${t('已处理')}</button></div></div>`).join('')}${n ? '' : `
     <div class="hint">${t('现在没有等你确认的事。它要你确认的事会一直列在这里，直到你点「已处理」，或者它之后的总结看出你已经回应了。')}</div>`}</div>`;
 }
-function drawSay(s) { draw('say', [s.id, sayHow(s), S.voice && S.voice.on, sig.ov], () => { if ($('#sayRow')) $('#sayRow').innerHTML = sayRow(s); }); }
+function drawSay(s) { draw('say', [s.id, sayHow(s), s.state === 'working', S.voice && S.voice.on, sig.ov], () => { if ($('#sayRow')) $('#sayRow').innerHTML = sayRow(s); }); }
 // words for it: one way to send, which follows how it stands (as the deck's say_how)
 const SAY = {
   type: ['发到它的终端', '它空着：像你在它终端里敲一样，马上送到。'],
-  queue: ['等它这一轮做完再发', '它正在做事：你的原话会在它这一轮做完时送到。急的话「现在就插进去」，它自己的命令行会接着处理。'],
   mail: ['放进它的信箱', '它不在 Zellij 或 tmux 里：放进它的 amail 信箱，它下一步就会看到。'],
   menu: ['先进终端处理', '它停在一个授权或选择提示上，这时打进去的字会被当成对提示的回答：先进终端处理它。'],
   gone: ['已经退出了', '它已经退出了。'],
 };
 function replyBox(s) {
-  return `<div class="reply"><textarea id="rText" placeholder="${t('对 {n} 说……  ⌘/Ctrl+Enter 发送', { n: esc(s.name) })}"></textarea><div class="row" id="sayRow">${sayRow(s)}</div></div>`;
+  // (on a desk Enter sends and Shift+Enter makes a new line; a phone's keyboard keeps Enter for the line)
+  return `<div class="reply"><textarea id="rText" placeholder="${phone() ? t('对 {n} 说……  ⌘/Ctrl+Enter 发送', { n: esc(s.name) }) : esc(tt(`对 ${s.name} 说……  Enter 发送，Shift+Enter 换行`, `Words for ${s.name}…  Enter sends, Shift+Enter for a new line`))}"></textarea><div class="row" id="sayRow">${sayRow(s)}</div></div>`;
 }
 function sayRow(s) {
-  const how = sayHow(s), [label, hint] = SAY[how].map(x => t(x));
+  const how = sayHow(s), busy = how === 'type' && s.state === 'working', label = t(SAY[how][0]);
+  const hint = busy ? tt('它正在做事：这句话现在就打进它的终端，它做完手上这一步就读到，不用等这一轮结束。', 'It is at work: this goes into its terminal now, and it reads it once it is through with the step in hand, not at the end of its turn.') : t(SAY[how][1]);
   return `${micBtn('rText')}<button class="btn" data-act="draft">${I.spark}${t('帮我起草')}</button><span class="sp"></span>
-    ${how === 'queue' ? `<button class="btn" data-act="say-now" title="${t('不等了：现在就打进它的终端')}">${t('现在就插进去')}</button>` : ''}
     ${how === 'menu' ? `<button class="btn dark" data-tab-go="term" ${webOk(s) ? '' : 'disabled'}>${I.enter}${label}</button>` : `<button class="btn primary" data-act="say" ${how === 'gone' ? 'disabled' : ''}>${how === 'type' ? I.enter : how === 'mail' ? I.mail : I.arrow}${label}</button>`}
     <div class="say-hint">${hint}</div>`;
 }
@@ -2784,7 +2784,12 @@ document.addEventListener('keydown', e => {
   const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
   const overlay = ['#palette', '#settings', '#newSess', '#taskPanel', '#phoneMenu'].some(id => !$(id).hidden);
   if (e.key === 'Escape') { if (overlay) closeOverlays(); else if (route.name === 'session' && !typing) location.hash = '#/'; return; }
-  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && document.activeElement.id === 'rText') { const b = document.querySelector('[data-act="say"]:not([disabled])'); if (b) b.click(); return; }
+  // (words for a session: Enter sends them, Shift+Enter makes a new line; not while an input method is still composing, and on a phone only with ⌘/Ctrl)
+  if (e.key === 'Enter' && document.activeElement.id === 'rText' && (e.metaKey || e.ctrlKey || (!phone() && !e.shiftKey && !e.altKey && !e.isComposing && e.keyCode !== 229))) {
+    const b = document.querySelector('[data-act="say"]:not([disabled])');
+    if (b) { e.preventDefault(); b.click(); }
+    return;
+  }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openPalette(); return; }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'j') { e.preventDefault(); asstToggle(); return; }
   if (!typing && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') { e.preventDefault(); setSide(!sideOff); return; }

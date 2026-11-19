@@ -163,7 +163,7 @@ class View(unittest.TestCase):
 
     def test_names_of_project_and_workspace_and_how_words_get_there(self):
         [r] = self.view([session(project='p1', workspace='w1', state='working')])['sessions']
-        self.assertEqual((r['project'], r['workspace'], r['say'], r['pane']), ('sturnus', 'software', 'queue', True))
+        self.assertEqual((r['project'], r['workspace'], r['say'], r['pane']), ('sturnus', 'software', 'type', True))  # (at work: typed into its terminal all the same, where its own command line takes it mid-turn)
 
     def test_groups_are_named_as_a_new_session_takes_them(self):
         deck = FakeDeck([session(loc={'mux': 'tmux', 'session': 'tmux:t', 'pane': '%0'})])
@@ -523,6 +523,75 @@ class Models(unittest.TestCase):
         self.assertEqual(S.conv_meta(cx, 'codex'), {'model': 'gpt-6.2-sol', 'effort': 'xhigh', 'speed': 'fast'})
         open(f'{d}/empty.jsonl', 'w').close()
         self.assertEqual((S.conv_meta(f'{d}/empty.jsonl', 'claude'), S.conv_meta(f'{d}/none.jsonl', 'codex'), S.conv_meta(cc, 'cursor')), ({}, {}, {}))
+
+
+class Talk(unittest.TestCase):
+    """What was said in a session, as the record keeps it: the words sent mid-turn too, the earlier part of a long file
+    on asking, and a copy an older reading made, made again."""
+
+    line = staticmethod(lambda who, text, at: json.dumps({'type': who, 'message': {'role': who, 'content': text}, 'timestamp': at}))
+    mid = staticmethod(lambda text, at, **more: json.dumps({'type': 'attachment', 'timestamp': at, 'attachment': {'type': 'queued_command', 'prompt': text, 'commandMode': 'prompt',
+                                                                                                                 'origin': {'kind': 'human'}, 'humanTurn': True, **more}}))
+
+    def test_words_sent_mid_turn_are_the_person_s_words(self):
+        at = '2026-11-18T10:00:00.000Z'
+        self.assertEqual(S.line_items(json.loads(self.mid('and one more thing', at))), [{'who': 'user', 'text': 'and one more thing', 'at': at}])
+        note = self.mid('<task-notification>\n<task-id>b1</task-id>\n<summary>Background command "x" completed</summary>\n</task-notification>', at,
+                        commandMode='task-notification', origin={'kind': 'task-notification'}, humanTurn=None)
+        self.assertEqual([(i['who'], i['text'][-21:]) for i in S.line_items(json.loads(note))], [('tool', 'command "x" completed')])
+        peer = self.mid('<cross-session-message from="uds:/tmp/x">hello</cross-session-message>', at, origin={'kind': 'peer'}, isMeta=True, humanTurn=None)
+        self.assertEqual(S.line_items(json.loads(peer)), [])  # (another session's message is not the person's)
+        self.assertEqual(S.line_items({'type': 'queue-operation', 'operation': 'enqueue', 'timestamp': at, 'content': 'and one more thing'}), [])  # (said once, where it took effect)
+
+    def test_the_whole_of_a_long_conversation_on_asking_and_an_old_copy_made_again(self):
+        d = tempfile.mkdtemp(dir=TMP)
+        path, t = f'{d}/long.jsonl', lambda i: time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime(1_700_000_000 + i))
+        early = [x for i in range(60) for x in (self.line('user', f'early ask {i}', t(2 * i)), self.line('assistant', f'early answer {i}', t(2 * i + 1)))]
+        fill = [json.dumps({'type': 'user', 'message': {'role': 'user', 'content': [{'type': 'tool_result', 'content': 'x' * 250_000}]}, 'timestamp': t(200)})] * 28  # (7 MB of tool output: no words)
+        late = [x for i in range(20) for x in (self.line('user', f'late ask {i}', t(300 + 3 * i)), self.mid(f'late aside {i}', t(301 + 3 * i)), self.line('assistant', f'late answer {i}', t(302 + 3 * i)))]
+        with open(path, 'w') as f:
+            f.write('\n'.join(early + fill + late) + '\n')
+        deck = type('D', (), {n: getattr(S.Deck, n) for n in ('keep_talk', 'keep_whole', 'keep_again', 'kept_items', 'kept_said')})()
+        deck.book, deck.keep_lock, deck.items = S.K.Book(f'{d}/sessions.db'), threading.RLock(), {}
+        self.assertEqual(deck.book.learn([{'kind': 'claude', 'conv': 'long-1', 'path': path, 'folder': d, 'began': 1_700_000_000, 'at': 1_700_000_400, 'title': 'long'}]), 1)
+        kid = deck.book.all()[0]['id']
+
+        # first met, a long file is read from near its end: the page has the last of it, and is told there is more
+        items, more = deck.kept_said(kid, 200)
+        self.assertEqual(([i['text'] for i in items[:3]], len(items), more), (['late ask 0', 'late aside 0', 'late answer 0'], 60, True))
+        self.assertEqual((items[1]['who'], deck.book.said_n(kid)), ('user', (60, [path])))
+        self.assertEqual(deck.kept_said(kid, 50)[1], True)
+        # asked for more than the record holds: the file is read whole, once, and its words are in order
+        items, more = deck.kept_said(kid, 600)
+        self.assertEqual(([i['text'] for i in items[:2]], [i['text'] for i in items[118:122]], len(items), more), (['early ask 0', 'early answer 0'], ['early ask 59', 'early answer 59', 'late ask 0', 'late aside 0'], 180, False))
+        self.assertEqual((deck.book.said_n(kid), deck.book.reading(path)['off'], len(deck.book.find('late aside 7'))), ((180, []), os.path.getsize(path), 1))
+        items, more = deck.kept_said(kid, 50)  # (the last fifty, and more before them)
+        self.assertEqual((len(items), items[-1]['text'], more), (50, 'late answer 19', True))
+        # what is written after that goes after it, as before
+        with open(path, 'a') as f:
+            f.write(self.line('user', 'one more', t(400)) + '\n')
+        self.assertEqual([i['text'] for i in deck.kept_said(kid, 600)[0][-2:]], ['late answer 19', 'one more'])
+
+        # a copy an older reading made (here: one that passed over the words sent mid-turn) is made again from the file
+        with deck.book.tx() as c:
+            c.execute("DELETE FROM said WHERE text LIKE 'late aside%'")
+            c.execute('UPDATE reads SET v = 0')
+        self.assertEqual((deck.book.said_n(kid)[0], len(deck.book.stale())), (161, 1))
+        deck.keep_again()
+        self.assertEqual((deck.book.said_n(kid)[0], deck.book.stale(), [i['text'] for i in deck.kept_said(kid, 600)[0][-3:]]), (181, [], ['late aside 19', 'late answer 19', 'one more']))
+        # a file cut short since it was read has less than the copy: the copy stays as it is
+        with open(path, 'w') as f:
+            f.write(self.line('user', 'written anew', t(500)) + '\n')
+        with deck.book.tx() as c:
+            c.execute('UPDATE reads SET v = 0')
+        deck.keep_again()
+        self.assertEqual((deck.book.stale(), deck.book.said_n(kid)[0], deck.kept_said(kid, 600)[0][0]['text']), ([], 181, 'early ask 0'))
+        # a file that is gone keeps the copy it has, and is not tried again
+        with deck.book.tx() as c:
+            c.execute('UPDATE reads SET v = 0, clipped = 1')
+        os.remove(path)
+        deck.keep_again()
+        self.assertEqual((deck.book.stale(), deck.book.said_n(kid), deck.kept_said(kid, 600)[1]), ([], (181, []), False))
 
 
 class Tidying(unittest.TestCase):

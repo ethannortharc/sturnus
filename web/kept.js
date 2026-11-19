@@ -19,8 +19,8 @@ if (!KSORT[KV.sort]) KV.sort = 'state';
 KV.arr = false;  // (the menu of those two, open)
 // (what the person sent from a session's page and its conversation does not show yet: shown at once, under the conversation)
 Object.assign(KV, { sent: {}, sentN: 0, chatBusy: false, chatFast: 0, take: '' });
-const KSENT = { sending: ['发送中……', 'Sending…'], type: ['已送到它的终端', 'In its terminal'], wait: ['已送到它的终端，它忙完这一步就读', 'In its terminal: read once it is through with this step'],
-  queue: ['已排上队：它空下来就送到', 'Queued: delivered once it is free'], mail: ['已放进它的信箱，它下一步就会看到', 'In its mailbox: it sees it next'], start: ['终端起来后送到', 'Delivered once its terminal is up'] };
+const KSENT = { sending: ['发送中……', 'Sending…'], type: ['已送到它的终端', 'In its terminal'], wait: ['已送到它的终端，它做完手上这一步就读', 'In its terminal: read once it is through with the step in hand'],
+  mail: ['已放进它的信箱，它下一步就会看到', 'In its mailbox: it sees it next'], start: ['终端起来后送到', 'Delivered once its terminal is up'] };
 const KN = { kind: store.get('deck.newKind', 'claude'), space: store.get('deck.kSpace', null), dir: '', wt: store.get('deck.kWt', false) };  // (space: null until the person has picked one, or none)
 const KI = {
   side: '<svg viewBox="0 0 20 20"><rect x="3.5" y="4.5" width="13" height="11" rx="2"/><path d="M8 4.5v11"/></svg>',
@@ -29,6 +29,7 @@ const KI = {
   pin: '<svg viewBox="0 0 20 20"><path d="M7.5 3.5h5l-.8 5 2.5 2.5H5.8l2.5-2.5zM10 11v5.5"/></svg>',
   dots: '<svg viewBox="0 0 20 20"><path d="M5 10h.01M10 10h.01M15 10h.01" stroke-width="2.6"/></svg>',
   copy: '<svg viewBox="0 0 20 20"><rect x="7.5" y="7.5" width="8" height="8" rx="1.6"/><path d="M4.5 12.5V6A1.5 1.5 0 0 1 6 4.5h6.5"/></svg>',
+  pen: '<svg viewBox="0 0 20 20"><path d="M4.5 15.5l.7-3.2 7.9-7.9a1.4 1.4 0 0 1 2 0l.5.5a1.4 1.4 0 0 1 0 2l-7.9 7.9zM11.8 5.7l2.5 2.5"/></svg>',
   play: '<svg viewBox="0 0 20 20"><path d="M7.5 5v10l8-5z"/></svg>',
   gear: '<svg viewBox="0 0 20 20"><path d="M8.6 2.8h2.8l.4 2 1.6.9 1.9-.7 1.4 2.4-1.5 1.3v1.8l1.5 1.3-1.4 2.4-1.9-.7-1.6.9-.4 2H8.6l-.4-2-1.6-.9-1.9.7-1.4-2.4 1.5-1.3V9.1L3.3 7.8l1.4-2.4 1.9.7 1.6-.9z"/><circle cx="10" cy="10" r="2.3"/></svg>',
   x: '<svg viewBox="0 0 20 20"><path d="m5.5 5.5 9 9M14.5 5.5l-9 9"/></svg>',
@@ -49,7 +50,7 @@ KV.pages = new Map();
 function kPage(id) {
   let p = KV.pages.get(id);
   if (p) KV.pages.delete(id);
-  else p = { items: null, sig: '', top: 0, atEnd: true, tools: new Set(), draft: '', diffDraft: '', diff: { at: 0, data: null, files: {}, filesAt: 0, open: new Set(), busy: false } };
+  else p = { items: null, sig: '', n: 200, more: false, moreBusy: false, hold: null, top: 0, atEnd: true, tools: new Set(), draft: '', diffDraft: '', diff: { at: 0, data: null, files: {}, filesAt: 0, open: new Set(), busy: false } };
   KV.pages.set(id, p);
   if (KV.pages.size > 40) KV.pages.delete(KV.pages.keys().next().value);
   return p;
@@ -93,7 +94,8 @@ async function kAll(force) {  // (every session, the archived too: for the page 
 const kDo = async (what, body) => { const j = await api(what, body).catch(e => ({ ok: false, msg: e.message })); if (j.msg) toast(j.msg, j.ok); await load(); return j; };
 
 // ---------- addresses ----------
-function kRoute(kid, tab, lid) { return { name: 'session', kept: kid, id: lid || '', tab: tab || 'chat' }; }
+// (a session's report is part of its overview now: an address that says report still leads there)
+function kRoute(kid, tab, lid) { return { name: 'session', kept: kid, id: lid || '', tab: tab === 'report' ? 'overview' : tab || 'chat' }; }
 window.parseRoute = function () {
   const h = location.hash.replace(/^#/, '');
   KV.blind = !S;  // (read before the first look at the deck: read again once it is there)
@@ -235,13 +237,14 @@ function kDrawSide() {
 function kBuildHome() {
   $('#view').innerHTML = `<div class="kn"><div class="kn-in">
     <h1>${tt('要做什么？', 'What needs doing?')}</h1>
-    <form class="kn-box" id="knForm" autocomplete="off"><textarea id="knText" rows="3" aria-label="${tt('这条会话要做的事', 'What this session is to do')}" placeholder="${tt('说说这条会话要做的事（也可以先不说，开起来再讲）', 'Say what this session is to do (or leave it empty and say it once it is up)')}"></textarea>
+    <form class="kn-box" id="knForm" autocomplete="off"><textarea id="knText" rows="3" aria-label="${tt('这条会话要做的事', 'What this session is to do')}" placeholder="${tt('说说这条会话要做的事（也可以先不说，开起来再讲）。Enter 发送，Shift+Enter 换行', 'Say what this session is to do (or leave it empty and say it once it is up). Enter sends, Shift+Enter for a new line')}"></textarea>
       <div class="kn-row" id="knRow"></div></form>
     <div class="kn-opts" id="knOpts"></div><div id="knRecover"></div>
     <section class="entry"><div class="h-title"><h2>${tt('等你处理', 'Needs you')}</h2><span class="sub" id="attnSub"></span></div><div id="attn"></div></section>
   </div></div>`;
   $('#knForm').addEventListener('submit', e => { e.preventDefault(); kStart(); });
-  $('#knText').addEventListener('keydown', e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); kStart(); } });
+  // (Enter starts it once something is written; an empty box, which this page opens on, starts one only by ⌘/Ctrl+Enter or the button)
+  $('#knText').addEventListener('keydown', e => { if (kEnter(e)) { e.preventDefault(); if (e.target.value.trim() || e.metaKey || e.ctrlKey) kStart(); } });
   setTimeout(() => $('#knText') && $('#knText').focus(), 40);
 }
 function kDrawHome() {
@@ -300,8 +303,8 @@ function kBuildNeed() {
 
 // ---------- a session ----------
 function kBuildKept() {
-  sessTab = route.tab;
-  KV.menu = KV.rename = KV.model = false;
+  sessTab = route.tab === 'overview' ? 'report' : route.tab;  // (the timeline is on the overview: app.js goes to one of its turns in place when it reads 'report')
+  KV.menu = KV.rename = KV.model = KV.nameEd = KV.kidsAll = false;
   KV.chatAt = 0;
   $('#view').innerHTML = `<div class="kp${KV.info ? '' : ' no-info'}" id="kp"><section class="kp-main"><header class="kp-head" id="kpHead"></header>
     <div class="kp-scroll" id="sess"><div id="hero" hidden></div><div id="tabBody"></div></div><footer class="kp-foot" id="kpFoot"></footer></section>
@@ -340,17 +343,42 @@ function kDrawKept() {
     return;
   }
   kFull(k.id, k);
-  const s = kLive(k), up = s && !s.starting, tab = up ? route.tab : 'chat', kind = FULL[k.kind] ? k.kind : 'codex';
-  route.id = s ? s.id : '';
+  const s = kLive(k), up = s && !s.starting, past = up ? null : kPast(k), tab = up ? route.tab : past && route.tab === 'overview' ? 'overview' : 'chat';
+  route.id = s ? s.id : past ? past.id : '';
   $('#kp').className = `kp tab-${tab}${KV.info ? '' : ' no-info'}`;
   kDrawHead(k, s, tab);
   if (tab === 'chat') kDrawChat(k, s);
-  else if (tab === 'overview') drawOverview(s, kind);
-  else if (tab === 'report') drawReport(s);
+  else if (tab === 'overview') kDrawOver(k, up ? s : past, up);
   else if (tab === 'term') (s.loc ? drawTerm(s) : kDrawNoTerm(k, s));
   else drawMsgs(s);
   kDrawFoot(k, s, tab);
   kDrawInfo(k, s);
+}
+// (a stopped session's report and timeline were kept under its last conversation: a row to read them by, when there is either)
+function kPast(k) {
+  const id = k && k.conv ? `${k.kind}:${k.conv}` : '';
+  return id && ((S.reports || {})[id] || (S.stories || {})[id]) ? { id, kind: k.kind, name: k.name || '', title: kTitle(k), state: 'ended', past: true } : null;
+}
+// (a session at a glance, on one page: what it is doing, its report, what was settled by topic, its timeline. What it
+// is and where it runs are beside it, under About it; words for it go from its conversation)
+function kRepHtml(s, rep, live) {
+  const r = rep && rep.r, busy = (S.reporting || []).includes(s.id);
+  const list = (h, xs) => (xs && xs.length ? `<h5>${h}</h5><ul>${xs.map(x => `<li>${mdInline(x)}</li>`).join('')}</ul>` : '');
+  return `<div class="panel rep kov-rep"><h4>${tt('报告', 'Report')}<span class="r">${rep && rep.at ? `<span class="hint">${t('{t}前更新', { t: ago(rep.at) })}</span>` : ''}
+      ${live ? `<button class="btn" data-report="${esc(s.id)}" ${busy ? 'disabled' : ''}>${busy ? t('正在写…') : r ? t('更新') : t('写报告')}</button>` : ''}</span></h4>
+    ${r ? `${r.goal ? `<p class="goal">${mdInline(r.goal)}</p>` : ''}${list(t('做成了'), r.done)}${r.now ? `<h5>${t('现在')}</h5><p>${mdInline(r.now)}</p>` : ''}${list(t('接下来'), r.next)}
+        ${r.refs && r.refs.length ? `<h5>${t('产出')}</h5><div class="refs">${r.refs.map(refChip).join('')}</div>` : ''}`
+      : `<p class="hint">${busy ? t('正在读它的对话，大约半分钟。') : live ? tt('还没有报告。点「写报告」，会读它的对话写一份：目标、做成了什么、现在到哪了、接下来做什么。', 'No report yet. Write one reads its conversation and says what it is for, what got done, where it stands and what is next.') : t('还没有报告。')}</p>`}</div>`;
+}
+function kDrawOver(k, s, live) {
+  const st = storyOf(s), rep = (S.reports || {})[s.id], now = live ? s.summary : k.note;
+  draw('tab', ['over', k.id, s.id, live, now, live && s.summary_at && Math.floor(s.summary_at / 30), rep && rep.at, S.reporting, S.storying, st && [st.at, st.left, st.busy, st.asked, st.loading], tlAll, tick(), LANG], () => {
+    $('#tabBody').innerHTML = `<div class="s-body kov">
+      ${now ? `<div class="kov-now"><b>${live ? tt('现在在做', 'Doing now') : tt('停下时在做', 'Doing when it stopped')}</b><p>${esc(now)}</p>${live && s.summary_at ? `<time>${t('总结于 {t}前', { t: ago(s.summary_at) })}</time>` : ''}</div>` : ''}
+      <div class="kov-grid"><div class="kov-a">${kRepHtml(s, rep, live)}</div><div class="kov-b">${decPanel(s, st, true)}</div><div class="kov-c">${timeline(s, st)}</div></div></div>`;
+  });
+  const el = wantTurn && $('#turn-' + wantTurn);
+  if (el) { el.scrollIntoView({ block: 'center' }); el.classList.add('flash'); wantTurn = 0; }
 }
 // (the model a session runs on, said the way its maker says it: claude-fable-5-2 is Fable 5.2; any other name stays as it is)
 const kModelName = id => { const m = String(id || '').match(/^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{6,8})?(\[1m\])?$/); return m ? `${m[1][0].toUpperCase()}${m[1].slice(1)} ${m[2]}${m[3] ? '.' + m[3] : ''}${m[4] ? ' 1M' : ''}` : String(id || ''); };
@@ -373,16 +401,17 @@ function kModelMenu(k, s, md) {
 }
 function kDrawHead(k, s, tab) {
   if (document.activeElement && document.activeElement.id === 'kTitle') return;
-  const [st, label] = kStand(k), sp = kSpace(k.space), up = s && !s.starting;
+  const [st, label] = kStand(k), sp = kSpace(k.space), up = s && !s.starting, past = !up && !!kPast(k);
   const md = k.model || {};
-  draw('khead', [k.id, kTitle(k), st, label, k.pinned, k.archived, tab, up, sp && [sp.id, sp.name], k.kind, k.folder, k.branch, KV.info, KV.menu, KV.rename, [md.model, md.effort, md.speed], KV.model, KV.model && s && sayHow(s), LANG], () => {
-    const tabs = [['chat', tt('对话', 'Conversation')], ['overview', tt('概览', 'Overview')], ['report', tt('报告', 'Report')], ['term', tt('终端', 'Terminal')], ['msgs', tt('消息', 'Messages')]];
+  draw('khead', [k.id, kTitle(k), st, label, k.pinned, k.archived, tab, up, past, sp && [sp.id, sp.name], k.kind, k.folder, k.branch, KV.info, KV.menu, KV.rename, [md.model, md.effort, md.speed], KV.model, KV.model && s && sayHow(s), LANG], () => {
+    const tabs = up ? [['chat', tt('对话', 'Conversation')], ['overview', tt('概览', 'Overview')], ['term', tt('终端', 'Terminal')], ['msgs', tt('消息', 'Messages')]]
+      : past ? [['chat', tt('对话', 'Conversation')], ['overview', tt('概览', 'Overview')]] : [];
     $('#kpHead').innerHTML = `<div class="kh-l">${KV.rename ? `<input class="field" id="kTitle" value="${esc(k.title || kTitle(k))}" aria-label="${tt('会话的名字', 'Session title')}" placeholder="${tt('留空：回到自动起的名字', 'Empty: back to the name it is given')}">`
         : `<h1 data-krename title="${tt('点一下改名', 'Click to rename')}">${esc(kTitle(k))}</h1>`}
         <div class="sub">${mark(k.kind, '', 'xs')}<span>${esc(FULL[k.kind] || k.kind)}</span>${md.model ? `<button class="kh-model" data-kmodel aria-haspopup="menu" aria-expanded="${!!KV.model}" title="${tt('它用的模型、思考强度和速度；点开可以换', 'Its model, effort and speed; open to change them')}">${esc(kModelName(md.model))}${md.effort ? `<em>${esc(md.effort)}</em>` : ''}${kFast(md) ? `<em class="fast">↯ ${tt('快速', 'fast')}</em>` : ''}${chev(true)}</button>` : ''}<i>·</i>${sp ? `<a href="#/w/${encodeURIComponent(sp.id)}">${esc(sp.name)}</a>` : `<span>${tt('未归入工作区', 'In no workspace')}</span>`}<i>·</i><span class="mono" title="${esc(k.show)}">${esc(folder(k.folder))}${k.branch ? ' / ' + esc(k.branch) : ''}</span></div>${KV.model && md.model ? kModelMenu(k, s, md) : ''}</div>
       <div class="r"><span class="kchip ${st}"><i></i>${esc(k.archived ? tt('已归档', 'Archived') : label)}</span>
         ${!s && !k.archived ? `<button class="btn primary" data-kresume>${KI.play}${tt('继续', 'Go on')}</button>` : ''}
-        ${up ? `<nav class="seg ktabs">${tabs.map(([x, l]) => `<a href="${kHref(k)}${x === 'chat' ? '' : '/' + x}" class="${tab === x ? 'on' : ''}">${l}</a>`).join('')}</nav>` : ''}
+        ${tabs.length ? `<nav class="seg ktabs">${tabs.map(([x, l]) => `<a href="${kHref(k)}${x === 'chat' ? '' : '/' + x}" class="${tab === x ? 'on' : ''}">${l}</a>`).join('')}</nav>` : ''}
         <button class="ks-ib${k.pinned ? ' on' : ''}" data-kpin aria-pressed="${!!k.pinned}" title="${k.pinned ? tt('取消置顶', 'Unpin') : tt('置顶', 'Pin')}" aria-label="${k.pinned ? tt('取消置顶', 'Unpin') : tt('置顶', 'Pin')}">${KI.pin}</button>
         <button class="ks-ib${KV.info ? ' on' : ''}" data-kinfo aria-pressed="${KV.info}" title="${tt('会话信息', 'About this session')}" aria-label="${tt('会话信息', 'About this session')}">${I.panel}</button>
         <div class="kmenu"><button class="ks-ib" data-kmenu aria-expanded="${KV.menu}" title="${tt('更多', 'More')}" aria-label="${tt('更多', 'More')}">${KI.dots}</button>${KV.menu ? `<div class="kmenu-list" role="menu">
@@ -455,14 +484,18 @@ function kChatPaint(k, stick) {
   const pg = kPage(k.id), full = (KV.full[k.id] || {}).kept || {}, items = pg.items || [], pend = kPending(k), s = kLive(k);
   if (!pg.items && !pend.length) return;  // (not read yet, and nothing to show meanwhile: the line that says so stays)
   draw('kc', [k.id, items.length, items.length && items[items.length - 1].text.slice(0, 60), (full.terms || []).map(t => [t.n, t.ended, t.why]), (full.segs || []).length, k.live, pend.map(p => [p.n, p.state, p.how]),
-    kWorking(s) && [s.since, s.tool, (s.tool_at || 0) > (s.tool_end || 0)], LANG], () => {
+    kWorking(s) && [s.since, s.tool, (s.tool_at || 0) > (s.tool_end || 0)], pg.more, pg.moreBusy, pg.n, LANG], () => {
     const sess = $('#sess'), first = sig.kcFirst !== k.id, atEnd = sess.scrollHeight - sess.scrollTop - sess.clientHeight < 80;
-    $('#convo').innerHTML = (items.length || !pend.length ? kChatHtml(k, items, full) : '')
+    // (what is shown is the last of it: the words before are a click away, and where the session begins is said once it is reached)
+    const top = !items.length ? '' : pg.more ? `<div class="kmore">${pg.moreBusy ? `<span class="hint"><i class="kspin sm"></i>${tt('正在读更早的对话……', 'Reading earlier words…')}</span>` : `<button class="btn" data-kearlier>${tt('显示更早的对话', 'Show earlier words')}</button>`}</div>`
+      : pg.n > 200 ? `<div class="kdiv"><span>${tt('这条会话从这里开始', 'This session begins here')}</span></div>` : '';
+    $('#convo').innerHTML = top + (items.length || !pend.length ? kChatHtml(k, items, full) : '')
       + pend.map(p => `<div class="bub user pend${p.state === 'sending' ? ' going' : ''}">${md(p.text)}<time>${p.state === 'sending' ? '<i class="kspin sm"></i>' : ''}${esc(tt(...KSENT[p.state === 'sending' ? 'sending' : p.how] || KSENT.type))}</time></div>`).join('')
       + kWorkHtml(s);
     document.querySelectorAll('#convo .ktools').forEach((d, i) => { if (pg.tools.has(i)) d.open = true; });
     kWorkTick();
-    if (first) { sig.kcFirst = k.id; sess.scrollTop = pg.atEnd || stick ? sess.scrollHeight : pg.top; }  // (back where it was left, or at its end)
+    if (pg.hold != null && !pg.moreBusy) { sess.scrollTop = Math.max(0, sess.scrollHeight - pg.hold); pg.hold = null; sig.kcFirst = k.id; }  // (earlier words came in above: what was being read stays where it was)
+    else if (first) { sig.kcFirst = k.id; sess.scrollTop = pg.atEnd || stick ? sess.scrollHeight : pg.top; }  // (back where it was left, or at its end)
     else if (atEnd || stick) sess.scrollTop = sess.scrollHeight;
   });
 }
@@ -479,10 +512,13 @@ async function kDrawChat(k, s) {
   if (KV.chatBusy || Date.now() - KV.chatAt < (soon ? 650 : s && s.state === 'working' ? 1400 : 4000)) return;
   KV.chatAt = Date.now(); KV.chatBusy = true;
   try {
-    const j = await (await fetch(`/api/transcript?kept=${encodeURIComponent(k.id)}${pg.items && pg.sig ? '&have=' + pg.sig : ''}`, { cache: 'no-store' })).json();
+    const n = pg.n;
+    const j = await (await fetch(`/api/transcript?kept=${encodeURIComponent(k.id)}&n=${n}${pg.items && pg.sig ? '&have=' + pg.sig : ''}`, { cache: 'no-store' })).json();
     if (!j.same) { pg.items = j.items || []; pg.sig = j.sig || ''; }
+    pg.more = !!j.more;
+    if (n === pg.n) pg.moreBusy = false;
     if (route.kept === k.id && $('#convo')) kChatPaint(k);
-  } catch {} finally { KV.chatBusy = false; }
+  } catch { pg.moreBusy = false; } finally { KV.chatBusy = false; }
 }
 // (words for a session, from its page. They are under its conversation before they have left; how they went is said
 // beside them; if they could not be sent they are back in the box)
@@ -517,7 +553,7 @@ function kDrawFoot(k, s, tab) {
       : mode === 'starting' ? `<div class="kstop"><div><b>${esc(s.summary || tt('正在启动……', 'Starting…'))}</b><span>${esc(s.needs_you || tt('它的 agent 起来以后，这里就能说话了。', 'Once its agent is up, you can talk to it here.'))}</span></div>${s.loc ? `<a class="btn dark" href="#/term/${encodeURIComponent(s.loc.session)}/${encodeURIComponent(s.loc.pane)}">${I.term}${tt('看它的终端', 'See its terminal')}</a>` : ''}</div>`
       : mode === 'archived' ? `<div class="kstop"><div><b>${tt('这条会话已经归档', 'This session is archived')}</b><span>${tt('对话都还在。取消归档后可以继续。', 'The conversation is all here. Unarchive it to go on.')}</span></div><button class="btn" data-kdo="unarchive">${tt('取消归档', 'Unarchive')}</button></div>`
       : `<div class="kstop"><div><b>${tt('这条会话现在没有终端在跑', 'No terminal is running this session now')}</b><span>${tt('点「继续」，会新开一个终端，接着上面的对话往下做。', 'Go on opens a new terminal and picks the conversation up where it stopped.')}</span></div><button class="btn primary" data-kresume>${KI.play}${tt('继续', 'Go on')}</button></div>
-        <div class="reply"><textarea id="kText" aria-label="${tt('对这条会话说话', 'Words for this session')}" placeholder="${tt('直接说下一步也行：发送后先新开终端，再接着做  ⌘/Ctrl+Enter', 'Or just say what is next: it gets a new terminal first, then goes on  ⌘/Ctrl+Enter')}"></textarea>
+        <div class="reply"><textarea id="kText" aria-label="${tt('对这条会话说话', 'Words for this session')}" placeholder="${tt('直接说下一步也行：发送后先新开终端，再接着做。Enter 发送，Shift+Enter 换行', 'Or just say what is next: it gets a new terminal first, then goes on. Enter sends, Shift+Enter for a new line')}"></textarea>
           <div class="row">${micBtn('kText')}<span class="sp"></span><button class="btn primary" data-kresume="say">${I.arrow}${tt('发送并继续', 'Send and go on')}</button></div></div>`;
   });
   if (mode === 'live') drawSay(s);
@@ -566,9 +602,14 @@ function kDrawInfo(k, s) {
   if (!box || !KV.info || (document.activeElement && box.contains(document.activeElement))) return;
   if (KV.side === 'diff') return kDrawDiff(k, s, box);
   const full = (KV.full[k.id] || {}).kept, sp = kSpace(k.space), a = s && attention(s);
-  const tasks = (S.tasks || []).filter(x => taskOpen(x) && x.sessions.some(l => (s && l.sid === s.id) || (k.name && l.name === k.name)));
-  const kids = s ? kidsOf(s).length + (s.subs || []).length : 0, terms = full ? (full.terms || []).slice().sort((x, y) => y.n - x.n) : [];
-  draw('kinfo', ['info', k.id, k.space, k.spaced, k.kind, k.show, k.branch, k.name, k.note, k.conv, a, s && [s.id, s.summary, needOf(s), asksSig(s), kids, s.loc], tasks.map(x => [x.id, x.title]),
+  const up = s && !s.starting, tasks = (S.tasks || []).filter(x => taskOpen(x) && x.sessions.some(l => (s && l.sid === s.id) || (k.name && l.name === k.name)));
+  // (tasks of its project it could be linked to: picked here, as its overview had it)
+  const scope = up ? s.project || s.workspace || '' : '', pick = up ? (S.tasks || []).filter(x => taskOpen(x) && !tasks.includes(x) && (x.scope === scope || (s.workspace && taskIn(x, s.workspace)))).sort(taskOrder) : [];
+  // (what it started: Claude Code's own sub-agents and the sessions it launched, those still running first)
+  const subs = up ? (s.subs || []).slice().sort((x, y) => (y.state === 'working') - (x.state === 'working') || (y.at || 0) - (x.at || 0)) : [], kids = up ? kidsOf(s) : [], nkids = subs.length + kids.length;
+  const par = up && parentOf(s), terms = full ? (full.terms || []).slice().sort((x, y) => y.n - x.n) : [];
+  draw('kinfo', ['info', k.id, k.space, k.spaced, k.kind, k.show, k.branch, k.name, k.note, k.conv, a, s && [s.id, s.summary, needOf(s), asksSig(s), s.loc, s.origin, par && [par.id, par.name], s.project, s.workspace, s.attrib],
+    tasks.map(x => [x.id, x.title, x.shown, x.now, x.next]), pick.map(x => [x.id, x.title]), subs.map(x => [x.id, x.state, x.at]), kids.map(c => [c.id, c.state, c.status, c.summary, c.title]), KV.kidsAll, KV.nameEd, Object.keys(S.projects || {}).length,
     (S.spaces || []).map(w => [w.id, w.name]), terms.map(t => [t.n, t.ended, t.why, t.pane]), full && (full.segs || []).length, Math.floor(Date.now() / 60000), LANG], () => {
     const title = kTitle(k), cmd = `sturnus open ${/^[^\s"'$`\\!]+$/.test(title) ? title : /["$`\\!]/.test(title) ? k.id : `"${title}"`}`;
     const open = terms.find(t => !t.ended);
@@ -576,14 +617,24 @@ function kDrawInfo(k, s) {
       + `<section><h3>${tt('这条会话', 'This session')}</h3><dl class="kv">
           <dt>${tt('工作区', 'Workspace')}</dt><dd><select class="sel" data-kspace="${esc(k.id)}" aria-label="${tt('它在哪个工作区', 'Which workspace it is in')}"><option value="">${k.spaced ? tt('改回按目录归', 'Back to where its folder puts it') : esc(sp ? sp.name : tt('未归入（目录不在任何工作区里）', 'None (its folder is in no workspace)'))}</option>
             ${(S.spaces || []).filter(w => !w.archived).map(w => `<option value="${esc(w.id)}"${k.spaced && k.space === w.id ? ' selected' : ''}>${tt('放到 ', 'Put in ')}${esc(w.name)}</option>`).join('')}</select></dd>
+          ${up && Object.keys(S.projects || {}).length ? `<dt>${tt('项目', 'Project')}</dt><dd>${projSelect(s)}</dd>` : ''}
           <dt>Agent</dt><dd>${esc(FULL[k.kind] || k.kind)}</dd>
           <dt>${tt('目录', 'Folder')}</dt><dd class="mono">${esc(k.show)}</dd>
           ${k.branch ? `<dt>${tt('分支', 'Branch')}</dt><dd class="mono">${esc(k.branch)}</dd>` : ''}
-          ${k.name ? `<dt>${tt('名字', 'Name')}</dt><dd class="mono" title="${tt('会话之间写信用的名字', 'Its name when sessions write to each other')}">${esc(k.name)}</dd>` : ''}
-          ${tasks.length ? `<dt>${tt('任务', 'Tasks')}</dt><dd>${tasks.map(x => `<a data-task="${esc(x.id)}">${esc(x.title)}</a>`).join('<br>')}</dd>` : ''}</dl></section>`
+          ${par ? `<dt>${tt('启动者', 'Started by')}</dt><dd><a data-go="${esc(par.id)}">${esc(titleOf(par))}</a></dd>` : up && s.origin ? `<dt>${tt('启动方式', 'Started from')}</dt><dd>${esc(originT(s.origin))}</dd>` : ''}
+          ${k.name ? `<dt>${tt('名字', 'Name')}</dt><dd class="mono kname" title="${tt('会话之间写信用的名字', 'Its name when sessions write to each other')}">${KV.nameEd === k.id && up ? `<span class="inline"><input class="field" id="rName" value="${esc(k.name)}" aria-label="${tt('新名字', 'New name')}" placeholder="${t('新名字（字母、数字、_ . -）')}"><button class="btn" data-act="rename">${t('改名')}</button></span>`
+            : `${esc(k.name)}${up ? `<button class="kv-ed" data-kname title="${k.kind === 'claude' ? tt('Claude 会话的名字由它自己定：点一下看怎么改', 'A Claude session names itself: click to see how') : tt('改这个名字', 'Change this name')}" aria-label="${tt('改名字', 'Change the name')}">${KI.pen}</button>` : ''}`}</dd>` : ''}
+          ${k.conv ? `<dt>${tt('对话 ID', 'Conversation')}</dt><dd class="mono kconv"><span title="${esc(k.conv)}">${esc(k.conv)}</span><button class="kv-ed" data-kcopy="${esc(k.conv)}" title="${tt('复制', 'Copy')}" aria-label="${tt('复制对话 ID', 'Copy the conversation id')}">${KI.copy}</button></dd>` : ''}</dl></section>`
       + (s && s.summary ? `<section><h3>${tt('现在在做', 'Doing now')}</h3><p class="now">${esc(s.summary)}</p></section>` : !s && k.note ? `<section><h3>${tt('停下时在做', 'Doing when it stopped')}</h3><p class="now">${esc(k.note)}</p></section>` : '')
       + (s && ((s.asks || []).length || (S.inbox || []).some(m => m.from === s.name)) ? asksPanel(s) : '')
-      + (kids ? `<section><h3>${tt('它启动的子 agent', 'Sub-agents it started')}</h3><a class="lnk" href="${kHref(k)}/overview">${tt(`${kids} 个，在概览里看`, `${kids}, on the overview`)}</a></section>` : '')
+      + (tasks.length || pick.length ? `<section><h3>${tt('任务', 'Tasks')}<a class="lnk" href="#/tasks${scope ? '/' + encodeURIComponent(scope) : ''}">${tt('全部', 'All')}</a></h3>
+          ${tasks.length ? `<div class="ktasks">${tasks.map(taskMini).join('')}</div>` : `<p class="hint">${tt('还没关联任务。它自己可以用 amail task 记，助手也会从总结里补上。', 'No task linked yet. It can note its own with amail task, and the assistant fills in from its summaries.')}</p>`}
+          ${pick.length ? `<div class="inline tkp-pick"><select class="sel" id="stPick" aria-label="${tt('选一个任务', 'Pick a task')}">${pick.map(x => `<option value="${esc(x.id)}">${esc(x.title)}</option>`).join('')}</select><button type="button" class="btn" data-st-link="${esc(s.id)}">${tt('关联', 'Link')}</button></div>` : ''}</section>` : '')
+      + (nkids ? `<section><h3>${tt(`它启动的子 agent，共 ${nkids} 个`, `Sub-agents it started: ${nkids}`)}</h3><div class="kid-list">${[...subs.map(x => `
+          <div class="kid-row"><span class="mark sm sub ${x.state}">${I.spark}</span><div data-go="${esc(s.id)}" data-tab="sub/${esc(x.id)}"><b>${esc(x.task || x.type)}</b><p>${subWho(x)} · ${subLabel(x)}</p></div></div>`), ...kids.map(c => { const [cst, cl] = standing(c); return `
+          <div class="kid-row">${mark(c.kind, cst, 'sm')}<div data-go="${esc(c.id)}"><b>${esc(titleOf(c))}</b><p>${esc(cl)} ${ago(c.since)}${c.summary ? ' · ' + esc(c.summary) : ''}</p></div>
+            ${['gone', 'ended'].includes(c.state) ? '' : `<button class="btn" data-stop="${esc(c.id)}">${t('停止')}</button>`}</div>`; })].slice(0, KV.kidsAll ? nkids : 6).join('')}</div>
+          ${nkids > 6 ? `<button class="lnk" data-kkids>${KV.kidsAll ? tt('只看前 6 个', 'First 6 only') : tt(`还有 ${nkids - 6} 个`, `${nkids - 6} more`)}</button>` : ''}</section>` : '')
       + `<section><h3>${terms.length ? tt(`用过的终端，共 ${terms.length} 个`, `Terminals it has run in: ${terms.length}`) : tt('用过的终端', 'Terminals it has run in')}</h3>${terms.length ? terms.map((t, i) => `
           <div class="kt${t.ended ? '' : ' on'}"><div class="rail2"><i></i>${i < terms.length - 1 ? '<span></span>' : ''}</div><div class="kt-b"><div><b>${tt(`第 ${t.n} 个`, `No. ${t.n}`)}</b>${t.ended ? '' : `<em>${tt('正在用', 'in use')}</em>`}</div>
             <div class="kt-m">${esc(kWhere(t))}</div><div class="kt-d">${t.ended ? tt(`${kDay(t.began)} 到 ${kDay(t.ended)}`, `${kDay(t.began)} to ${kDay(t.ended)}`) : tt(`${kDay(t.began)} 起`, `since ${kDay(t.began)}`)}</div>
@@ -610,13 +661,34 @@ async function kResume(k, withText) {
 // ---------- a workspace ----------
 function kBuildSpace() {
   if (route.key === '+') {
-    $('#view').innerHTML = `<div class="page narrow"><div class="h-title"><h2>${tt('新建工作区', 'New workspace')}</h2><span class="sub">${tt('一个名字，加上它管的目录。在这些目录里开的会话自动归到它下面。', 'A name, and the folders it covers. Sessions opened in those folders are in it.')}</span></div>
-      <form class="wk-new" id="spNew" autocomplete="off"><label><span>${tt('名字', 'Name')}</span><input class="field" id="spName" placeholder="${tt('比如 Sturnus', 'Sturnus, say')}"></label>
-        <label><span>${tt('第一个目录', 'Its first folder')}</span><input class="field" id="spPath" list="spDirs" placeholder="~/projects/…"><datalist id="spDirs">${((S && S.dirs) || []).map(d => `<option value="${esc(d)}">`).join('')}</datalist></label>
-        <div class="row"><span class="hint">${tt('目录以后还能加、能拿掉；远程存储以后再支持。', 'Folders can be added and taken out later; remote storage comes later.')}</span><button class="btn primary" type="submit">${tt('建好', 'Create')}</button></div></form></div>`;
+    // (a name and a folder, as one card in the middle of the page; folders sessions already run in, and not yet in a workspace, are offered to pick)
+    const taken = d => (S.spaces || []).some(w => (w.places || []).some(p => d === p.show || d.startsWith(p.show + '/')));
+    const dirs = ((S && S.dirs) || []).filter(d => !taken(d)), base = d => d.replace(/\/+$/, '').split('/').pop() || '';
+    $('#view').innerHTML = `<div class="kn"><div class="kn-in wkn"><div class="wkn-h"><h1>${tt('新建工作区', 'New workspace')}</h1>
+        <p>${tt('一个名字，加上它管的目录。在这个目录（包括子目录）里开的会话，自动归到它下面。', 'A name, and the folder it covers. Sessions opened in that folder, or below it, are in it.')}</p></div>
+      <form class="wkn-card" id="spNew" autocomplete="off">
+        <div class="wkn-f"><label for="spName">${tt('名字', 'Name')}</label><input class="field" id="spName" maxlength="60" placeholder="${tt('比如 Sturnus', 'Sturnus, say')}"></div>
+        <div class="wkn-f"><label for="spPath">${tt('目录', 'Folder')}</label><input class="field mono" id="spPath" list="spDirs" spellcheck="false" placeholder="~/projects/…"><datalist id="spDirs">${dirs.map(d => `<option value="${esc(d)}">`).join('')}</datalist>
+          ${dirs.length ? `<div class="wkn-dirs" role="group" aria-label="${tt('这台机器上用过的目录', 'Folders used on this machine')}">${dirs.slice(0, 8).map(d => `<button type="button" data-spdir="${esc(d)}" title="${esc(d)}">${I.folder}<span>${esc(d)}</span></button>`).join('')}</div>` : ''}
+          <p class="hint">${tt('建好以后还能再加目录，也能拿掉。', 'More folders can be added later, and taken out.')}</p></div>
+        <div class="wkn-foot"><a class="btn" href="#/">${tt('取消', 'Cancel')}</a><button class="btn primary" type="submit">${tt('建好工作区', 'Create workspace')}</button></div></form></div></div>`;
+    const name = $('#spName'), path = $('#spPath'), hint = () => { name.placeholder = base(path.value.trim()) || tt('比如 Sturnus', 'Sturnus, say'); };
+    path.addEventListener('input', hint);
+    $('#spNew').addEventListener('click', e => {
+      const el = e.target.closest('[data-spdir]');
+      if (!el) return;
+      path.value = el.dataset.spdir; hint();
+      for (const b of document.querySelectorAll('[data-spdir]')) b.classList.toggle('on', b === el);
+      name.focus();
+    });
     $('#spNew').addEventListener('submit', async e => {
       e.preventDefault();
-      const j = await kDo('space', { do: 'add', name: $('#spName').value.trim(), paths: [$('#spPath').value.trim()].filter(Boolean) });
+      const p = path.value.trim(), n = name.value.trim() || base(p);  // (no name given: the folder's own)
+      if (!n) { name.focus(); return; }
+      const go = e.target.querySelector('[type=submit]');
+      go.disabled = true;
+      const j = await kDo('space', { do: 'add', name: n, paths: [p].filter(Boolean) });
+      go.disabled = false;
       if (j.ok) location.hash = `#/w/${encodeURIComponent(j.id)}/folders`;
     });
     setTimeout(() => $('#spName') && $('#spName').focus(), 40);
@@ -866,6 +938,9 @@ window.drawSettings = function () {
 };
 
 // ---------- what is clicked, typed, changed ----------
+// (in a box of words to send, Enter sends and Shift+Enter makes a new line — ⌘/Ctrl+Enter sends as it always did; an
+// Enter that only ends an input method's composing sends nothing)
+const kEnter = e => e.key === 'Enter' && (e.metaKey || e.ctrlKey || (!e.shiftKey && !e.altKey && !e.isComposing && e.keyCode !== 229));
 document.addEventListener('click', async e => {
   if (phone()) return;
   const q = sel => e.target.closest(sel);
@@ -921,6 +996,25 @@ document.addEventListener('click', async e => {
   if ((el = q('[data-knkind]'))) { KN.kind = el.dataset.knkind; render(); return; }
   if ((el = q('[data-kset]'))) { pane = el.dataset.kset; openSettings(); return; }
   if ((el = q('[data-kcopy]'))) { toClipboard(el.dataset.kcopy); toast(tt('已复制', 'Copied')); return; }
+  if (q('[data-kkids]')) { KV.kidsAll = !KV.kidsAll; if (document.activeElement) document.activeElement.blur(); render(); return; }  // (the side is not drawn again while something in it has the focus)
+  if (q('[data-kearlier]')) {  // (more of the conversation, from before what is shown)
+    const k = cur(), sess = $('#sess');
+    if (!k || !sess) return;
+    const pg = kPage(k.id);
+    pg.n += 400; pg.moreBusy = true; pg.hold = sess.scrollHeight - sess.scrollTop; pg.tools.clear();  // (the steps opened are counted from the top, which moves)
+    KV.chatAt = 0; render();
+    return;
+  }
+  if (q('[data-kname]')) {  // (its name among the sessions: Claude Code names its own, any other is renamed here)
+    const k = cur();
+    if (k && k.kind === 'claude') { toast(tt('Claude 会话的名字由它自己定：在它的对话里输入 /rename 新名字，这里和 amail 会跟着变。', 'A Claude session names itself: type /rename and a new name into its conversation; this page and amail follow.')); return; }
+    KV.nameEd = k ? k.id : false;
+    if (document.activeElement) document.activeElement.blur();
+    render();
+    setTimeout(() => { if ($('#rName')) { $('#rName').focus(); $('#rName').select(); } }, 30);
+    return;
+  }
+  if (q('[data-act="rename"]')) { KV.nameEd = false; setTimeout(() => { if (document.activeElement) document.activeElement.blur(); render(); }, 60); }  // (app.js sends the new name; the row folds back)
   if ((el = q('[data-kresume]'))) { e.preventDefault(); const k = cur(); if (k) kResume(k, el.dataset.kresume === 'say'); return; }
   if (q('[data-kpin]')) { const k = cur(); if (k) await kDo('kept', { id: k.id, do: 'pin', on: !k.pinned }); return; }
   if (q('[data-kinfo]')) { KV.info = !KV.info; store.set('deck.kInfo', KV.info); delete sig.khead; delete sig.kinfo; render(); fitTerm(); return; }
@@ -1013,7 +1107,7 @@ document.addEventListener('keydown', e => {
   if (phone()) return;
   const el = document.activeElement, typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName);
   if (el.id === 'kTitle' || el.id === 'spRename') { if (e.key === 'Enter' || e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); kRenameDone(el, e.key === 'Enter'); } return; }
-  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && el.id === 'kText') { e.preventDefault(); const k = kOf(route.kept); if (k) kResume(k, true); return; }
+  if (el.id === 'kText' && kEnter(e)) { e.preventDefault(); const k = kOf(route.kept); if (k) kResume(k, true); return; }
   if (e.key === 'Escape' && KV.menu) { KV.menu = false; delete sig.khead; render(); e.stopImmediatePropagation(); return; }
   if (e.key === 'Escape' && KV.arr) { KV.arr = false; render(); e.stopImmediatePropagation(); return; }
   if (e.key === 'Escape' && KV.model) { KV.model = false; render(); e.stopImmediatePropagation(); return; }
