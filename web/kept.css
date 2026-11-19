@@ -167,6 +167,8 @@ html:not(.phone) .asst-fab { display: none; }
 .ktools summary { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; list-style: none; }
 .ktools summary::-webkit-details-marker { display: none; }
 .ktools[open] summary .chev { transform: rotate(90deg); }
+.ktools summary .np { font-weight: 600; color: var(--ink-2); white-space: pre; }
+.ktools > .pics { margin: 8px 0 2px; }
 .kp-foot { flex: none; padding: 4px 28px 14px; }
 .kp-foot:empty { display: none; }
 .kp-foot > * { max-width: 744px; margin-left: auto; margin-right: auto; }

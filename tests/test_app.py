@@ -4,11 +4,13 @@
 
 The pairing and view tests run on a temporary folder. The HTTP tests start one trial deck of this checkout on a spare
 port with its own config, cache, mailbox and an empty Claude registry; it is stopped by its PID."""
+import base64
 import importlib.machinery
 import importlib.util
 import json
 import os
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -472,6 +474,16 @@ class OverHttp(unittest.TestCase):
         cls.env = {**os.environ, 'STURNUS_CONF': f'{cls.dir}/conf/config.json', 'STURNUS_CACHE': f'{cls.dir}/cache',
                    'AMAIL_HOME': f'{cls.dir}/mail', 'STURNUS_TASKS': f'{cls.dir}/tasks.db', 'AMAIL_CLAUDE_SESSIONS': f'{cls.dir}/none',
                    'STURNUS_DRY': '1'}
+        # (a session in the record before the deck starts, with a picture a step showed its agent)
+        cls.shot = png(320, 200)
+        with open(f'{cls.dir}/pic.jsonl', 'w') as f:
+            f.write(json.dumps({'type': 'user', 'timestamp': '2026-11-19T10:00:00.000Z', 'message': {'role': 'user', 'content': [{'type': 'tool_result', 'content': [CC_PIC(cls.shot)]}]}}) + '\n')
+        book = S.K.Book(f'{cls.dir}/sessions.db')
+        book.learn([{'kind': 'claude', 'conv': 'pic-1', 'path': f'{cls.dir}/pic.jsonl', 'folder': cls.dir, 'began': 1_700_000_000, 'at': 1_700_000_400, 'title': 'pic'}])
+        cls.kid = book.all()[0]['id']
+        with open(f'{cls.dir}/pic.jsonl', 'rb') as f:
+            data = f.read()
+        book.say(cls.kid, 1, f'{cls.dir}/pic.jsonl', len(data), S.said_of(data[:-1], f'{cls.dir}/pic.jsonl'))
         cls.log = open(f'{cls.dir}/deck.log', 'w')
         cls.deck = subprocess.Popen([sys.executable, os.path.join(HERE, 'sturnus'), 'serve'], env=cls.env, stdout=cls.log, stderr=cls.log)
         for _ in range(120):
@@ -530,6 +542,18 @@ class OverHttp(unittest.TestCase):
         self.assertFalse(j['ok'])
         st, _ = self.call('/api/access', {}, key=key)  # (a phone manages no access)
         self.assertEqual(st, 403)
+
+    def test_a_picture_of_a_conversation_comes_as_it_is_and_only_to_one_signed_in(self):
+        st, j = self.call('/api/app/pair', {'code': self.code(), 'device': 'x'})
+        key = j['key']
+        st, t = self.call(f'/api/transcript?kept={self.kid}', key=key)
+        it = t['items'][0]
+        self.assertEqual((st, it['who'], it['text'], it['n'], [(p['t'], p['w'], p['ht']) for p in it['pics']]), (200, 'tool', '', 1, [('png', 320, 200)]))
+        url = f'/api/pic?kept={self.kid}&seg={it["seg"]}&n={it["n"]}&i=0&h={it["pics"][0]["h"]}'
+        with urllib.request.urlopen(urllib.request.Request(f'http://127.0.0.1:{self.port}{url}', headers={'Authorization': f'Bearer {key}'}), timeout=20) as r:
+            self.assertEqual((r.status, r.headers['Content-Type'], r.headers['X-Content-Type-Options'], 'immutable' in r.headers['Cache-Control'], r.read()), (200, 'image/png', 'nosniff', True, self.shot))
+        self.assertEqual([self.call(u, key=k)[0] for u, k in ((url, None), (url[:-4] + 'beef', key), (url.replace('&i=0', '&i=1'), key), ('/api/pic?kept=' + self.kid, key), ('/api/pic?kept=s-none&seg=1&n=1', key))],
+                         [401, 404, 404, 404, 404])
 
     def test_a_query_reaches_no_other_action_than_the_one_let_in(self):
         for path in ('/api/login?/say', '/api/login?x=/api/say', '/api/app/pair?/say', '/api/login#/say'):
@@ -606,6 +630,19 @@ class Models(unittest.TestCase):
         self.assertEqual((S.conv_meta(f'{d}/empty.jsonl', 'claude'), S.conv_meta(f'{d}/none.jsonl', 'codex'), S.conv_meta(cc, 'cursor')), ({}, {}, {}))
 
 
+def png(w, h, more=600):
+    return b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR' + struct.pack('>II', w, h) + bytes(range(256)) * (more // 256 + 1)
+
+
+def jpeg(w, h, more=600):
+    return (b'\xff\xd8\xff\xe0\x00\x10JFIF\x00' + bytes(9) + b'\xff\xe1\x00\x22' + bytes(32)  # (two segments before the frame's)
+            + b'\xff\xc0\x00\x11\x08' + struct.pack('>HH', h, w) + bytes(range(256)) * (more // 256 + 1))
+
+
+B64 = lambda b: base64.b64encode(b).decode()
+CC_PIC = lambda b, kind='png': {'type': 'image', 'source': {'type': 'base64', 'media_type': f'image/{kind}', 'data': B64(b)}}
+
+
 class Talk(unittest.TestCase):
     """What was said in a session, as the record keeps it: the words sent mid-turn too, the earlier part of a long file
     on asking, and a copy an older reading made, made again."""
@@ -623,6 +660,89 @@ class Talk(unittest.TestCase):
         peer = self.mid('<cross-session-message from="uds:/tmp/x">hello</cross-session-message>', at, origin={'kind': 'peer'}, isMeta=True, humanTurn=None)
         self.assertEqual(S.line_items(json.loads(peer)), [])  # (another session's message is not the person's)
         self.assertEqual(S.line_items({'type': 'queue-operation', 'operation': 'enqueue', 'timestamp': at, 'content': 'and one more thing'}), [])  # (said once, where it took effect)
+
+    def test_pictures_are_read_with_the_words_and_with_what_a_step_showed(self):
+        at, mine, shot, shot2 = '2026-11-19T10:00:00.000Z', png(640, 480), jpeg(1280, 800), png(30, 20)
+        self.assertEqual((S.pic_kind(mine[:64]), S.pic_kind(shot[:200]), S.pic_kind(b'GIF89a\x10\x00\x08\x00' + bytes(20)), S.pic_kind(b'%PDF-1.7' + bytes(40))),
+                         (('png', 640, 480), ('jpeg', 1280, 800), ('gif', 16, 8), None))
+        self.assertEqual((S.pic_kind(b'RIFF\x00\x00\x00\x00WEBPVP8X' + bytes(8) + b'\x1f\x03\x00\x57\x02\x00'), S.pic_kind(b'RIFF\x00\x00\x00\x00WEBPVP8L' + bytes(4) + b'\x2f' + struct.pack('<I', 799 | 599 << 14))),
+                         (('webp', 800, 600), ('webp', 800, 600)))
+        lines = [
+            json.dumps({'type': 'user', 'timestamp': at, 'message': {'role': 'user', 'content': [{'type': 'text', 'text': '[Image #1] what is wrong here'}, CC_PIC(mine)]}}),
+            json.dumps({'type': 'assistant', 'timestamp': at, 'message': {'role': 'assistant', 'content': [{'type': 'text', 'text': 'Let me look.'}, {'type': 'tool_use', 'name': 'Read', 'input': {'file_path': '/t/shot.jpg'}}]}}),
+            json.dumps({'type': 'user', 'timestamp': at, 'message': {'role': 'user', 'content': [{'type': 'tool_result', 'content': [{'type': 'text', 'text': 'a picture'}, CC_PIC(shot, 'jpeg'), CC_PIC(shot2)]}]}}),
+            json.dumps({'type': 'user', 'timestamp': at, 'message': {'role': 'user', 'content': [{'type': 'tool_result', 'content': 'plain words'}]}}),  # (a result with no picture: nothing)
+            json.dumps({'type': 'user', 'timestamp': at, 'message': {'role': 'user', 'content': [CC_PIC(mine)]}}),  # (a picture and no words)
+            json.dumps({'type': 'user', 'timestamp': at, 'message': {'role': 'user', 'content': [{'type': 'text', 'text': 'and a file'}, {'type': 'document', 'source': {'type': 'base64', 'media_type': 'application/pdf', 'data': B64(b'%PDF-1.7' + bytes(900))}},
+                                                                                         CC_PIC(b'not a picture at all, whatever it says' * 9)]}}),
+            # Codex: a picture between two parts that say only that it is one; and one a step showed
+            json.dumps({'type': 'response_item', 'timestamp': at, 'payload': {'type': 'message', 'role': 'user', 'content': [
+                {'type': 'input_text', 'text': '<image name=[Image #1] path="/t/a.png">'}, {'type': 'input_image', 'image_url': 'data:image/png;base64,' + B64(mine), 'detail': 'high'},
+                {'type': 'input_text', 'text': '</image>'}, {'type': 'input_text', 'text': '[Image #1] make it wider'}]}}),
+            json.dumps({'type': 'response_item', 'timestamp': at, 'payload': {'type': 'function_call_output', 'call_id': 'c1', 'output': [{'type': 'input_text', 'text': 'Wall time: 1s'}, {'type': 'input_image', 'image_url': 'data:image/jpeg;base64,' + B64(shot)}]}}),
+            json.dumps({'type': 'response_item', 'timestamp': at, 'payload': {'type': 'function_call_output', 'call_id': 'c2', 'output': 'only words'}}),
+        ]
+        data, kept = ('\n'.join(lines) + '\n').encode(), []
+        items = S.said_of(b'lead-in\n' + data, '/t/c.jsonl', 1000, lambda name, b: kept.append((name, b)) or True)
+        self.assertEqual([(i['who'], i['text'], [(p['t'], p['w'], p['ht']) for p in i.get('pics') or []]) for i in items], [
+            ('user', '[Image #1] what is wrong here', [('png', 640, 480)]), ('assistant', 'Let me look.', []), ('tool', 'Read(/t/shot.jpg)', []),
+            ('tool', '', [('jpeg', 1280, 800), ('png', 30, 20)]), ('user', '', [('png', 640, 480)]), ('user', 'and a file', []),
+            ('user', '[Image #1] make it wider', [('png', 640, 480)]), ('tool', '', [('jpeg', 1280, 800)])])
+        # each says where its data lies in the file (what was read began 1000 into it), and that is the picture
+        whole = bytes(1000) + b'lead-in\n' + data
+        for it in items:
+            for p in it.get('pics') or []:
+                self.assertEqual((p['p'], base64.b64decode(whole[p['o']:p['o'] + p['l']])), ('/t/c.jsonl', {(640, 480): mine, (1280, 800): shot, (30, 20): shot2}[p['w'], p['ht']]))
+        # the person's own are handed over to be kept, what a step showed is not
+        self.assertEqual(([(n.rsplit('.')[-1], b == mine) for n, b in kept], [[p.get('k') for p in i.get('pics') or []] for i in items if i.get('pics')]),
+                         ([('png', True)] * 3, [[1], [None, None], [1], [1], [None]]))
+        # the page's own quick reading of a file's end (no record yet) shows the words, without the pictures, and loses no line to their weight
+        d = tempfile.mkdtemp(dir=TMP)
+        with open(f'{d}/c.jsonl', 'w') as f:
+            f.write(json.dumps({'type': 'response_item', 'timestamp': at, 'payload': {'type': 'message', 'role': 'user', 'content': [
+                {'type': 'input_text', 'text': '<image name=[Image #1]>'}, {'type': 'input_image', 'image_url': 'data:image/png;base64,' + B64(png(9, 9, 400_000))}, {'type': 'input_text', 'text': '</image>'},
+                {'type': 'input_text', 'text': 'a heavy one'}]}}) + '\n')
+        self.assertEqual([(i['who'], i['text'], 'pics' in i) for i in S.transcript_items(f'{d}/c.jsonl')], [('user', 'a heavy one', False)])
+
+    def test_a_session_s_pictures_on_its_page_kept_or_read_from_the_file(self):
+        d = tempfile.mkdtemp(dir=TMP)
+        path, at, mine, shot = f'{d}/pics.jsonl', '2026-11-19T10:00:00.000Z', png(640, 480), jpeg(1280, 800, 400_000)  # (the screenshot's line is longer than a line read whole)
+        lines = [json.dumps({'type': 'user', 'timestamp': at, 'message': {'role': 'user', 'content': [{'type': 'text', 'text': 'look at this'}, CC_PIC(mine)]}}),
+                 json.dumps({'type': 'assistant', 'timestamp': at, 'message': {'role': 'assistant', 'content': [{'type': 'tool_use', 'name': 'Read', 'input': {'file_path': '/t/shot.jpg'}}]}}),
+                 json.dumps({'type': 'user', 'timestamp': at, 'message': {'role': 'user', 'content': [{'type': 'tool_result', 'content': [CC_PIC(shot, 'jpeg')]}]}}),
+                 self.line('assistant', 'I see it.', at)]
+        with open(path, 'w') as f:
+            f.write('\n'.join(lines) + '\n')
+        deck = type('D', (), {n: getattr(S.Deck, n) for n in ('keep_talk', 'keep_whole', 'keep_again', 'kept_items', 'kept_said', 'kept_pic')})()
+        deck.book, deck.keep_lock, deck.items = S.K.Book(f'{d}/sessions.db'), threading.RLock(), {}
+        deck.book.learn([{'kind': 'claude', 'conv': 'pics-1', 'path': path, 'folder': d, 'began': 1_700_000_000, 'at': 1_700_000_400, 'title': 'pics'}])
+        kid = deck.book.all()[0]['id']
+        items, _ = deck.kept_said(kid, 200)
+        self.assertEqual([(i['who'], i['text'], i.get('n'), [sorted(p) for p in i.get('pics') or []]) for i in items],
+                         [('user', 'look at this', 1, [['h', 'ht', 't', 'w']]), ('tool', 'Read(/t/shot.jpg)', None, []), ('tool', '', 3, [['h', 'ht', 't', 'w']]), ('assistant', 'I see it.', None, [])])
+        h1, h3 = items[0]['pics'][0]['h'], items[2]['pics'][0]['h']
+        self.assertEqual((deck.kept_pic(kid, 1, 1, 0, h1), deck.kept_pic(kid, 1, 3, 0, h3), deck.kept_pic(kid, 1, 3, 0)), (('png', mine), ('jpeg', shot), ('jpeg', shot)))
+        # not another picture's digest, not one past the last, not an item with none, not another session
+        self.assertEqual([deck.kept_pic(kid, 1, 1, 0, h3), deck.kept_pic(kid, 1, 1, 1, h1), deck.kept_pic(kid, 1, 2, 0), deck.kept_pic(kid, 1, 9, 0), deck.kept_pic('s-none', 1, 1, 0), deck.kept_pic(kid, 1, 1, -1)], [None] * 6)
+        self.assertEqual(os.listdir(f'{d}/pics/{kid}'), [f'{h1}.png'])  # (the person's own is kept with the record)
+        # a copy made before pictures were kept is made again from the file, pictures and all
+        with deck.book.tx() as c:
+            c.execute("DELETE FROM said WHERE text = ''")
+            c.execute("UPDATE said SET pics = ''")
+            c.execute('UPDATE reads SET v = 2')
+        self.assertEqual(([i.get('pics') for i in deck.book.said(kid)], len(deck.book.stale())), ([None] * 3, 1))
+        deck.keep_again()
+        self.assertEqual((deck.book.stale(), [len(i.get('pics') or []) for i in deck.book.said(kid)], deck.kept_pic(kid, 1, 3, 0, h3)), ([], [1, 0, 1, 0], ('jpeg', shot)))
+        # the file written anew: what a step showed is gone with it (never another file's bytes); the person's own is still there
+        with open(path, 'w') as f:
+            f.write(self.line('user', 'x' * (len(lines[0]) + len(lines[1]) + len(lines[2]) + 99), at) + '\n')
+        self.assertEqual((deck.kept_pic(kid, 1, 3, 0, h3), deck.kept_pic(kid, 1, 1, 0, h1)), (None, ('png', mine)))
+        os.remove(path)
+        self.assertEqual((deck.kept_pic(kid, 1, 3, 0, h3), deck.kept_pic(kid, 1, 1, 0, h1)), (None, ('png', mine)))
+        # deleted for good, its pictures go with it
+        deck.book.set(kid, archived=True)
+        deck.book.drop(kid)
+        self.assertEqual((os.path.exists(f'{d}/pics/{kid}'), deck.kept_pic(kid, 1, 1, 0, h1)), (False, None))
 
     def test_the_whole_of_a_long_conversation_on_asking_and_an_old_copy_made_again(self):
         d = tempfile.mkdtemp(dir=TMP)

@@ -14,6 +14,7 @@ import contextlib
 import json
 import os
 import re
+import shutil
 import sqlite3
 import threading
 import time
@@ -43,7 +44,7 @@ CREATE TABLE IF NOT EXISTS terms (kept TEXT NOT NULL, n INTEGER NOT NULL, mux TE
 CREATE INDEX IF NOT EXISTS terms_open ON terms (ended);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS said (kept TEXT NOT NULL, seg INTEGER NOT NULL, n INTEGER NOT NULL, who TEXT NOT NULL, text TEXT NOT NULL, at REAL,
-    PRIMARY KEY (kept, seg, n));
+    pics TEXT NOT NULL DEFAULT '', PRIMARY KEY (kept, seg, n));
 CREATE TABLE IF NOT EXISTS reads (path TEXT PRIMARY KEY, off INTEGER NOT NULL, kept TEXT NOT NULL, seg INTEGER NOT NULL, clipped INTEGER NOT NULL DEFAULT 0,
     v INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS plans (id TEXT PRIMARY KEY, title TEXT NOT NULL, prompt TEXT NOT NULL, kind TEXT NOT NULL, folder TEXT NOT NULL, space TEXT,
@@ -60,7 +61,11 @@ CREATE TABLE IF NOT EXISTS dropped (kind TEXT NOT NULL, conv TEXT NOT NULL, at R
 # has been read), so a session's words outlast those files, read the same whichever agent wrote them, and can be searched.
 # A copy says which reading made it (reads.v): one made by an older reading than SAID_V is made again from the file's start.
 # 2: words sent while the agent was at work are the person's words too (Claude Code keeps them as its own kind of line).
-SAID_V = 2
+# 3: the pictures that came with the words, and those a step showed the agent (said.pics, JSON: [{p, o, l, h, t, w, ht, k}]).
+# A picture's data stays in the agent's file: p, o, l say where (path, offset, length of its base64), h is a digest of
+# it, t what it is, w and ht its size. One the person sent is kept here too (k), in pics/<session>/<h>.<t> beside this
+# file, so it outlasts the agent's file as the words do; what a step showed the agent (screenshots by the hundred) is not.
+SAID_V = 3
 WORDS = "CREATE VIRTUAL TABLE IF NOT EXISTS words USING fts5(text, kept UNINDEXED, seg UNINDEXED, n UNINDEXED, tokenize='trigram')"
 # how a conversation came to be a session's: 'new' (started for it), 'found' (already running, or on disk, when first
 # seen), 'clear' (the same terminal went on with a new conversation), 'handover' (another agent took the work on).
@@ -113,6 +118,20 @@ def next_at(every, after):
     return after + int(m.group(1)) * 3600 if m else None
 
 
+def worth(it):
+    """Whether an item of a conversation is kept: one that says something, or that pictures came with."""
+    return bool(str(it.get('text') or '').strip() or it.get('pics'))
+
+
+def pics_in(text):
+    """The pictures of one kept item, as written beside it."""
+    try:
+        got = json.loads(text) if text else []
+    except ValueError:
+        return []
+    return [p for p in got if isinstance(p, dict)] if isinstance(got, list) else []
+
+
 def bindable(s):
     """A row of the deck that is a session of its own: an agent the person talks to, not one another session started, a
     sub-agent's thread (with or without its starter in sight), a run with no window, or a card for something still starting."""
@@ -135,6 +154,8 @@ class Book:
                     c.execute(f"ALTER TABLE kept ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
             if 'v' not in {r['name'] for r in c.execute('PRAGMA table_info(reads)')}:  # (copies made before a reading had a number: all of reading 0)
                 c.execute('ALTER TABLE reads ADD COLUMN v INTEGER NOT NULL DEFAULT 0')
+            if 'pics' not in {r['name'] for r in c.execute('PRAGMA table_info(said)')}:  # (a record from before pictures were kept)
+                c.execute("ALTER TABLE said ADD COLUMN pics TEXT NOT NULL DEFAULT ''")
             try:  # (searching by any three characters in a row: where this SQLite has it; else a plain look through)
                 c.execute(WORDS)
                 self.fts = True
@@ -346,6 +367,9 @@ class Book:
             for t in ('segs', 'terms', 'said', 'reads') + (('words',) if self.fts else ()):
                 c.execute(f'DELETE FROM {t} WHERE kept = ?', (kid,))
             c.execute('DELETE FROM kept WHERE id = ?', (kid,))
+        d = self.pic_dir(kid)
+        if d:
+            shutil.rmtree(d, ignore_errors=True)  # (the pictures kept for it)
 
     @staticmethod
     def _seg(c, kid, kind, conv, path, at, how):
@@ -517,9 +541,9 @@ class Book:
             return {r['path']: dict(r) for r in c.execute('SELECT * FROM reads')}
 
     def say(self, kid, seg, path, off, items, clipped=False, whole=False):
-        """More of a conversation, read up to OFF of its file: items [{who, text, at}] go after what the record has. With
-        WHOLE the file was read again from its start (or, CLIPPED, from as far back as is read at all): the items are
-        all of it, in place of what the record had."""
+        """More of a conversation, read up to OFF of its file: items [{who, text, at, pics}] go after what the record has.
+        With WHOLE the file was read again from its start (or, CLIPPED, from as far back as is read at all): the items
+        are all of it, in place of what the record had."""
         with self.tx() as c:
             if whole:
                 c.execute('DELETE FROM said WHERE kept = ? AND seg = ?', (kid, seg))
@@ -528,11 +552,12 @@ class Book:
             n = c.execute('SELECT MAX(n) m FROM said WHERE kept = ? AND seg = ?', (kid, seg)).fetchone()['m'] or 0
             for it in items:
                 text = str(it.get('text') or '')
-                if not text.strip():
+                if not worth(it):
                     continue
                 n += 1
-                c.execute('INSERT INTO said (kept, seg, n, who, text, at) VALUES (?, ?, ?, ?, ?, ?)', (kid, seg, n, it.get('who') or '', text, it.get('at')))
-                if self.fts and it.get('who') in ('user', 'assistant'):
+                c.execute('INSERT INTO said (kept, seg, n, who, text, at, pics) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                          (kid, seg, n, it.get('who') or '', text, it.get('at'), json.dumps(it['pics']) if it.get('pics') else ''))
+                if self.fts and text.strip() and it.get('who') in ('user', 'assistant'):
                     c.execute('INSERT INTO words (text, kept, seg, n) VALUES (?, ?, ?, ?)', (text, kid, seg, n))
             # (a file first met, or read whole, is of this reading; one only read further stays of the reading that began it)
             c.execute('INSERT INTO reads (path, off, kept, seg, clipped, v) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (path) DO UPDATE SET off = excluded.off, kept = excluded.kept, seg = excluded.seg'
@@ -563,11 +588,43 @@ class Book:
 
     def said(self, kid, limit=200, talk=False):
         """The last of what was said in a session, across its conversations, oldest first: [{who, text, at, seg, kind}];
-        with TALK, only the person's and the agent's words."""
+        with TALK, only the person's and the agent's words. One that pictures came with also says which it is in its
+        conversation (n) and its pics as a page needs them: [{h, t, w, ht}] (where they lie stays here: pic)."""
         with self.read() as c:
             kinds = {r['n']: r['kind'] for r in c.execute('SELECT n, kind FROM segs WHERE kept = ?', (kid,))}
             rows = c.execute(f"SELECT * FROM said WHERE kept = ? {'AND who != ' + repr('tool') if talk else ''} ORDER BY seg DESC, n DESC LIMIT ?", (kid, limit)).fetchall()
-        return [{'who': r['who'], 'text': r['text'], 'at': r['at'], 'seg': r['seg'], 'kind': kinds.get(r['seg'], '')} for r in reversed(rows)]
+        return [{'who': r['who'], 'text': r['text'], 'at': r['at'], 'seg': r['seg'], 'kind': kinds.get(r['seg'], ''),
+                 **({'n': r['n'], 'pics': [{f: p.get(f) for f in ('h', 't', 'w', 'ht')} for p in pics_in(r['pics'])]} if r['pics'] else {})} for r in reversed(rows)]
+
+    def pic(self, kid, seg, n, i):
+        """One picture as the record keeps it ({p, o, l, h, t, w, ht, k}): the I-th of item N of a session's conversation SEG."""
+        with self.read() as c:
+            r = c.execute('SELECT pics FROM said WHERE kept = ? AND seg = ? AND n = ?', (kid, seg, n)).fetchone()
+        pics = pics_in(r['pics']) if r else []
+        return pics[i] if 0 <= i < len(pics) else None
+
+    def pic_dir(self, kid):
+        """Where the pictures kept for a session are; None for an id no folder is named by."""
+        return os.path.join(os.path.dirname(self.path), 'pics', kid) if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*', str(kid or '')) else None
+
+    def pic_keep(self, kid, name, data):
+        """A picture the person sent, kept with the record under NAME (<digest>.<type>): True once it is there."""
+        d = self.pic_dir(kid)
+        if not d or not re.fullmatch(r'[0-9a-f]{8,64}\.(png|jpeg|gif|webp)', name):
+            return False
+        f = os.path.join(d, name)
+        if not os.path.exists(f):
+            os.makedirs(d, mode=0o700, exist_ok=True)
+            tmp = f'{f}.{os.getpid()}.{threading.get_ident()}.tmp'
+            with open(tmp, 'wb') as h:
+                h.write(data)
+            os.replace(tmp, f)
+        return True
+
+    def pic_kept(self, kid, name):
+        d = self.pic_dir(kid)
+        f = os.path.join(d, name) if d and re.fullmatch(r'[0-9a-f]{8,64}\.(png|jpeg|gif|webp)', name) else None
+        return f if f and os.path.isfile(f) else None
 
     def find(self, q, limit=40):
         """Where something was said: [{kept, seg, n, who, text, at}], the latest first. Three characters or more go by the

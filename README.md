@@ -145,6 +145,10 @@ terminal it runs in and the agent's own conversation.
 - **All of a conversation is there.** The page opens on the last of it; **Show earlier words** brings in what came
   before, as far back as the session's beginning. Sturnus keeps its own copy of what was said (the words you sent
   mid-turn too), so a session's history outlasts its terminal, a restart of the machine, and the agent's own files.
+- **Pictures are in the conversation.** A picture you sent shows with your words. The pictures a step showed the agent
+  (a screenshot it took, an image it read) are folded with its steps, and the line that folds them says how many there
+  are. Click one to see it large and to go through the others. Your own pictures are kept with Sturnus's copy of the
+  conversation; an agent's screenshots are read from its own conversation file, and are there as long as that file is.
 - **A session at rest gives its terminal back.** One nobody has used for seven days (Settings → Terminals; any number of days, or never) has its terminal closed, so idle agents do not pile up in memory; it stays in the list and goes on in a new terminal when you take it up again. A session running where the page cannot reach it (a plain terminal window, the Codex desktop app) says so on its Terminal tab and can be brought into a terminal here.
 - **A session says what it runs on.** Its head shows the model, the effort and whether fast mode is on, read from the agent's own conversation file. For a Claude Code session at its prompt, a menu there changes them by typing `/model`, `/effort` or `/fast` into its terminal (Claude Code keeps a model and an effort set this way as your default, and bills fast mode from usage credits; the menu says so).
 - **A session's page remembers.** Its conversation, how far you had read, the steps and diffs you had opened and the words you had begun are there when you come back from another session. While its agent works, a line under the conversation says so, with what it is doing and for how long. The side panel is as wide as you drag it.

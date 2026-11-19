@@ -585,6 +585,53 @@ Object.assign(EN, {
 let LANG = 'zh';
 const tt = (zh, en) => (LANG === 'en' ? en : zh);  // (a label whose English differs by where it stands)
 const t = (s, v) => { let x = LANG === 'en' && EN[s] !== undefined ? EN[s] : s; for (const k in v || {}) x = x.split('{' + k + '}').join(v[k]); return x.replace('刚刚前', '刚刚').replace('just now ago', 'just now'); };
+// Pictures in a conversation: those the person sent, and those a step showed the agent (a screenshot, a picture it
+// read). Each is small where it stands and opens large on a click. Its address carries its digest, so the browser
+// keeps it; one whose file is gone says so.
+function picsHtml(kid, it) {
+  if (!kid || !it.pics || !it.pics.length || it.n == null) return '';
+  return `<span class="pics">${it.pics.map((p, i) => {
+    const src = `/api/pic?kept=${encodeURIComponent(kid)}&amp;seg=${+it.seg}&amp;n=${+it.n}&amp;i=${i}&amp;h=${encodeURIComponent(p.h || '')}`, f = p.w && p.ht ? Math.min(1, 280 / p.w, 168 / p.ht) : 0;
+    return `<a class="pic${f ? '' : ' free'}" href="${src}" target="_blank" rel="noopener" data-pic data-gone="${tt('这张图片已经不在了', 'This picture is no longer there')}" title="${tt('点开看大图', 'Open it large')}"><img src="${src}" loading="lazy" decoding="async" alt="${tt('图片', 'Picture')}"${f ? ` width="${Math.max(1, Math.round(p.w * f))}" height="${Math.max(1, Math.round(p.ht * f))}"` : ''}></a>`;
+  }).join('')}</span>`;
+}
+const picsCount = items => items.reduce((a, x) => a + (x.pics ? x.pics.length : 0), 0);
+function picClose() { const d = document.getElementById('picBig'); if (d) d.remove(); return !!d; }
+// (one picture large, over the page; the arrows go to the one before and after it in the conversation)
+function picOpen(a) {
+  picClose();
+  const all = [...document.querySelectorAll('#convo a.pic:not(.gone)')], at = all.indexOf(a), d = document.createElement('div');
+  d.id = 'picBig'; d.className = 'picbig'; d.setAttribute('role', 'dialog'); d.setAttribute('aria-modal', 'true'); d.setAttribute('aria-label', tt('图片', 'Picture'));
+  const show = i => {
+    d.dataset.at = i;
+    d.innerHTML = `<img src="${esc(all[i].getAttribute('href'))}" alt="${tt('图片', 'Picture')}"><div class="picbar">${all.length > 1 ? `<button class="btn" data-pic-go="-1"${i ? '' : ' disabled'} aria-label="${tt('上一张', 'The one before')}">‹</button><span>${i + 1} / ${all.length}</span><button class="btn" data-pic-go="1"${i < all.length - 1 ? '' : ' disabled'} aria-label="${tt('下一张', 'The next one')}">›</button>` : ''}<a class="btn" href="${esc(all[i].getAttribute('href'))}" target="_blank" rel="noopener">${tt('在新标签页打开', 'Open in a new tab')}</a><button class="btn" data-pic-x>${tt('关闭', 'Close')}</button></div>`;
+  };
+  d.go = by => { const i = +d.dataset.at + by; if (i >= 0 && i < all.length) show(i); };
+  if (at < 0) return;
+  show(at);
+  document.body.appendChild(d);
+}
+document.addEventListener('click', e => {
+  const big = e.target.closest && e.target.closest('#picBig');
+  if (big) {
+    const go = e.target.closest('[data-pic-go]');
+    if (go) { big.go(+go.dataset.picGo); e.stopPropagation(); return; }
+    if (!e.target.closest('a')) { picClose(); e.preventDefault(); }
+    e.stopPropagation();
+    return;
+  }
+  const a = e.target.closest && e.target.closest('a[data-pic]');
+  if (!a || e.metaKey || e.ctrlKey || e.shiftKey || e.button) return;  // (with a modifier it opens in a tab of its own, as a link does)
+  e.preventDefault(); e.stopPropagation();
+  if (!a.classList.contains('gone')) picOpen(a);
+}, true);
+document.addEventListener('keydown', e => {
+  const big = document.getElementById('picBig');
+  if (!big) return;
+  if (e.key === 'Escape') picClose(); else if (e.key === 'ArrowLeft') big.go(-1); else if (e.key === 'ArrowRight') big.go(1); else return;
+  e.preventDefault(); e.stopImmediatePropagation();
+}, true);
+document.addEventListener('error', e => { const a = e.target && e.target.tagName === 'IMG' && e.target.closest('a.pic'); if (a) a.classList.add('gone'); }, true);
 const agoT = t0 => { const a = ago(t0); return a === t('刚刚') ? a : t('{t}前', { t: a }); };
 // how a session outside Zellij and tmux was started: the deck writes it in Chinese, the page puts it in its own language
 const originT = o => { if (LANG !== 'en' || !o) return o; const m = o.match(/^终端窗口（(.*)）$/) || o.match(/^由 (.*) 启动$/); const r = m ? t(o.startsWith('由') ? '由 {n} 启动' : '终端窗口（{n}）', { n: t(m[1]) }) : t(o); return r.charAt(0).toUpperCase() + r.slice(1); };
@@ -2066,10 +2113,10 @@ async function drawChat(s, k) {
   try {
     const j = await (await fetch('/api/transcript?id=' + encodeURIComponent(s.id), { cache: 'no-store' })).json();
     const items = j.items || [];
-    if (!draw('chat', [items.length, items.length && items[items.length - 1].text.slice(0, 50)], () => {
+    if (!draw('chat', [items.length, items.length && items[items.length - 1].text.slice(0, 50), picsCount(items)], () => {
       const box = $('#convo'); if (!box) return;
       const sess = $('#sess'), atEnd = sess.scrollHeight - sess.scrollTop - sess.clientHeight < 80;
-      box.innerHTML = items.length ? items.map(it => `<div class="bub ${it.who}${it.who === 'assistant' ? ' ' + k : ''}">${it.who === 'tool' ? esc(it.text) : md(it.text)}${it.at && it.who !== 'tool' ? `<time>${clock(it.at)}</time>` : ''}</div>`).join('') : `<div class="hint">${t('读不到它的对话记录。')}</div>`;
+      box.innerHTML = items.length ? items.map(it => (it.who === 'tool' && !it.text ? picsHtml(j.kept, it) : `<div class="bub ${it.who}${it.who === 'assistant' ? ' ' + k : ''}">${it.who === 'tool' ? esc(it.text) : md(it.text)}${picsHtml(j.kept, it)}${it.at && it.who !== 'tool' ? `<time>${clock(it.at)}</time>` : ''}</div>`)).join('') : `<div class="hint">${t('读不到它的对话记录。')}</div>`;
       if (atEnd || sig.chatFirst !== s.id) { sig.chatFirst = s.id; sess.scrollTop = sess.scrollHeight; }
     })) return;
   } catch {}

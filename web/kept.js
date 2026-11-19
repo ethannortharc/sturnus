@@ -438,7 +438,13 @@ function kChatHtml(k, items, full) {
   let out = '', ti = 0, seg = null, tools = [];
   const first = items.length ? at(items[0]) : 0;
   while (ti < terms.length && (terms[ti].n === 1 || (first && terms[ti].began <= first))) ti++;  // (the first terminal changed nothing; one from before what is shown is above it)
-  const flush = () => { if (!tools.length) return; out += `<details class="ktools"><summary>${chev(false)}${tt(`做了 ${tools.length} 步`, `${tools.length} step${tools.length > 1 ? 's' : ''}`)}</summary>${tools.map(x => `<div class="bub tool">${esc(x.text)}</div>`).join('')}</details>`; tools = []; };
+  // (the steps between two things said are folded into one line, which says how many they were and how many pictures they showed the agent)
+  const flush = () => {
+    if (!tools.length) return;
+    const steps = tools.filter(x => x.text).length, pics = picsCount(tools);
+    out += `<details class="ktools"><summary>${chev(false)}${steps ? tt(`做了 ${steps} 步`, `${steps} step${steps > 1 ? 's' : ''}`) : ''}${pics ? `<b class="np">${steps ? ' · ' : ''}${tt(`${pics} 张图`, `${pics} picture${pics > 1 ? 's' : ''}`)}</b>` : ''}</summary>${tools.map(x => (x.text ? `<div class="bub tool">${esc(x.text)}</div>` : '') + picsHtml(k.id, x)).join('')}</details>`;
+    tools = [];
+  };
   for (const it of items) {
     const a = at(it);
     while (ti < terms.length && a && terms[ti].began <= a) { flush(); out += kTermLine(terms, ti++); }
@@ -446,7 +452,7 @@ function kChatHtml(k, items, full) {
     seg = it.seg;
     if (it.who === 'tool') { tools.push(it); continue; }
     flush();
-    out += `<div class="bub ${it.who}${it.who === 'assistant' ? ' ' + (it.kind || k.kind) : ''}">${md(it.text)}${it.at ? `<time>${clock(it.at)}</time>` : ''}</div>`;
+    out += `<div class="bub ${it.who}${it.who === 'assistant' ? ' ' + (it.kind || k.kind) : ''}">${md(it.text)}${picsHtml(k.id, it)}${it.at ? `<time>${clock(it.at)}</time>` : ''}</div>`;
   }
   flush();
   while (ti < terms.length) out += kTermLine(terms, ti++);
@@ -483,7 +489,7 @@ function kChatPaint(k, stick) {
   if (!$('#convo')) return;
   const pg = kPage(k.id), full = (KV.full[k.id] || {}).kept || {}, items = pg.items || [], pend = kPending(k), s = kLive(k);
   if (!pg.items && !pend.length) return;  // (not read yet, and nothing to show meanwhile: the line that says so stays)
-  draw('kc', [k.id, items.length, items.length && items[items.length - 1].text.slice(0, 60), (full.terms || []).map(t => [t.n, t.ended, t.why]), (full.segs || []).length, k.live, pend.map(p => [p.n, p.state, p.how]),
+  draw('kc', [k.id, items.length, items.length && items[items.length - 1].text.slice(0, 60), picsCount(items), (full.terms || []).map(t => [t.n, t.ended, t.why]), (full.segs || []).length, k.live, pend.map(p => [p.n, p.state, p.how]),
     kWorking(s) && [s.since, s.tool, (s.tool_at || 0) > (s.tool_end || 0)], pg.more, pg.moreBusy, pg.n, LANG], () => {
     const sess = $('#sess'), first = sig.kcFirst !== k.id, atEnd = sess.scrollHeight - sess.scrollTop - sess.clientHeight < 80;
     // (what is shown is the last of it: the words before are a click away, and where the session begins is said once it is reached)

@@ -451,7 +451,11 @@ def lines_of(path, size=400000):
     return cursor_lines(lines) if '/.cursor/projects/' in path else lines
 
 
-INLINE_DATA = re.compile(rb'"data":\s*"[A-Za-z0-9+/=]{1000,}"')
+# (a picture inside a line: Claude Code's {"type":"image","source":{…,"data":"<base64>"}} and Codex's {"type":"input_image",
+# "image_url":"data:image/png;base64,<base64>"})
+PIC_DATA = re.compile(rb'("data":\s*"|"image_url":\s*"data:image/[A-Za-z0-9.+-]+;base64,)([A-Za-z0-9+/]{64,}={0,2})"')
+PIC_TYPES = {'png': 'image/png', 'jpeg': 'image/jpeg', 'gif': 'image/gif', 'webp': 'image/webp'}
+PIC_MOST = 40 << 20  # (of base64: more than that is not shown)
 NOT_TALK = re.compile(rb'\{"type":"(api-request|api-request-blob|session-owner|atis-latch|mode|permission-mode|last-prompt|ai-title|tools-used)"')  # (Claude Code's own bookkeeping)
 
 
@@ -474,7 +478,7 @@ def tail_lines(path, size=400000, furthest=40000000, longest=300000):
                     if NOT_TALK.match(line):
                         continue
                     if len(line) > longest:
-                        line = INLINE_DATA.sub(b'"data":""', line)
+                        line = PIC_DATA.sub(rb'\1"', line)
                     if line.strip() and len(line) <= longest:
                         kept.append(line)
                         got += len(line)
@@ -501,9 +505,29 @@ def text_of(content):
     return '\n'.join(texts), tools
 
 
+def pics_of(content, results=False):
+    """The pictures among a message's parts, as the marks pics_out left for their data, in order: the parts' own, or
+    with RESULTS those inside the results of steps (what a tool showed the agent)."""
+    out = []
+    for x in content if isinstance(content, list) else []:
+        if not isinstance(x, dict):
+            continue
+        if x.get('type') == 'tool_result':
+            out += pics_of(x.get('content')) if results else []
+            continue
+        v = (x.get('source') or {}).get('data') if x.get('type') == 'image' and isinstance(x.get('source'), dict) else \
+            str(x.get('image_url') or '').rpartition(',')[2] if x.get('type') == 'input_image' else None
+        if isinstance(v, str) and re.fullmatch(r'@pic\d+', v) and not results:
+            out.append(int(v[4:]))
+    return out
+
+
+IMAGE_TAG = re.compile(r'\s*(<image\b[^>]*>|</image>)\s*')  # (Codex puts a picture between two parts that say only this)
+
+
 def line_items(d):
     """One line of a conversation file (Claude Code's, Codex's, or another's in that shape) as items {who: user|assistant|
-    tool, text, at}."""
+    tool, text, at}; pics on one that pictures came with (the marks pics_out left: said_of makes them what is kept)."""
     out = []
     if not isinstance(d, dict):
         return out
@@ -517,34 +541,47 @@ def line_items(d):
             t, _ = text_of(a.get('prompt'))
             who = (a.get('origin') or {}).get('kind') or ('human' if a.get('commandMode') == 'prompt' and not a.get('isMeta') else a.get('commandMode'))
             note = re.search(r'<summary>(.*?)</summary>', t, re.S) if who == 'task-notification' else None
-            if who == 'human' and t.strip() and not re.match(r'\s*<(task-notification|system-reminder|local-command|command-|cross-session-message)', t):
-                out.append({'who': 'user', 'text': t.strip()[:4000], 'at': at or a.get('timestamp')})
+            mine = pics_of(a.get('prompt')) if who == 'human' else []
+            if who == 'human' and (t.strip() or mine) and not re.match(r'\s*<(task-notification|system-reminder|local-command|command-|cross-session-message)', t):
+                out.append({'who': 'user', 'text': t.strip()[:4000], 'at': at or a.get('timestamp'), **({'pics': mine} if mine else {})})
             elif note:
                 out.append({'who': 'tool', 'text': tx(f'后台通知：{" ".join(note.group(1).split())[:200]}', f'Background notice: {" ".join(note.group(1).split())[:200]}'), 'at': at})
         return out
     if d.get('type') in ('user', 'assistant') and isinstance(d.get('message'), dict):
         m = d['message']
         c = m.get('content')
+        shown = pics_of(c, results=True) if m.get('role') == 'user' else []  # (what a step showed the agent: a screenshot, a picture it read)
         if m.get('role') == 'user' and isinstance(c, list) and all(isinstance(x, dict) and x.get('type') == 'tool_result' for x in c):
-            return out
+            return [{'who': 'tool', 'text': '', 'at': at, 'pics': shown}] if shown else out
         t, tools = text_of(c)
         if m.get('role') == 'user' and re.match(r'\s*<(task-notification|system-reminder|local-command|command-)', t):
             note = re.search(r'<summary>(.*?)</summary>', t, re.S)  # (the harness speaking, not the person: one line)
             if note:
                 out.append({'who': 'tool', 'text': tx(f'后台通知：{" ".join(note.group(1).split())[:200]}', f'Background notice: {" ".join(note.group(1).split())[:200]}'), 'at': at})
             return out
-        if t.strip():
-            out.append({'who': m.get('role'), 'text': t.strip()[:4000], 'at': at})
+        mine = pics_of(c) if m.get('role') == 'user' else []  # (the person's own, sent with their words)
+        if t.strip() or mine:
+            out.append({'who': m.get('role'), 'text': t.strip()[:4000], 'at': at, **({'pics': mine} if mine else {})})
         for tool in tools:
             out.append({'who': 'tool', 'text': tool, 'at': at})
+        if shown:
+            out.append({'who': 'tool', 'text': '', 'at': at, 'pics': shown})
     elif d.get('type') == 'response_item' and isinstance(d.get('payload'), dict):
         p = d['payload']
         if p.get('type') == 'message' and p.get('role') in ('user', 'assistant'):
-            t, _ = text_of(p.get('content'))
-            if t.strip() and not t.lstrip().startswith(('<environment_context', '<user_instructions', '# AGENTS.md', '<permissions')):
-                out.append({'who': p['role'], 'text': t.strip()[:4000], 'at': at})
+            c = p.get('content')
+            mine = pics_of(c) if p['role'] == 'user' else []
+            if isinstance(c, list):  # (the two parts around a picture say nothing of their own)
+                c = [x for x in c if not (isinstance(x, dict) and x.get('type') == 'input_text' and IMAGE_TAG.fullmatch(x.get('text') or ''))]
+            t, _ = text_of(c)
+            if (t.strip() or mine) and not t.lstrip().startswith(('<environment_context', '<user_instructions', '# AGENTS.md', '<permissions')):
+                out.append({'who': p['role'], 'text': t.strip()[:4000], 'at': at, **({'pics': mine} if mine else {})})
         elif p.get('type') in ('function_call', 'custom_tool_call'):
             out.append({'who': 'tool', 'text': f'{p.get("name")}({str(p.get("arguments") or p.get("input") or "")[:160]})', 'at': at})
+        elif p.get('type') in ('function_call_output', 'custom_tool_call_output'):
+            shown = pics_of(p.get('output'))  # (what a step showed the agent)
+            if shown:
+                out.append({'who': 'tool', 'text': '', 'at': at, 'pics': shown})
     elif d.get('role') in ('user', 'assistant'):
         t, tools = text_of(d.get('content') or d.get('message'))
         if t.strip():
@@ -554,16 +591,96 @@ def line_items(d):
     return out
 
 
-def said_of(data, path):
-    """Whole lines of a conversation file (bytes) as the items the record keeps of them: {who, text, at (seconds)}."""
-    lines = [INLINE_DATA.sub(b'"data":""', l) if len(l) > 300000 else l for l in data.split(b'\n') if l.strip() and not NOT_TALK.match(l)]
-    lines = [l.decode('utf-8', 'replace') for l in lines if len(l) <= 300000]
+def pics_out(line, base=0):
+    """A conversation line (bytes; BASE is where it begins in its file) with its pictures' data taken out, each leaving
+    the mark @pic<i> in its place: (the line, [(where the data begins in the file, how long it is, the data)]). The line
+    is then short enough to read, and a picture can be read from the file again when it is looked at."""
+    spots = []
+
+    def mark(m):
+        spots.append((base + m.start(2), m.end(2) - m.start(2), m.group(2)))
+        return m.group(1) + b'@pic%d"' % (len(spots) - 1)
+    return (PIC_DATA.sub(mark, line) if b'"data"' in line or b'"image_url"' in line else line), spots
+
+
+def pic_kind(head):
+    """What picture these first bytes begin, and its size where they say it: (png|jpeg|gif|webp, width, height; 0 when
+    not found), or None for what is no picture a page shows."""
+    if head[:8] == b'\x89PNG\r\n\x1a\n' and len(head) >= 24:
+        return ('png',) + struct.unpack('>II', head[16:24])
+    if head[:6] in (b'GIF87a', b'GIF89a') and len(head) >= 10:
+        return ('gif',) + struct.unpack('<HH', head[6:10])
+    if head[:4] == b'RIFF' and head[8:12] == b'WEBP':
+        if head[12:16] == b'VP8X' and len(head) >= 30:
+            return 'webp', 1 + int.from_bytes(head[24:27], 'little'), 1 + int.from_bytes(head[27:30], 'little')
+        if head[12:16] == b'VP8 ' and len(head) >= 30:
+            w, h = struct.unpack('<HH', head[26:30])
+            return 'webp', w & 0x3fff, h & 0x3fff
+        if head[12:16] == b'VP8L' and len(head) >= 25:
+            b = int.from_bytes(head[21:25], 'little')
+            return 'webp', 1 + (b & 0x3fff), 1 + ((b >> 14) & 0x3fff)
+        return 'webp', 0, 0
+    if head[:2] == b'\xff\xd8':
+        i = 2
+        while i + 9 <= len(head) and head[i] == 0xff:  # (segment after segment, to the one that says the frame's size)
+            m = head[i + 1]
+            if m == 0xff:
+                i += 1
+            elif 0xc0 <= m <= 0xcf and m not in (0xc4, 0xc8, 0xcc):
+                h, w = struct.unpack('>HH', head[i + 5:i + 9])
+                return 'jpeg', w, h
+            elif m == 0xda:
+                break
+            else:
+                i += 2 + int.from_bytes(head[i + 2:i + 4], 'big')
+        return 'jpeg', 0, 0
+    return None
+
+
+def pic_seen(spot, path, keep=None):
+    """What the record keeps of one picture in a conversation file: where its data lies (p, o, l), a digest of it (h),
+    what it is (t) and its size (w, ht). KEEP(name, bytes), given for a picture the person sent, keeps the picture
+    itself with the record (k: it did). None for what is no picture."""
+    o, l, raw = spot
+    try:
+        kind = pic_kind(base64.b64decode(raw[:1 << 17])) if l <= PIC_MOST else None  # (its beginning says what it is)
+        if not kind:
+            return None
+        pic = {'p': path, 'o': o, 'l': l, 'h': hashlib.sha1(raw).hexdigest()[:16], 't': kind[0], 'w': kind[1], 'ht': kind[2]}
+        if keep and keep(f'{pic["h"]}.{pic["t"]}', base64.b64decode(raw, validate=True)):
+            pic['k'] = 1
+        return pic
+    except (ValueError, OSError):
+        return None
+
+
+def said_of(data, path, at=0, keep=None):
+    """Whole lines of a conversation file (bytes; AT is where they begin in the file) as the items the record keeps of
+    them: {who, text, at (seconds)}, with pics where pictures came with the words or with a step's result (pic_seen).
+    KEEP(name, bytes) is given the pictures the person sent."""
+    rows, pos = [], 0
+    for l in data.split(b'\n'):
+        base, pos = at + pos, pos + len(l) + 1
+        if not l.strip() or NOT_TALK.match(l):
+            continue
+        l, spots = pics_out(l, base)
+        if len(l) <= 300000:
+            rows.append((l.decode('utf-8', 'replace'), spots))
+    if '/.cursor/projects/' in path:
+        rows = [(l, []) for l in cursor_lines([l for l, _ in rows])]
     items = []
-    for l in cursor_lines(lines) if '/.cursor/projects/' in path else lines:
+    for l, spots in rows:
         try:
-            items += line_items(json.loads(l))
+            got = line_items(json.loads(l))
         except ValueError:
             continue
+        for it in got:
+            if 'pics' in it:
+                it['pics'] = [p for p in (pic_seen(spots[i], path, keep if it['who'] == 'user' else None) for i in it['pics'] if i < len(spots)) if p]
+                if not it['pics']:
+                    del it['pics']
+            if it.get('text') or it.get('pics'):
+                items.append(it)
     for it in items:
         it['at'] = stamp(it['at']) if isinstance(it.get('at'), str) else it.get('at')
     return items
@@ -3888,7 +4005,7 @@ class Deck:
                     if len(data) == room:  # (one line longer than a pass reads: past it)
                         self.book.say(k['id'], seg['n'], path, off + len(data), [], clipped=first and off > 0)
                     continue
-                self.book.say(k['id'], seg['n'], path, off + end + 1, said_of(data[head:end], path), clipped=first and off > 0)
+                self.book.say(k['id'], seg['n'], path, off + end + 1, said_of(data[head:end], path, off + head, functools.partial(self.book.pic_keep, k['id'])), clipped=first and off > 0)
 
     def keep_whole(self, kid, seg, room=512 << 20):
         """One of a session's conversations read again from its file's start, and the record's copy of it replaced in one
@@ -3915,12 +4032,12 @@ class Deck:
                                 break  # (the file is shorter than it said)
                             carry = data  # (a line longer than one read: more of it)
                             continue
-                        items += said_of(data[:end], path)
+                        items += said_of(data[:end], path, base + done, functools.partial(self.book.pic_keep, kid))
                         done, carry = done + end + 1, data[end + 1:]
             except OSError:
                 return False
             # (the record's copy outlasts the file: a file cut short or written anew since it was read has less than the copy, which then stays)
-            if len([1 for it in items if str(it.get('text') or '').strip()]) < self.book.said_in(kid, seg['n']):
+            if len([1 for it in items if K.worth(it)]) < self.book.said_in(kid, seg['n']):
                 return False
             self.book.say(kid, seg['n'], path, base + done, items, clipped=2 if base else 0, whole=True)  # (2: from as far back as is read at all)
         return True
@@ -3982,7 +4099,8 @@ class Deck:
             h.write(f'# {k["title"] or kid}\n\n' + w(f'目录：{k["folder"]}\n\n以下是这条会话到目前为止说过的话，按先后。\n', f'Folder: {k["folder"]}\n\nEverything said in this session so far, in order.\n'))
             for it in said:
                 h.write(f'\n## {who.get(it["who"], it["who"])}' + (f'（{full.get(it["kind"], it["kind"])}）' if it['who'] == 'assistant' else '')
-                        + (time.strftime(' %Y-%m-%d %H:%M', time.localtime(it['at'])) if it.get('at') else '') + f'\n\n{it["text"]}\n')
+                        + (time.strftime(' %Y-%m-%d %H:%M', time.localtime(it['at'])) if it.get('at') else '') + f'\n\n{it["text"]}\n'
+                        + (w(f'\n（附了 {len(it["pics"])} 张图片）\n', f'\n({len(it["pics"])} picture{"s" if len(it["pics"]) > 1 else ""} came with this)\n') if it.get('pics') else ''))
         ids = {f'{x["kind"]}:{x["conv"]}' for x in k['segs']}
         tasks = [t for t in self.state.get('tasks') or [] if t.get('shown') not in ('done', 'dropped', 'backlog')
                  and any(l.get('sid') in ids or (k['name'] and l.get('name') == k['name']) for l in t.get('sessions') or [])][:3]
@@ -4068,6 +4186,29 @@ class Deck:
                 hit = self.items[path] = ((st.st_size, st.st_mtime), transcript_items(path, limit))
             out += [{**it, 'seg': seg['n'], 'kind': seg['kind']} for it in hit[1]]
         return out[-limit:]
+
+    def kept_pic(self, kid, seg, n, i, h=''):
+        """One picture of a session's conversation: (png|jpeg|gif|webp, its bytes), or None when it is not there any
+        more. A picture the person sent is kept with the record; another (what a step showed the agent) is read from
+        where it lies in the agent's own file, and is there as long as that file holds it."""
+        p = self.book.pic(kid, seg, n, i)
+        if not p or p.get('t') not in PIC_TYPES or (h and p.get('h') != h):
+            return None
+        try:
+            own = self.book.pic_kept(kid, f'{p["h"]}.{p["t"]}') if p.get('k') else None
+            if own:
+                with open(own, 'rb') as f:
+                    return p['t'], f.read()
+            if not 0 < p['l'] <= PIC_MOST:
+                return None
+            with open(p['p'], 'rb') as f:
+                f.seek(p['o'])
+                raw = f.read(p['l'])
+            if len(raw) != p['l'] or hashlib.sha1(raw).hexdigest()[:16] != p['h']:  # (the file is not what it was when this was read)
+                return None
+            return p['t'], base64.b64decode(raw, validate=True)
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
 
     def kept_said(self, kid, limit=200):
         """The last LIMIT of what was said in a session, and whether there is more before it: (items, more). Asked for
@@ -5686,6 +5827,27 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith('/api/search'):  # (where something was said, in any session's conversations)
             from urllib.parse import urlparse, parse_qs
             return self.send_json({'ok': True, 'hits': DECK.search((parse_qs(urlparse(self.path).query).get('q') or [''])[0].strip())})
+        if self.path.startswith('/api/pic?'):  # (one picture of a session's conversation, by where it is in the record)
+            from urllib.parse import urlparse, parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            try:
+                got = DECK.kept_pic(q['kept'][0], int(q['seg'][0]), int(q['n'][0]), int((q.get('i') or ['0'])[0]), (q.get('h') or [''])[0])
+            except (KeyError, ValueError, sqlite3.Error):
+                got = None
+            if not got:
+                return self.send_json({'ok': False, 'msg': tx('这张图片已经不在了', 'This picture is no longer there')}, 404)
+            self.send_response(200)
+            self.send_header('Content-Type', PIC_TYPES[got[0]])
+            self.send_header('Content-Length', str(len(got[1])))
+            self.send_header('Cache-Control', 'private, max-age=31536000, immutable')  # (its address carries its digest: it never changes)
+            self.send_header('X-Content-Type-Options', 'nosniff')
+            self.send_header('Content-Security-Policy', "default-src 'none'")
+            try:
+                self.end_headers()
+                self.wfile.write(got[1])
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # (the page went on to something else before it had all of it)
+            return
         if self.path.startswith('/api/transcript'):
             from urllib.parse import urlparse, parse_qs
             q = parse_qs(urlparse(self.path).query)
@@ -5697,7 +5859,7 @@ class Handler(BaseHTTPRequestHandler):
                     n = 200
                 items, more = DECK.kept_said(q['kept'][0], n)
                 # (the page that shows it asks every second or so while it works: what it already has is not sent again)
-                sig = hashlib.sha1(json.dumps([len(items)] + [[i.get('seg'), i.get('at'), i.get('who'), len(i.get('text') or '')] for i in items[-4:]]).encode()).hexdigest()[:16]
+                sig = hashlib.sha1(json.dumps([len(items)] + [[i.get('seg'), i.get('at'), i.get('who'), len(i.get('text') or ''), len(i.get('pics') or [])] for i in items[-4:]]).encode()).hexdigest()[:16]
                 if (q.get('have') or [''])[0] == sig:
                     return self.send_json({'same': True, 'sig': sig, 'more': more})
                 return self.send_json({'items': items, 'sig': sig, 'more': more})
@@ -5706,6 +5868,13 @@ class Handler(BaseHTTPRequestHandler):
             if path and sub:  # (one of its sub-agents' conversations, from beside its own)
                 f = os.path.join(path[:-6], 'subagents', f'agent-{sub}.jsonl') if SUB.fullmatch(sub) and path.endswith('.jsonl') else None
                 path = f if f and os.path.exists(f) else None
+            # (a session that lasts is read from its record, as its own page reads it: the pictures are there)
+            kid = None if sub or not s else next((k for k, v in dict(getattr(DECK, 'kept', None) or {}).items() if v.get('live') == s['id']), None)
+            if kid:
+                try:
+                    return self.send_json({'items': DECK.kept_items(kid, 120), 'kept': kid})
+                except (sqlite3.Error, OSError):
+                    pass
             return self.send_json({'items': transcript_items(path) if path else []})
         bare = self.path.split('?')[0].split('#')[0]
         self.static('index.html' if bare in ('/', '/index.html') else bare.lstrip('/'))
