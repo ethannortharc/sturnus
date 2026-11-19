@@ -600,6 +600,54 @@ class Family(unittest.TestCase):
         self.assertEqual(sorted(s['name'] for s in rows if S.K.bindable(s)), ['main', 'other'])  # (only the person's own threads are sessions)
         self.assertIsNone(S.codex_sub({'source': 'exec', 'originator': 'codex_exec', 'thread_source': 'user'}))
 
+    def test_a_codex_thread_that_keeps_no_conversation_is_no_session(self):
+        none, on_disk = (lambda s: None), (lambda s: '/x/rollout-T-1.jsonl')
+        self.assertTrue(S.codex_fileless({'kind': 'codex', 'session': 'T-1'}, none))  # (the desktop app's own run: no file named, none there)
+        self.assertFalse(S.codex_fileless({'kind': 'codex', 'session': 'T-1', 'transcript': '/x/named-not-written-yet.jsonl'}, none))  # (its hooks named one)
+        self.assertFalse(S.codex_fileless({'kind': 'codex', 'session': 'T-1'}, on_disk))  # (hooks older than the file's naming: found by its id)
+        self.assertFalse(S.codex_fileless({'kind': 'claude', 'session': 'c-1'}, none))
+        # marked before the family is worked out: under no one, taking no one's review, and no session
+        metas = {'main': {'source': 'vscode', 'thread_source': 'user', 'originator': 'Codex Desktop', 'cwd': '/r/a'}, 'brief': {},
+                 'review': {'source': {'subagent': 'review'}, 'thread_source': 'subagent', 'cwd': '/r/a'}}
+        rows = [session(id=f'codex:T-{k}', kind='codex', session=f'T-{k}', name=k, cwd='/r/a', at=at) for k, at in (('main', 60), ('brief', 90), ('review', 70))]
+        rows[1]['sub'] = 'short-lived thread'
+        S.codex_family(rows, lambda s: metas[s['name']])
+        self.assertEqual({s['name']: (s.get('sub'), s.get('parent')) for s in rows},
+                         {'main': (None, None), 'brief': ('short-lived thread', None), 'review': (S.tx('审查', 'review'), 'main')})
+        self.assertEqual([s['name'] for s in rows if S.K.bindable(s)], ['main'])
+
+    def test_records_made_of_such_threads_are_taken_out_and_no_other(self):
+        d = tempfile.mkdtemp(dir=TMP)
+        def first(name, payload):  # (a thread's file, as far as its first line)
+            with open(f'{d}/{name}.jsonl', 'w') as f:
+                f.write(json.dumps({'type': 'session_meta', 'payload': payload}) + '\n')
+            return f'{d}/{name}.jsonl'
+        own = first('own', {'id': 'T-own', 'source': 'vscode', 'thread_source': 'user', 'cwd': d})
+        spawned = first('spawned', {'id': 'T-spawned', 'source': {'subagent': {'thread_spawn': {'parent_thread_id': 'T-own'}}}, 'thread_source': 'subagent', 'cwd': d})
+        late = first('late', {'id': 'T-late', 'source': 'vscode', 'thread_source': 'user', 'cwd': d})
+        deck = type('D', (), {'subs_out': S.Deck.subs_out, 'kept_refresh': lambda self: None, 'note': lambda self, text, ok=True: self.notes.append(text)})()
+        deck.book, deck.notes = S.K.Book(f'{d}/sessions.db'), []
+        conv = lambda name, path='': {'kind': 'codex', 'conv': f'T-{name}', 'path': path, 'folder': d, 'began': 1_700_000_000, 'at': 1_700_000_400, 'title': '', 'name': f'codex-{name}'}
+        deck.book.learn([conv('own', own), conv('spawned', spawned), conv('late'), conv('brief'), conv('brief2'), conv('named'), conv('renamed'), conv('pinned'), conv('said'), conv('open')])
+        ids = {k['name'].removeprefix('codex-'): k['id'] for k in deck.book.all()}
+        deck.book.set(ids['named'], title='the one I called so')  # (the person's word on it: kept)
+        deck.book.set(ids['renamed'], title='codex-renamed')  # (called what it was called: no word of the person's)
+        deck.book.set(ids['pinned'], pinned=True)
+        deck.book.say(ids['said'], 1, f'{d}/gone.jsonl', 10, [{'who': 'user', 'text': 'hello', 'at': '2026-11-19T10:00:00.000Z'}])  # (a copy of what was said, its file gone since)
+        with deck.book.tx() as c:  # (one running now: a terminal of its own is open)
+            c.execute("INSERT INTO terms (kept, n, mux, grp, pane, sock, origin, pid, pid_at, began) VALUES (?, 1, '', '', '', '', 'Codex', 1, 1, 1)", (ids['open'],))
+        was = S.transcript_of
+        S.transcript_of = lambda s: late if s.get('session') == 'T-late' else None  # (a file found on disk by the thread's id)
+        try:
+            self.assertEqual(deck.subs_out(), 4)
+            self.assertEqual(deck.subs_out(), 0)
+        finally:
+            S.transcript_of = was
+        self.assertEqual(sorted(k['name'].removeprefix('codex-') for k in deck.book.all()), ['late', 'named', 'open', 'own', 'pinned', 'said'])
+        self.assertEqual(len(deck.notes), 1)
+        deck.book.learn([conv('brief'), conv('spawned', spawned)])  # (taken out for good: not learned from disk again)
+        self.assertEqual(len(deck.book.all()), 6)
+
     def test_a_helper_of_the_desktop_app_is_no_window(self):
         asked = lambda *a: S.codex_asked(['codex', *a])
         self.assertEqual(asked('-c', 'forced_login_method="chatgpt"', 'exec-server', '--concurrent-requests', '32'), 'exec-server')  # (the app's helper: no window)

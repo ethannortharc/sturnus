@@ -336,11 +336,19 @@ def codex_sub(meta):
     return {'parent': parent if isinstance(parent, str) and parent else None, 'role': str(role)[:60]}
 
 
+def codex_fileless(s, file_of=None):
+    """Whether a Codex thread keeps no conversation: its hooks named no file for it (their transcript_path is null
+    then) and there is none on disk. The desktop app starts such threads of its own beside the person's — short runs
+    that leave nothing behind — and each fires a session's hooks. A thread the person talks in always has a file."""
+    return s.get('kind') == 'codex' and not s.get('transcript') and not (file_of or transcript_of)(s)
+
+
 def codex_family(codex, meta_of):
     """Codex's sub-agent threads among its live ones, each given to the thread that started it: marked 'sub' (what to
     call it) and, where that thread is among them, 'parent' (its name). One whose file names no parent (a review, a
     guardian check of older Codex versions) is given to the thread of the person's in the same folder that stirred
-    last; one with no such thread keeps the mark alone, and is no session of its own."""
+    last; one with no such thread keeps the mark alone, and is no session of its own. (A thread marked before it is
+    called — one that keeps no conversation — is left as it is: no thread's sub-agent, and no one's starter.)"""
     by = {s.get('session'): s for s in codex if s.get('session')}
     subs = []
     for s in codex:
@@ -2592,6 +2600,9 @@ class Deck:
             tid = a[a.index('resume') + 1] if resume and a.index('resume') + 1 < len(a) and not a[a.index('resume') + 1].startswith('-') else None
             tuis.append({'pid': p['pid'], 'loc': loc, 'cwd': cwd, 'thread': tid, 'resume': resume, 'marker': env_of(p['pid'], 'STURNUS_NEW'), 'start': p['start']})
         codex = [s for s in sessions if s['kind'] == 'codex' and s['state'] not in ('gone', 'ended')]
+        for s in codex:
+            if codex_fileless(s):
+                s['sub'] = tx('临时线程', 'short-lived thread')  # (the desktop app's own run: no session, and under no one's)
         codex_family(codex, lambda s: codex_meta(transcript_of(s) or ''))  # (sub-agent threads: with the thread that started them, not sessions of their own)
         # (a window shows a thread that has stirred since it opened; one opened with `codex resume` and no id, an older one
         # too: the person picks it there. A new window has none until its first message: Codex registers a thread then)
@@ -4490,21 +4501,30 @@ class Deck:
             time.sleep(min(30, REST_EVERY))
 
     def subs_out(self):
-        """Sessions in the record that are Codex sub-agent threads, kept as sessions before the deck could tell them
-        apart: taken out of the record (Codex's own files are not touched). Only one whose every conversation is such a
-        thread, that is not running and not pinned. Returns how many."""
+        """Sessions in the record that are no sessions of the person's, kept as such before the deck could tell them
+        apart: taken out of the record (Codex's own files are not touched). A Codex sub-agent's thread: one whose every
+        conversation is such a thread. A thread that kept no conversation (the desktop app's own short runs): one with
+        no file ever named for it and none on disk, nothing of it copied here, and no title the person gave it. Only
+        one that is not running and not pinned. Returns how many."""
         n = 0
         for k in self.book.all():
             if k['kind'] != 'codex' or k['pinned'] or k.get('term'):
                 continue
             segs = (self.book.get(k['id']) or {}).get('segs') or []
-            if segs and all(x['kind'] == 'codex' and codex_sub(codex_meta((x['path'] if x['path'] and os.path.exists(x['path']) else transcript_of({'kind': 'codex', 'session': x['conv']})) or '')) for x in segs):
+            if not segs or any(x['kind'] != 'codex' for x in segs):
+                continue
+            files = [(x['path'] if x['path'] and os.path.exists(x['path']) else transcript_of({'kind': 'codex', 'session': x['conv']})) or '' for x in segs]
+            subs = all(codex_sub(codex_meta(f)) for f in files)
+            bare = (not any(files) and not any(x['path'] for x in segs) and not self.book.said_n(k['id'])[0]
+                    and (not k['titled'] or k['title'] == k['name']))
+            if subs or bare:
                 with contextlib.suppress(K.No):
                     self.book.set(k['id'], archived=True)
                     self.book.drop(k['id'])
                     n += 1
         if n:
-            self.note(tx(f'{n} 条其实是 Codex 子 agent 的记录，已从会话列表里拿掉', f'{n} record(s) that were Codex sub-agent threads were taken out of the sessions'))
+            self.note(tx(f'{n} 条记录不是你的会话（Codex 的子 agent 线程，或桌面应用自己起的、不留对话的临时线程），已从会话列表里拿掉',
+                         f'{n} record(s) that were no sessions of yours (Codex sub-agent threads, or the desktop app\'s own short-lived threads that keep no conversation) were taken out of the sessions'))
             self.kept_refresh()
         return n
 

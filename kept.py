@@ -134,7 +134,8 @@ def pics_in(text):
 
 def bindable(s):
     """A row of the deck that is a session of its own: an agent the person talks to, not one another session started, a
-    sub-agent's thread (with or without its starter in sight), a run with no window, or a card for something still starting."""
+    sub-agent's thread (with or without its starter in sight), a thread that keeps no conversation (both marked 'sub'),
+    a run with no window, or a card for something still starting."""
     return (s.get('kind') in AGENTS and s.get('state') not in ('gone', 'ended') and not s.get('starting')
             and not s.get('parent') and not s.get('parent_id') and not s.get('from') and not s.get('sub'))
 
