@@ -122,9 +122,9 @@ window.parseRoute = function () {
 function kRow(k, two) {
   const [st] = kStand(k), s = kLive(k), on = route.kept === k.id, sp = kSpace(k.space);
   const need = ['waiting', 'asking', 'blocked', 'review'].includes(st);
-  const when = need ? { blocked: tt('卡住', 'Stuck'), review: tt('待验收', 'Review') }[st] || tt('等你', 'You') : ago(s ? s.at || s.since : k.at);
+  const when = need ? { blocked: tt('卡住', 'Stuck'), review: tt('待验收', 'Review') }[st] || tt('等你', 'You') : st === 'working' ? tt('工作中', 'Working') : ago(s ? s.at || s.since : k.at);
   return `<a class="ks-row${on ? ' on' : ''}${two ? ' two' : ''}" href="${kHref(k)}" title="${esc(kTitle(k))} · ${esc(FULL[k.kind] || k.kind)} · ${esc(kStand(k)[1])}">${mark(k.kind, st, 'xs')}
-    <span class="t"><span>${esc(kTitle(k))}</span>${two ? `<small>${esc(sp ? sp.name : tt('未归入工作区', 'In no workspace'))}</small>` : ''}</span><span class="w${need ? ' need' : ''}">${esc(when)}</span></a>`;
+    <span class="t"><span>${esc(kTitle(k))}</span>${two ? `<small>${esc(sp ? sp.name : tt('未归入工作区', 'In no workspace'))}</small>` : ''}</span><span class="w${need ? ' need' : st === 'working' ? ' work' : ''}">${esc(when)}</span></a>`;
 }
 function kGroup(key, label, lead, rows, plus = '', two = false) {
   rows = rows.slice().sort(kSorter());

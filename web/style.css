@@ -13,7 +13,7 @@
   --hair: rgba(28, 26, 22, .1); --hair-2: rgba(28, 26, 22, .06);
   --sheet-edge: rgba(28, 26, 22, .07); --sheet-shadow: 0 1px 2px rgba(30, 25, 15, .05), 0 10px 34px -16px rgba(30, 25, 15, .18);
   --accent: #1f1f22; --accent-soft: rgba(36, 36, 39, .07); --accent-ink: #fafaf9;
-  --ok: #2e7d4f; --ok-soft: rgba(46, 125, 79, .11); --warn: #b06f16; --warn-ink: #85520c; --warn-soft: rgba(176, 111, 22, .12);
+  --ok: #2e7d4f; --ok-ink: #23683f; --ok-soft: rgba(46, 125, 79, .11); --claude-ink: #c15f3c; --warn: #b06f16; --warn-ink: #85520c; --warn-soft: rgba(176, 111, 22, .12);
   --review: #546579; --review-soft: rgba(84, 101, 121, .12); --idle: #9c9ca1; --bad: #b9433a; --bad-soft: rgba(185, 67, 58, .1);
   --shadow-1: 0 1px 1px rgba(24, 22, 18, .04), 0 2px 6px -2px rgba(24, 22, 18, .07);
   --shadow-3: 0 24px 70px -22px rgba(24, 22, 18, .32), 0 4px 12px rgba(24, 22, 18, .07);
@@ -26,7 +26,7 @@
   --hair: rgba(255, 255, 250, .08); --hair-2: rgba(255, 255, 250, .05);
   --sheet-edge: rgba(255, 255, 250, .06); --sheet-shadow: 0 0 0 1px rgba(0, 0, 0, .4);
   --accent: #ececea; --accent-soft: rgba(236, 236, 234, .09); --accent-ink: #121213;
-  --ok: #5cb884; --ok-soft: rgba(92, 184, 132, .13); --warn: #d9a04c; --warn-ink: #e6b56c; --warn-soft: rgba(217, 160, 76, .13);
+  --ok: #5cb884; --ok-ink: #74c79a; --ok-soft: rgba(92, 184, 132, .13); --claude-ink: #e3906f; --warn: #d9a04c; --warn-ink: #e6b56c; --warn-soft: rgba(217, 160, 76, .13);
   --review: #93a5b8; --review-soft: rgba(147, 165, 184, .13); --idle: #64645f; --bad: #dc766c; --bad-soft: rgba(220, 118, 108, .12);
   --shadow-1: 0 1px 2px rgba(0, 0, 0, .4); --shadow-3: 0 30px 90px -20px rgba(0, 0, 0, .8);
 }
@@ -192,9 +192,25 @@ code { font: 12px var(--font-mono); background: var(--panel-2); border: 1px soli
 .mark.user { background: var(--graphite); }
 .mark.lg { width: 46px; height: 46px; border-radius: 13px; } .mark.lg svg { width: 27px; height: 27px; }
 .mark.sm { width: 24px; height: 24px; border-radius: 7px; } .mark.sm svg { width: 14px; height: 14px; }
-.mark .sd { position: absolute; right: -3px; bottom: -3px; width: 11px; height: 11px; border-radius: 50%; background: var(--idle); border: 2.5px solid var(--bg, var(--panel)); }
-.mark .sd.working { background: var(--ok); } .mark .sd.waiting { background: var(--warn); } .mark .sd.asking { background: radial-gradient(circle closest-side, var(--warn) 0 42%, var(--ok) 50%); } .mark .sd.review { background: var(--review); } .mark .sd.blocked { background: var(--bad); }
-.spin { animation: spin 10s linear infinite; transform-origin: 50% 50%; }
+/* how a session stands, on its mark. At work: its agent's color, and a ring turning around it. At rest: pale. Stopped: an outline only.
+   What asks for the person: its color, and a badge with a sign (! you, a tick to review, a cross when stuck) */
+.mark.rest { background: color-mix(in srgb, var(--ink) 8%, transparent); color: var(--muted); box-shadow: inset 0 0 0 1px var(--hair); }
+.mark.rest.of-claude { background: color-mix(in srgb, #c15f3c 16%, transparent); color: var(--claude-ink); box-shadow: inset 0 0 0 1px color-mix(in srgb, #c15f3c 30%, transparent); }
+.mark.off { background: none; box-shadow: none; color: var(--faint); outline: 1.2px dashed var(--faint); outline-offset: -1px; }
+/* (the ring: a faint track cut to a band by a mask, and inside it a wider sweep of the same color turned by a transform, so
+   nothing but the compositor moves) */
+.mark .rg { position: absolute; inset: -4.5px; width: auto; height: auto; margin: 0; border-radius: 13px; padding: 2.25px; overflow: hidden; pointer-events: none; --rc: var(--ok);
+  background: color-mix(in srgb, var(--rc) 38%, transparent);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; }
+.mark .rg::before { content: ''; position: absolute; inset: -50%; background: conic-gradient(transparent 0 30%, var(--rc) 92%, transparent); animation: spin 1.5s linear infinite; }
+.mark.st-asking .rg { --rc: var(--warn); }
+.mark.lg .rg { inset: -5.5px; border-radius: 18px; padding: 2.75px; }
+.mark.sm .rg { inset: -4px; border-radius: 11px; padding: 2px; }
+.mark .sd { position: absolute; right: -5px; bottom: -5px; width: 14px; height: 14px; border-radius: 50%; background: var(--idle) center / 100% 100% no-repeat; border: 2px solid var(--bg, var(--panel)); }
+.mark.lg .sd { width: 18px; height: 18px; right: -6px; bottom: -6px; border-width: 2.5px; }
+.mark .sd:is(.waiting, .asking) { background-color: var(--warn); background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 3.6v5M8 11.9v.3' fill='none' stroke='%23fff' stroke-width='2.3' stroke-linecap='round'/%3E%3C/svg%3E"); }
+.mark .sd.review { background-color: var(--review); background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m4.4 8.4 2.4 2.4 4.8-5.2' fill='none' stroke='%23fff' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); }
+.mark .sd.blocked { background-color: var(--bad); background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m5 5 6 6M11 5l-6 6' fill='none' stroke='%23fff' stroke-width='2.1' stroke-linecap='round'/%3E%3C/svg%3E"); }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* rail: the talk and the decisions */
@@ -507,7 +523,8 @@ code { font: 12px var(--font-mono); background: var(--panel-2); border: 1px soli
 .card .kid b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .card .kid > span:not(.mark) { margin-left: auto; white-space: nowrap; color: var(--c-mut); font-size: 11px; }
 .card .kid.more { color: var(--c-mut); font-size: 11px; }
-.mark.xs { width: 18px; height: 18px; border-radius: 5px; } .mark.xs svg { width: 11px; height: 11px; } .mark.xs .sd { width: 8px; height: 8px; border-width: 2px; right: -2px; bottom: -2px; }
+.mark.xs { width: 18px; height: 18px; border-radius: 5px; } .mark.xs svg { width: 11px; height: 11px; } .mark.xs .sd { width: 12px; height: 12px; border-width: 1.75px; right: -4.5px; bottom: -4.5px; }
+.mark.xs .rg { inset: -4px; border-radius: 9.5px; padding: 2px; }
 .kid-list { display: flex; flex-direction: column; gap: 8px; }
 .kid-row { display: flex; align-items: center; gap: 10px; }
 .kid-row > div { flex: 1; min-width: 0; cursor: pointer; }
@@ -989,7 +1006,7 @@ table.works .when { color: var(--muted); white-space: nowrap; font-variant-numer
 :root[data-skin="frame"] :is(.bar, .rail, .side, .status) { color-scheme: dark; color: var(--ink);
   --ink: #ecebe8; --ink-2: #c6c5c0; --muted: #8e8d88; --faint: #63625e; --hair: rgba(255, 255, 250, .09); --hair-2: rgba(255, 255, 250, .055);
   --panel: #232326; --panel-2: #1c1c1f; --canvas: #141416; --accent: #ecebe8; --accent-ink: #141416; --accent-soft: rgba(236, 235, 232, .1);
-  --ok: #5cb884; --warn: #d9a04c; --review: #93a5b8; --idle: #64645f; --bad: #dc766c; --graphite: linear-gradient(150deg, #56565c, #2a2a2e); }
+  --ok: #5cb884; --ok-ink: #74c79a; --claude-ink: #e3906f; --warn: #d9a04c; --review: #93a5b8; --idle: #64645f; --bad: #dc766c; --graphite: linear-gradient(150deg, #56565c, #2a2a2e); }
 :root[data-skin="frame"]:not([data-theme="dark"]) :is(.bar, .rail, .side) .mark.codex { background: linear-gradient(150deg, #2e3036, #0b0c0e); color: #fff; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12); }
 :root[data-skin="frame"]:not([data-theme="dark"]) :is(.bar, .rail, .side) .mark.cursor { background: linear-gradient(150deg, #3a3c44, #17181c); color: #f3f3f5; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .13); }
 /* (the choice in Settings: a small frame and page in each one's colors, for the current theme) */

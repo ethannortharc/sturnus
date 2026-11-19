@@ -133,6 +133,10 @@ terminal it runs in and the agent's own conversation.
 - **The sidebar is yours to arrange.** Group the sessions by workspace, by how they stand, by agent or by day, or
   not at all, and order them by who needs you, by last activity, by when they were made, or by name. A workspace folds
   shut to its name and counts; the whole sidebar folds to a strip of icons (⌘B), never out of sight.
+- **A session's mark says how it stands.** At work, the mark keeps its agent's color, a green ring turns around it,
+  and its row says Working. At rest it goes pale; stopped, only a dashed outline is left. One that needs you keeps
+  its color and carries a badge: `!` when it waits for you, a tick when there is something to review, a cross when
+  it is stuck.
 - **What you send shows at once.** Enter sends. Words sent from a session's page are under its conversation before
   they have left, with how they went (typed into its terminal, put in its mailbox); the conversation in sight is read
   again about every second while its agent works. Words for a session at work are typed into its terminal at once, not

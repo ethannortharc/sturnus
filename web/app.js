@@ -116,21 +116,20 @@ const I = {
   chat: '<svg viewBox="0 0 16 16"><path d="M3.2 3.2h9.6a1.2 1.2 0 0 1 1.2 1.2v5.8a1.2 1.2 0 0 1-1.2 1.2H7.4L4.2 13.8v-2.4h-1A1.2 1.2 0 0 1 2 10.2V4.4a1.2 1.2 0 0 1 1.2-1.2z"/></svg>',
   branch: '<svg viewBox="0 0 16 16"><circle cx="4.5" cy="3.6" r="1.6"/><circle cx="4.5" cy="12.4" r="1.6"/><circle cx="11.5" cy="5.6" r="1.6"/><path d="M4.5 5.2v5.6M11.5 7.2c0 2.7-3.2 2.4-6.3 3.8"/></svg>',
 };
-const RAYS = Array.from({ length: 12 }, (_, i) => {
-  const r = (i * 30 - 90) * Math.PI / 180, l = i % 2 ? 4.4 : 6.6;
-  return `M12 12L${(12 + Math.cos(r) * l).toFixed(2)} ${(12 + Math.sin(r) * l).toFixed(2)}`;
-}).join('');
 const MARK = {  // (each agent's mark, drawn here: evocative of each, not the makers' artwork)
-  claude: `<path d="${RAYS}" stroke-width="2.1"/>`,
+  claude: '<path d="M17 8.1a6.5 6.5 0 1 0 0 7.8" stroke-width="2.7"/>',
   codex: '<path d="m6.5 8 4 4-4 4M12.5 16.5h5" stroke-width="2.2"/>',
   cursor: '<path d="M12 4.5 18.5 8.25v7.5L12 19.5l-6.5-3.75v-7.5zM5.5 8.25 12 12l6.5-3.75M12 12v7.5" stroke-width="1.7"/>',
   shell: '<rect x="3.5" y="5" width="17" height="14" rx="2.5" stroke-width="1.8"/><path d="m7.5 10 2.5 2-2.5 2M12.5 15h4" stroke-width="1.8"/>',
   user: '<circle cx="12" cy="9" r="3.5" stroke-width="2"/><path d="M5.5 19c1.2-3.3 3.6-5 6.5-5s5.3 1.7 6.5 5" stroke-width="2"/>',
 };
+// (a mark given a state says how its session stands, and at a glance: at work it keeps its agent's color and a ring turns
+// around it; at rest it goes pale; stopped, only an outline is left; what asks for the person keeps its color and carries
+// a badge with a sign)
+const AT_REST = { idle: 'rest', stopped: 'off', gone: 'off', ended: 'off' };
 function mark(kind, state, size = '') {
-  const k = MARK[kind] ? kind : 'other';
-  const spin = kind === 'claude' && ['working', 'asking'].includes(state) ? ' class="spin"' : '';
-  return `<span class="mark ${k === 'shell' ? 'sh' : k} ${size}" title="${esc(FULL[kind] || (kind === 'user' ? t('你') : kind || ''))}"><svg viewBox="0 0 24 24"${spin}>${MARK[kind] || ''}</svg>${state ? `<i class="sd ${state}"></i>` : ''}</span>`;
+  const k = MARK[kind] ? kind : 'other', c = k === 'shell' ? 'sh' : k, q = AT_REST[state];
+  return `<span class="mark ${q ? `${q} of-${c}` : c}${state ? ` st-${state}` : ''} ${size}" title="${esc(FULL[kind] || (kind === 'user' ? t('你') : kind || ''))}"><svg viewBox="0 0 24 24">${MARK[kind] || ''}</svg>${['working', 'asking'].includes(state) ? '<i class="rg"></i>' : ''}${state && !q && state !== 'working' ? `<i class="sd ${state}"></i>` : ''}</span>`;
 }
 const byName = n => (S && S.sessions.find(s => s.name === n)) || null;
 const kindOf = n => (n === 'user' ? 'user' : (byName(n) || {}).kind || '');
@@ -1619,7 +1618,7 @@ const taskOrder = (a, b) => TASK_RANK[a.shown] - TASK_RANK[b.shown] || b.at - a.
 const taskIn = (x, key) => !key || x.scope === key || (projOf(x.scope) || {}).workspace === key;
 const taskLabel = k => tt(...TASK_LOOK[k]);
 const taskAgo = ts => { const a = ago(ts); return a === t('刚刚') ? a : tt(`${a}前`, `${a} ago`); };
-const taskLinked = l => { const s = l.live && (S.sessions || []).find(x => x.id === l.sid); return s ? standing(s) : [l.st, '']; };
+const taskLinked = l => { const s = l.live && (S.sessions || []).find(x => x.id === l.sid); return s ? standing(s) : [l.live ? l.st : 'ended', '']; };
 const TASK_WORDS = { todo: ['待办', 'to do'], doing: ['在做', 'under way'], waiting: ['等你', 'needs you'], backlog: ['搁置', 'put aside'], done: ['做完了', 'done'], dropped: ['不做了', 'dropped'] };
 function taskLogText(w) {  // (kept in one language, said in the page's)
   if (w === 'added') return tt('记下了', 'added');
