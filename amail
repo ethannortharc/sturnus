@@ -36,7 +36,11 @@
   amail lock [REPO] [--branch B] [--note T] / unlock [REPO] [--force] / locks
                               a push lock on REPO's branch (default main) that the git pre-push hook honours
   amail whoami / amail rename NEW     my name on the board (a Codex window's default is codex-<end of its id>)
-  amail install / uninstall   hooks into (out of) Claude Code, Codex and Cursor
+  amail install / uninstall   hooks into (out of) Claude Code, Codex and Cursor; Claude Code's status line command,
+                              when it has one, is run through `amail statusline` (uninstall puts it back as it was)
+  amail statusline [COMMAND]  (run by Claude Code's status line) notes the account's 5-hour and 7-day limits, which
+                              Claude Code gives to nothing else, then runs COMMAND as the status line it was; with no
+                              COMMAND it is a status line of its own: the model and the limits
   amail install-git REPO / uninstall-git REPO     the pre-push hook of the push lock
   amail hook claude|codex|cursor   (run by those hooks; the event on stdin)
   amail selftest
@@ -46,7 +50,70 @@ Mail lives in $AMAIL_HOME (default /tmp/amail-<uid>: writable from Codex's and C
 Mail is between two; a channel is a project's (or a workspace's) room: what is posted there reaches every session on it at
 its next turn, calls (@NAME) and discussions it takes part in also mid-work.
 """
-import contextlib, fcntl, hashlib, json, os, re, shutil, sqlite3, struct, subprocess, sys, time, urllib.parse, uuid
+import sys
+
+
+def statusline(argv):
+    """Claude Code's status line command, in front of the person's own. Claude Code hands its account's limits (how
+    much of the 5-hour and the 7-day window is used, and when each starts anew) to its status line and writes them
+    nowhere: they are noted here, in limits/claude-<which sign-in>.json, for sturnus to show. Then this process becomes
+    the command it was put in front of, with the same input, so the status line is what it was, to the byte and the
+    exit code. It runs at every redraw: nothing else of amail is loaded for it, and whatever goes wrong with the
+    noting, the status line still runs."""
+    import json, os, time
+    raw = sys.stdin.buffer.read()
+    d = {}
+    try:
+        d = json.loads(raw or b'{}')
+        got = d.get('rate_limits') if isinstance(d.get('rate_limits'), dict) else {}
+        got = {k: {'used_percentage': float(w['used_percentage']), 'resets_at': float(w.get('resets_at') or 0)} for k, w in got.items()
+               if k in ('five_hour', 'seven_day') and isinstance(w, dict) and isinstance(w.get('used_percentage'), (int, float))}
+        if got:
+            import hashlib
+            conf, now = os.environ.get('CLAUDE_CONFIG_DIR') or '', time.time()
+            home = os.environ.get('AMAIL_HOME') or f'/tmp/amail-{os.getuid()}'
+            f = os.path.join(home, 'limits', f'claude-{hashlib.sha1(conf.encode()).hexdigest()[:10] if conf else "default"}.json')
+            try:
+                with open(f) as o:
+                    old = json.load(o)
+            except (OSError, ValueError):
+                old = {}
+            # (a window this session has not heard of yet stays, until it starts anew)
+            win = {k: w for k, w in (old.get('windows') or {}).items() if isinstance(w, dict) and (w.get('resets_at') or 0) > now}
+            win.update(got)
+            if win != old.get('windows') or now - (old.get('at') or 0) >= 20 or d.get('version') != old.get('version'):
+                os.makedirs(os.path.dirname(f), exist_ok=True)
+                tmp = f'{f}.{os.getpid()}.tmp'
+                with open(tmp, 'w') as o:
+                    json.dump({'at': now, 'config': conf, 'version': d.get('version') if isinstance(d.get('version'), str) else '', 'windows': win}, o)
+                os.replace(tmp, f)
+    except Exception:
+        pass
+    cmd = argv[0] if argv else ''
+    if not cmd.strip():  # (a status line of its own: the model, and how much of each window is used)
+        try:
+            m, lim = d.get('model') or {}, d.get('rate_limits') or {}
+            parts = [str(m.get('display_name') or m.get('id') or '')] + [f'{n} {round(lim[k]["used_percentage"])}%' for k, n in (('five_hour', '5h'), ('seven_day', '7d'))
+                                                                             if isinstance(lim.get(k), dict) and isinstance(lim[k].get('used_percentage'), (int, float))]
+            print(' · '.join(x for x in parts if x))
+        except Exception:
+            pass
+        return 0
+    if len(raw) < 60000:  # (what a pipe holds with nobody reading yet: becoming the command keeps Claude Code's cancelling, and its exit code, the command's own)
+        r, w = os.pipe()
+        os.write(w, raw)
+        os.close(w)
+        os.dup2(r, 0)
+        os.close(r)
+        os.execv('/bin/sh', ['sh', '-c', cmd])
+    import subprocess
+    return subprocess.run(cmd, shell=True, input=raw).returncode
+
+
+if len(sys.argv) > 1 and sys.argv[1] == 'statusline' and __name__ == '__main__':
+    sys.exit(statusline(sys.argv[2:]))
+
+import contextlib, fcntl, hashlib, json, os, re, shlex, shutil, sqlite3, struct, subprocess, time, urllib.parse, uuid
 
 HOME = os.environ.get('AMAIL_HOME') or f'/tmp/amail-{os.getuid()}'
 CLAUDE_SESSIONS = os.environ.get('AMAIL_CLAUDE_SESSIONS') or os.path.expanduser('~/.claude/sessions')  # (a deck to try things on: an empty folder keeps the person's live sessions out)
@@ -1332,7 +1399,9 @@ def install():
         done.append('Claude Code: not here')
     else:
         install_claude(f, s)
-        done.append('Claude Code: ~/.claude/settings.json')
+        sl = statusline_of(s)
+        done.append('Claude Code: ~/.claude/settings.json' + (' (its status line also notes the account\'s limits)' if sl == 'on' else
+                                                              ' (no status line set, so its 5-hour and 7-day limits are not read: set statusLine, or use `amail statusline` as one)'))
     if has('~/.codex'):
         install_codex()
         done.append(f'Codex: ~/.codex/hooks.json ({trust_codex()})')
@@ -1357,7 +1426,35 @@ def install_claude(f, s):
             if matcher:
                 g['matcher'] = matcher
             groups.append(g)
+    # (the limits of the account are given to the status line only: the person's own runs through amail's, and shows what it showed)
+    sl = s.get('statusLine')
+    if statusline_of(s) == 'off':
+        sl['command'] = f'{PYTHON} {STABLE} statusline {shlex.quote(sl["command"])}'
     put(f, s, 2)
+
+
+def statusline_of(s):
+    """How Claude Code's status line stands, by its settings: 'on' (run through amail's, or amail's alone), 'off' (the
+    person's own, as they set it), 'none' (no status line command)."""
+    sl = (s or {}).get('statusLine')
+    c = sl.get('command') if isinstance(sl, dict) and sl.get('type', 'command') == 'command' else None
+    if not isinstance(c, str) or not c.strip():
+        return 'none'
+    return 'on' if 'amail' in c and ' statusline' in c else 'off'
+
+
+def statusline_back(s):
+    """The status line command as the person had it, in front of which amail's was put: taken back out. Whether it was."""
+    if statusline_of(s) != 'on':
+        return False
+    try:
+        parts = shlex.split(s['statusLine']['command'])
+    except ValueError:
+        return False
+    if len(parts) == 4 and parts[2] == 'statusline' and parts[1].endswith('amail'):
+        s['statusLine']['command'] = parts[3]
+        return True
+    return False  # (amail's alone, as the person set it: theirs to keep)
 
 
 def install_codex():
@@ -1451,13 +1548,14 @@ def uninstall():
     mine = lambda c: 'amail' in (c or '') and ' hook ' in (c or '')
     f = os.path.expanduser('~/.claude/settings.json')
     s = get(f)
-    if s and s.get('hooks'):
-        for ev in list(s['hooks']):
+    if s and (s.get('hooks') or statusline_of(s) == 'on'):
+        for ev in list(s.get('hooks') or {}):
             s['hooks'][ev] = [g for g in s['hooks'][ev] if not any(mine(h.get('command')) for h in g.get('hooks', []))]
             if not s['hooks'][ev]:
                 del s['hooks'][ev]
+        back = statusline_back(s)
         put(f, s, 2)
-        done.append('Claude Code hooks removed')
+        done.append('Claude Code hooks removed' + (', its status line as it was' if back else ''))
     f = os.path.expanduser('~/.codex/hooks.json')
     s = get(f)
     if s and s.get('hooks'):
@@ -1566,6 +1664,34 @@ def selftest():
         assert set(send('lead', 'all', 'hold main')) >= {'codex-456789', 'cursor-abcdef'}
         assert len(take('codex-456789', peek=True)) == 1 and len(take('codex-456789')) == 1 and not take('codex-456789')
         assert 'codex-456789' in status_text()
+        # Claude Code's status line: the person's own runs through amail's (once), and is put back as it was
+        mine = "/usr/bin/python3 $HOME/.claude/statusline.py --wide 'a b'"
+        st = {'statusLine': {'type': 'command', 'command': mine, 'padding': 0, 'refreshInterval': 10}}
+        assert statusline_of(st) == 'off' and statusline_of({}) == 'none' and statusline_of({'statusLine': {'type': 'command', 'command': ' '}}) == 'none'
+        sf = os.path.join(HOME, 'claude-settings.json')
+        put(sf, st)
+        install_claude(sf, st)
+        s2 = get(sf)
+        assert statusline_of(s2) == 'on' and shlex.split(s2['statusLine']['command'])[2:] == ['statusline', mine], s2['statusLine']
+        assert (s2['statusLine']['padding'], s2['statusLine']['refreshInterval']) == (0, 10) and s2['hooks']['Stop']
+        install_claude(sf, s2)
+        assert get(sf)['statusLine'] == s2['statusLine']  # (not put in front of itself)
+        assert statusline_back(s2) and s2['statusLine']['command'] == mine and not statusline_back(s2)
+        own = {'statusLine': {'type': 'command', 'command': f'{PYTHON} {STABLE} statusline'}}
+        assert statusline_of(own) == 'on' and not statusline_back(own)  # (amail's alone, as the person set it: theirs to keep)
+        # ... and what it does at a redraw: the limits noted, then the command it stands in front of, as it was
+        env = {k: v for k, v in os.environ.items() if k != 'CLAUDE_CONFIG_DIR'} | {'AMAIL_HOME': HOME}
+        pay = json.dumps({'version': '2.1.326', 'model': {'display_name': 'Fable 5.2'}, 'rate_limits': {'five_hour': {'used_percentage': 23.5, 'resets_at': time.time() + 600},
+                                                                                                    'seven_day': {'used_percentage': 41.2, 'resets_at': time.time() + 6000}}})
+        r = subprocess.run([sys.executable, ME, 'statusline', 'cat; exit 3'], input=pay, capture_output=True, text=True, env=env)
+        lim = get(os.path.join(HOME, 'limits', 'claude-default.json'))
+        assert (r.stdout, r.returncode) == (pay, 3) and lim['version'] == '2.1.326' and lim['windows']['five_hour']['used_percentage'] == 23.5, (r, lim)
+        r = subprocess.run([sys.executable, ME, 'statusline', 'echo mine'], input='{"version": "2.1.330"}', capture_output=True, text=True, env=env)
+        assert r.stdout == 'mine\n' and get(os.path.join(HOME, 'limits', 'claude-default.json')) == lim  # (a session that has heard of no limits yet leaves what is known)
+        r = subprocess.run([sys.executable, ME, 'statusline', 'echo still; cat >/dev/null'], input='not json', capture_output=True, text=True, env=env)
+        assert r.stdout == 'still\n' and r.returncode == 0
+        r = subprocess.run([sys.executable, ME, 'statusline'], input=pay, capture_output=True, text=True, env={**env, 'CLAUDE_CONFIG_DIR': '/x/other'})
+        assert r.stdout.strip() == 'Fable 5.2 · 5h 24% · 7d 41%' and len(os.listdir(os.path.join(HOME, 'limits'))) == 2, r  # (alone: a status line of its own; another sign-in, another file)
         repo = tempfile.mkdtemp(prefix='amail-r')
         subprocess.run(['git', 'init', '-q', repo], check=True)
         lock('lead', repo, 'main', 'releasing')

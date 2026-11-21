@@ -525,7 +525,7 @@ class OverHttp(unittest.TestCase):
         self.assertTrue(j['machine']['version'])
         st, v = self.call('/api/app/state', key=key)
         self.assertEqual(st, 200)
-        self.assertEqual(set(v), {'machine', 'sessions', 'inbox', 'rev', 'groups', 'dirs', 'workspaces', 'tasks', 'boards', 'mail', 'locks',
+        self.assertEqual(set(v), {'machine', 'sessions', 'inbox', 'rev', 'groups', 'dirs', 'workspaces', 'tasks', 'boards', 'mail', 'locks', 'accounts',
                                   'kept', 'spaces', 'plans', 'recover', 'kinds', 'terminal'})
         st, j = self.call('/api/app/session?id=claude:none', key=key)  # (a session's page: none by that id)
         self.assertEqual((st, j['ok']), (404, False))
@@ -964,6 +964,103 @@ class Waking(unittest.TestCase):
         ok, msg = d.act('wake', {'id': 'claude:wk-work'})
         self.assertTrue(not ok and msg and d.typed == ['wk-page'])
         self.assertEqual(d.act('wake', {'id': 'claude:nobody'})[0], False)
+
+
+
+class Accounts(unittest.TestCase):
+    """The account a session runs on — who, the plan, how much of each window is used, the agent's version — read from
+    the agents' own files."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp(dir=TMP)
+        self.env = os.environ.get('CODEX_HOME')
+        os.environ['CODEX_HOME'] = f'{self.d}/codex'
+        os.makedirs(f'{self.d}/codex/sessions/2026/11/20')
+
+    def tearDown(self):
+        os.environ.pop('CODEX_HOME', None) if self.env is None else os.environ.__setitem__('CODEX_HOME', self.env)
+
+    def conf(self, name, account, cred=None, settings=None):
+        c = f'{self.d}/{name}'
+        os.makedirs(c)
+        for f, v in (('.claude.json', account and {'oauthAccount': account, 'numStartups': 3}), ('.credentials.json', cred and {'claudeAiOauth': cred}), ('settings.json', settings)):
+            if v is not None:
+                with open(f'{c}/{f}', 'w') as o:
+                    json.dump(v, o)
+        return c
+
+    def test_who_claude_code_is_signed_in_as_and_on_what_plan(self):
+        named = self.conf('a', {'emailAddress': 'a@example.com', 'displayName': 'Ann', 'planDisplayName': 'Ultra', 'organizationType': 'claude_max', 'organizationRateLimitTier': 'default_claude_max_20x'})
+        team = self.conf('b', {'emailAddress': 'b@example.com', 'fullName': 'Bo Li', 'planDisplayName': None, 'organizationType': 'claude_team',
+                               'organizationRateLimitTier': 'default_raven', 'userRateLimitTier': 'default_claude_max_5x'})
+        byfile = self.conf('c', {'emailAddress': 'c@example.com'}, cred={'subscriptionType': 'pro', 'rateLimitTier': 'default_claude_ai', 'accessToken': 'never shown'})
+        self.assertEqual(S.claude_account(named), {'who': 'a@example.com', 'name': 'Ann', 'plan': 'Ultra'})
+        self.assertEqual(S.claude_account(team), {'who': 'b@example.com', 'name': 'Bo Li', 'plan': 'Team 5x'})
+        self.assertEqual(S.claude_account(byfile), {'who': 'c@example.com', 'name': '', 'plan': 'Pro'})
+        self.assertEqual((S.claude_account(self.conf('d', None)), S.claude_account(self.conf('e', {})), S.claude_account(f'{self.d}/nowhere')), ({}, {}, {}))
+
+    def test_claude_codes_limits_as_its_status_line_was_told(self):
+        A, now, conf = S.A, 1_800_000_000, f'{self.d}/x'
+        f = os.path.join(A.HOME, 'limits', f'claude-{S.hashlib.sha1(conf.encode()).hexdigest()[:10]}.json')
+        os.makedirs(os.path.dirname(f), exist_ok=True)
+        with open(f, 'w') as o:
+            json.dump({'at': now - 40, 'windows': {'five_hour': {'used_percentage': 37.26, 'resets_at': now + 600}, 'seven_day': {'used_percentage': 62, 'resets_at': now + 9000}}}, o)
+        self.assertEqual(S.claude_limits(conf, now), ([{'k': '5h', 'mins': 300, 'pct': 37.3, 'resets': now + 600}, {'k': '7d', 'mins': 10080, 'pct': 62.0, 'resets': now + 9000}], now - 40))
+        self.assertEqual(S.claude_limits(conf, now + 700)[0], [{'k': '7d', 'mins': 10080, 'pct': 62.0, 'resets': now + 9000}], 'a window whose time has come has started anew')
+        self.assertEqual((S.claude_limits(conf, now + 9001), S.claude_limits(f'{self.d}/unheard', now)), (([], 0), ([], 0)))
+
+    def test_who_codex_is_signed_in_as_and_its_limits_from_its_files(self):
+        b64 = lambda d: base64.urlsafe_b64encode(json.dumps(d).encode()).decode().rstrip('=')
+        def auth(v):
+            with open(f'{self.d}/codex/auth.json', 'w') as o:
+                json.dump(v, o)
+        self.assertEqual(S.codex_account(), {})
+        auth({'OPENAI_API_KEY': 'sk-x', 'tokens': None})
+        self.assertEqual(S.codex_account()['plan'], 'API key')
+        auth({'tokens': {'id_token': '.'.join([b64({'alg': 'x'}), b64({'email': 'c@example.com', 'name': 'Cy', 'https://api.openai.com/auth': {'chatgpt_plan_type': 'pro'}}), 'sig']), 'access_token': 'never shown'}})
+        self.assertEqual(S.codex_account(), {'who': 'c@example.com', 'name': 'Cy', 'plan': 'Pro'})
+        auth({'tokens': {'id_token': 'not.a.token'}})
+        self.assertEqual(S.codex_account(), {})
+        # the limits: the newest word among the conversation files; a window by its length; one whose time has come is left out
+        now = S.calendar.timegm((2026, 11, 20, 12, 0, 0))
+        def roll(name, hhmm, limits, more=''):
+            with open(f'{self.d}/codex/sessions/2026/11/20/rollout-2026-11-20T{name}.jsonl', 'w') as o:
+                o.write(json.dumps({'type': 'session_meta', 'payload': {'id': name, 'cli_version': '0.169.1'}}) + '\n'
+                        + json.dumps({'type': 'event_msg', 'timestamp': f'2026-11-20T{hhmm}:00.000Z', 'payload': {'type': 'token_count', 'rate_limits': limits}}) + '\n' + more)
+        self.assertEqual(S.codex_limits(now), ([], 0))
+        roll('09-00-00-old', '09:00', {'primary': {'used_percent': 80.0, 'window_minutes': 300, 'resets_at': now + 60}, 'secondary': None})
+        roll('11-00-00-new', '11:30', {'primary': {'used_percent': 9.0, 'window_minutes': 10080, 'resets_at': now + 5000}, 'secondary': {'used_percent': 31.5, 'window_minutes': 300, 'resets_in_seconds': 3600},
+                                       'plan_type': 'pro'}, more=json.dumps({'type': 'response_item', 'payload': {'type': 'message', 'role': 'assistant', 'content': []}}) + '\n')
+        at = now - 1800
+        self.assertEqual(S.codex_limits(now), ([{'k': '5h', 'mins': 300, 'pct': 31.5, 'resets': at + 3600}, {'k': '7d', 'mins': 10080, 'pct': 9.0, 'resets': now + 5000}], at))
+        self.assertEqual(S.codex_limits(now + 1801)[0], [{'k': '7d', 'mins': 10080, 'pct': 9.0, 'resets': now + 5000}])
+        roll('11-45-00-odd', '11:45', {'primary': {'used_percent': 5, 'window_minutes': 4320, 'resets_at': now + 9}, 'secondary': {'used_percent': 6, 'window_minutes': 90}})
+        self.assertEqual([(w['k'], w['pct']) for w in S.codex_limits(now)[0]], [('2h', 6.0), ('3d', 5.0)])
+
+    def test_the_version_of_the_agent_that_ran_a_conversation(self):
+        cc = f'{self.d}/cc.jsonl'
+        with open(cc, 'w') as o:
+            o.write(json.dumps({'type': 'assistant', 'version': '2.1.326', 'effort': 'high', 'message': {'role': 'assistant', 'model': 'claude-fable-5-2', 'usage': {'speed': 'standard'}}}) + '\n')
+        self.assertEqual(S.conv_meta(cc, 'claude'), {'model': 'claude-fable-5-2', 'effort': 'high', 'speed': 'standard', 'ver': '2.1.326'})
+        cx = f'{self.d}/cx.jsonl'
+        with open(cx, 'w') as o:
+            o.write(json.dumps({'type': 'session_meta', 'payload': {'id': 'cx-1', 'cli_version': '0.169.1'}}) + '\n'
+                    + json.dumps({'type': 'turn_context', 'payload': {'model': 'gpt-6.2-sol', 'effort': 'high'}}) + '\n')
+        self.assertEqual(S.conv_meta(cx, 'codex'), {'model': 'gpt-6.2-sol', 'effort': 'high', 'ver': '0.169.1'})
+        self.assertEqual(S.conv_meta(f'{self.d}/none.jsonl', 'codex'), {})
+
+    def test_the_accounts_as_the_page_is_given_them(self):
+        conf = self.conf('z', {'emailAddress': 'z@example.com', 'displayName': 'Zed', 'planDisplayName': 'Max'},
+                         settings={'statusLine': {'type': 'command', 'command': 'python3 ~/.claude/statusline.py'}})
+        d = type('D', (), {'accounts_view': S.Deck.accounts_view})()
+        d.accts, d.accts_at, d.acct_confs, d.latest, d.latest_at = {}, 0, {'claude:zz': conf}, {'claude': '2.1.330'}, time.time()
+        v = d.accounts_view(time.time())
+        self.assertEqual({k: v['claude:zz'][k] for k in ('kind', 'who', 'name', 'plan', 'limits', 'at', 'src', 'tap', 'latest')},
+                         {'kind': 'claude', 'who': 'z@example.com', 'name': 'Zed', 'plan': 'Max', 'limits': [], 'at': 0, 'src': 'statusline', 'tap': 'off', 'latest': '2.1.330'})
+        self.assertNotIn('codex', v, 'nobody signed in to Codex here')
+        d.acct_confs = {}
+        self.assertIs(d.accounts_view(time.time() + 5), v, 'not read again within 15 seconds')
+        self.assertNotIn('claude:zz', d.accounts_view(time.time() + 16))
 
 
 if __name__ == '__main__':

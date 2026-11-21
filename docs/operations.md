@@ -17,6 +17,7 @@ or take the newest release ([Releases](https://github.com/ethannortharc/sturnus/
 - `./sturnus install` — installs into `~/.local/share/sturnus`. It adds:
   - `~/.local/bin/sturnus` and `~/.local/bin/amail`,
   - amail's hooks for Claude Code, Codex and Cursor,
+  - `amail statusline` in front of Claude Code's status line command, when you have one (see [The account a session runs on](#the-account-a-session-runs-on)),
   - the Zellij plugin,
   - a user service on http://127.0.0.1:7788 that starts at login: systemd on Linux (`systemctl --user status sturnus`), launchd on macOS (`~/Library/LaunchAgents/com.giomni.sturnus.plist`, log in `~/Library/Logs/sturnus.log`),
   - with Tailscale, https://\<machine\>.\<tailnet\>.ts.net:7443 (see below).
@@ -61,6 +62,22 @@ A session is kept apart from the terminal it runs in and from the agent's own co
 - What was said in a session is copied into `sessions.db` from the agents' conversation files as they grow, so it outlasts them. The page reads the last 200 items of that copy and more on asking (`/api/transcript?kept=ID&n=COUNT`, which also says whether there is `more` before them). A long file first met is read from its last six megabytes; when the page is asked for what came before, the file is read whole, once. Each copy says which reading made it; after an upgrade that reads more out of the files (0.23.6: the words sent to a Claude Code session while it worked, which it keeps as lines of their own kind), the service makes the older copies again from the files in the background, a few each quarter minute, and a file that is gone or holds less than its copy leaves the copy as it is.
 - Pictures in a conversation are not copied wholesale. Each kept item says where its pictures lie in the agent's conversation file (path, offset and length of the base64, a digest, the type and size read from its first bytes), and the page asks for one by `/api/pic?kept=ID&seg=N&n=N&i=N&h=DIGEST`; the service reads it from the file, checks the digest, and answers only PNG, JPEG, GIF or WebP. A picture the person sent is also written to `pics/<session id>/` beside `sessions.db`, so it outlasts the agent's file; it goes when the session is deleted for good. What a step showed the agent stays only in the agent's file: once that file is gone or written anew, the page says the picture is no longer there. After the upgrade to 0.23.9 the service makes its copies of earlier conversations again in the background, to find the pictures in them.
 - Words for a session go into its terminal whether it is at work or not: Claude Code, Codex and Cursor take words in the middle of a turn. They are refused only while it sits at a permission or choice prompt (they would answer it), and go to its mailbox when it is in no pane.
+
+## The account a session runs on
+
+A session's head shows a ring beside the model, and its side panel a section **Account and limits**: who the agent is signed in as, the plan, how much of each window of the account's limits is used and when it starts anew, and the agent's version. Nothing is asked of any account service; it is read on this machine:
+
+| | Claude Code | Codex |
+|---|---|---|
+| Who, and the plan | `~/.claude.json` (`oauthAccount`), the tier also from `~/.claude/.credentials.json`; with `CLAUDE_CONFIG_DIR`, the same files in that folder | the id token in `~/.codex/auth.json` (`$CODEX_HOME`) |
+| The limits | what its status line was last told (`rate_limits`: `five_hour`, `seven_day`), noted in `$AMAIL_HOME/limits/claude-<sign-in>.json` | the newest `rate_limits` in the conversation files last written to: Codex writes it with every answer |
+| The version | each answer in the conversation file says it | the first line of the conversation file |
+
+- **Claude Code gives its limits to its status line only**, and writes them nowhere. So `./sturnus install` (through `amail install`) puts `amail statusline` in front of the `statusLine` command in `~/.claude/settings.json`: at each redraw it notes the limits, then becomes your command, with the same input, so your status line shows what it showed, with its own exit code. `sturnus uninstall` puts the command back as it was. With no status line set, nothing is added, and the page says the limits cannot be read; to have them, set the `statusLine` command to `amail statusline`, which then is a small status line of its own (the model and the limits).
+- The limits are the account's, not a session's: any Claude Code session that redraws its status line brings them up to date. With none running, the last word stays, with its age. A window whose time has come has started anew and is left out until it is heard of again. Codex's are as fresh as its last answer on this machine.
+- An account shows the windows it has: a Codex plan may have only the weekly one.
+- The version installed is asked of `claude --version` and `codex --version` every half hour. A session keeps the version it was started with until it is started again, and the page says so when a newer one is installed.
+- Each machine shows its own sign-ins. A Claude Code session started with another `CLAUDE_CONFIG_DIR` shows that folder's account.
 
 ## Tasks
 

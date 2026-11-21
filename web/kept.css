@@ -365,6 +365,43 @@ a.wk-row:hover, .wk-row:hover { background: var(--panel-2); }
 .kh-model em.fast { color: var(--warn-ink); font-family: var(--font-ui); font-weight: 600; }
 .kh-model:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .kmodel-menu { left: 0; right: auto; top: calc(100% + 4px); width: 300px; }
+/* the account a session runs on: a ring beside the model (the longer window outside, the shorter inside), its card, and the same in the side panel */
+.acct-ring { width: 16px; height: 16px; flex: none; }
+.acct-ring circle { fill: none; stroke-width: 2.1; stroke-linecap: round; }
+.acct-ring .tr { stroke: color-mix(in srgb, var(--ink) 13%, transparent); }
+.acct-ring .v { stroke: var(--ink-2); transform: rotate(-90deg); transform-origin: 8px 8px; }
+.acct-ring .v.warn { stroke: var(--warn); }
+.acct-ring .v.bad { stroke: var(--bad); }
+.acct-bar { display: block; height: 5px; border-radius: 3px; background: color-mix(in srgb, var(--ink) 11%, transparent); overflow: hidden; }
+.acct-bar i { display: block; height: 100%; border-radius: 3px; background: var(--ink-2); }
+.acct-bar i.warn { background: var(--warn); }
+.acct-bar i.bad { background: var(--bad); }
+.kh-acct { flex: none; display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 3px; border: 0; border-radius: 6px; background: none; color: var(--muted); font: 500 11px/1 var(--font-mono); white-space: nowrap; }
+.kh-acct:hover, .kh-acct[aria-expanded="true"] { background: color-mix(in srgb, var(--ink) 9%, transparent); color: var(--ink); }
+.kh-acct.warn, .kh-acct.bad { padding: 0 7px 0 4px; }
+.kh-acct.warn { background: var(--warn-soft); color: var(--warn-ink); }
+.kh-acct.bad { background: var(--bad-soft); color: var(--bad); }
+.kh-acct:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.acct-card { position: absolute; z-index: 30; left: 0; top: calc(100% + 4px); width: 292px; max-width: calc(100vw - 32px); padding: 14px 14px 11px; border-radius: 14px; border: 1px solid var(--hair); background: var(--panel); box-shadow: var(--shadow-3); font-size: 12.5px; line-height: 1.45; color: var(--ink); white-space: normal; }
+.acct-who { display: flex; align-items: center; gap: 8px; }
+.acct-who .mark.xs { flex: none; width: 16px; height: 16px; border-radius: 5px; }
+.acct-who b { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-plan { flex: none; margin-left: auto; padding: 2px 7px; border-radius: 6px; background: color-mix(in srgb, var(--ink) 7%, transparent); font-size: 11px; font-weight: 600; color: var(--ink-2); }
+.acct-lims { display: grid; gap: 11px; margin: 12px 0; padding: 12px 0; border-block: 1px solid var(--hair-2); }
+.acct-lim .top { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+.acct-lim .top span { font-weight: 550; }
+.acct-lim .top b { margin-left: auto; font: 600 12px var(--font-mono); font-variant-numeric: tabular-nums; }
+.acct-lim .top b.warn { color: var(--warn-ink); }
+.acct-lim .top b.bad { color: var(--bad); }
+.acct-lim .when { margin-top: 5px; font-size: 11.5px; color: var(--muted); }
+.acct-none { margin: 0; font-size: 12px; line-height: 1.55; color: var(--muted); }
+.acct-ver .l { display: flex; align-items: baseline; gap: 8px; }
+.acct-ver .l span:first-child { font-weight: 550; }
+.acct-ver .l .mono { margin-left: auto; font: 500 11.5px var(--font-mono); }
+.acct-ver .up { margin-top: 3px; color: var(--muted); font-size: 11.5px; }
+.acct-src { margin-top: 8px; font-size: 11px; color: var(--faint); }
+.kp-info .acct-sec { font-size: 12.5px; line-height: 1.45; }
+.kp-info .acct-sec .acct-lims { margin: 11px 0; padding: 11px 0; }
 .kmodel-menu button[disabled] { opacity: .45; cursor: default; }
 .kmodel-menu button.on[disabled] { opacity: 1; }
 .kmodel-row { display: flex; flex-wrap: wrap; gap: 2px; }

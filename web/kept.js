@@ -305,7 +305,7 @@ function kBuildNeed() {
 // ---------- a session ----------
 function kBuildKept() {
   sessTab = route.tab === 'overview' ? 'report' : route.tab;  // (the timeline is on the overview: app.js goes to one of its turns in place when it reads 'report')
-  KV.menu = KV.rename = KV.model = KV.nameEd = KV.kidsAll = false;
+  KV.menu = KV.rename = KV.model = KV.acct = KV.nameEd = KV.kidsAll = false;
   KV.chatAt = 0;
   $('#view').innerHTML = `<div class="kp${KV.info ? '' : ' no-info'}" id="kp"><section class="kp-main"><header class="kp-head" id="kpHead"></header>
     <div class="kp-scroll" id="sess"><div id="hero" hidden></div><div id="tabBody"></div></div><footer class="kp-foot" id="kpFoot"></footer></section>
@@ -400,16 +400,55 @@ function kModelMenu(k, s, md) {
     <div class="ks-mh">${tt('速度', 'Speed')}</div>${opt('fast', 'off', tt('标准', 'Standard'), !fast)}${opt('fast', 'on', tt('快速（不在订阅额度里，按用量另外计费）', 'Fast (outside the plan: billed from usage credits)'), fast)}
     <p class="kmodel-note">${why || tt('会在它的终端里输入 /model、/effort 或 /fast。Claude Code 会把这样设的模型和强度存成你的默认设置；这里从它的下一次回复起显示新的。', 'This types /model, /effort or /fast into its terminal. Claude Code keeps a model and an effort set this way as your default; what is shown here follows from its next answer.')}</p></div>`;
 }
+// ---------- the account a session runs on: who it is signed in as, how much of its limits is used, the agent's version ----------
+// (all of it read by the deck from the agents' own files; a window whose time has come has started anew and is not shown)
+const kAcct = k => (S.accounts || {})[k.acct || k.kind] || null;
+const acctLv = p => p >= 90 ? 'bad' : p >= 75 ? 'warn' : '';
+const acctWins = a => ((a && a.limits) || []).filter(w => !w.resets || w.resets * 1000 > Date.now());
+const acctSig = (k, a = kAcct(k)) => a && [a.who, a.plan, a.at, a.latest, a.tap, (k.model || {}).ver, acctWins(a).map(w => [w.k, Math.round(w.pct), w.resets])];
+function acctRing(wins) {  // (two windows: the longer one outside, the shorter inside; one: a single ring; none known: an empty one)
+  const ws = wins.slice().sort((x, y) => y.mins - x.mins).slice(0, 2), R = ws.length > 1 ? [6.7, 3.4] : [6.2];
+  const arc = (r, w) => { const L = 2 * Math.PI * r, p = w ? Math.max(0, Math.min(100, w.pct)) : 0; return `<circle class="tr" cx="8" cy="8" r="${r}"></circle>${p ? `<circle class="v ${acctLv(p)}" cx="8" cy="8" r="${r}" stroke-dasharray="${(L * p / 100).toFixed(2)} ${L.toFixed(2)}"></circle>` : ''}`; };
+  return `<svg class="acct-ring" viewBox="0 0 16 16" aria-hidden="true">${R.map((r, i) => arc(r, ws[i])).join('')}</svg>`;
+}
+const acctName = w => ({ '5h': tt('5 小时额度', '5-hour limit'), '7d': tt('7 天额度', '7-day limit') })[w.k] || tt(`${w.k} 额度`, `${w.k} limit`);
+function acctWhen(w) {  // (when a window starts anew: in how long within a day, else the day and the hour)
+  if (!w.resets) return '';
+  const left = w.resets - Date.now() / 1000, d = new Date(w.resets * 1000), hm = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  if (left < 86400) { const h = Math.floor(left / 3600), m = Math.max(1, Math.round(left % 3600 / 60)); return h ? tt(`${h} 小时 ${m} 分后重置`, `starts anew in ${h} h ${m} min`) : tt(`${m} 分钟后重置`, `starts anew in ${m} min`); }
+  return left < 7 * 86400 ? tt(`${['周日', '周一', '周二', '周三', '周四', '周五', '周六'][d.getDay()]} ${hm} 重置`, `starts anew ${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()]} ${hm}`)
+    : tt(`${d.getMonth() + 1}月${d.getDate()}日 ${hm} 重置`, `starts anew ${d.getMonth() + 1}/${d.getDate()} ${hm}`);
+}
+const verNewer = (a, b) => { const p = v => String(v || '').split('.').map(n => parseInt(n, 10) || 0), x = p(a), y = p(b); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
+function acctBody(k) {
+  const a = kAcct(k), wins = acctWins(a), ver = (k.model || {}).ver || '';
+  const bar = w => `<span class="acct-bar"><i class="${acctLv(w.pct)}" style="width:${Math.max(0, Math.min(100, w.pct))}%"></i></span>`;
+  const none = a.kind !== 'claude' ? tt('还没有读到额度：这个账号的 Codex 回复一次后就有。', 'No limits read yet: they are there once Codex has answered on this account.')
+    : a.tap === 'on' ? tt('还没有读到额度：Claude Code 的状态栏刷新一次后就有。', 'No limits read yet: they are there once Claude Code’s status line has been drawn again.')
+    : a.tap === 'off' ? tt('还没有读到额度。Claude Code 只把它交给状态栏：重新运行一次 sturnus install，就会接在你的状态栏前面，状态栏显示的不变。', 'No limits read yet. Claude Code gives them to its status line only: run sturnus install again, and they are noted in front of your status line, which shows what it showed.')
+    : tt('读不到额度：Claude Code 只把它交给状态栏，而这里没有配置状态栏。在它的设置里把 statusLine 的命令设成 amail statusline 就有了。', 'The limits cannot be read: Claude Code gives them to its status line only, and none is set here. Set the statusLine command to amail statusline in its settings, and they are there.');
+  return `<div class="acct-who">${mark(a.kind, '', 'xs')}<b title="${esc(a.name && a.who ? a.name + ' · ' + a.who : a.who || a.name)}">${esc(a.who || a.name || tt('已登录', 'Signed in'))}</b>${a.plan ? `<span class="acct-plan">${esc(a.plan)}</span>` : ''}</div>
+    <div class="acct-lims">${wins.length ? wins.map(w => `<div class="acct-lim"><div class="top"><span>${acctName(w)}</span><b class="${acctLv(w.pct)}">${Math.round(w.pct)}%</b></div>${bar(w)}<div class="when">${esc(acctWhen(w))}</div></div>`).join('') : `<p class="acct-none">${none}</p>`}</div>
+    ${ver || a.latest ? `<div class="acct-ver"><div class="l"><span>${esc(FULL[a.kind] || a.kind)}</span><span class="mono">${esc(ver || a.latest)}</span></div>${ver && a.latest && verNewer(a.latest, ver) ? `<div class="up">${tt(`已装 ${a.latest}，重开会话后用上`, `${a.latest} is installed, and runs once the session is started again`)}</div>` : ''}</div>` : ''}
+    ${wins.length && a.at ? `<div class="acct-src">${a.src === 'statusline' ? tt('额度来自 Claude Code 的状态栏', 'Limits as Claude Code’s status line was told') : tt('额度来自 Codex 的对话文件', 'Limits as Codex’s conversation files say')} · ${esc(agoT(a.at))}</div>` : ''}`;
+}
+function acctChip(k) {  // (beside the model: a ring; the number too once a window is three quarters used)
+  const a = kAcct(k);
+  if (!a) return '';
+  const wins = acctWins(a), top = wins.slice().sort((x, y) => y.pct - x.pct)[0], lv = top ? acctLv(top.pct) : '';
+  const say = wins.length ? wins.map(w => `${acctName(w)} ${Math.round(w.pct)}%`).join(' · ') : tt('账号与用量', 'Account and limits');
+  return `<button class="kh-acct ${lv}" data-kacct aria-haspopup="dialog" aria-expanded="${!!KV.acct}" title="${esc(say)}" aria-label="${esc(tt('账号与用量', 'Account and limits') + (wins.length ? '：' + say : ''))}">${acctRing(wins)}${lv ? `<span>${esc(top.k)} ${Math.round(top.pct)}%</span>` : ''}</button>`;
+}
 function kDrawHead(k, s, tab) {
   if (document.activeElement && document.activeElement.id === 'kTitle') return;
   const [st, label] = kStand(k), sp = kSpace(k.space), up = s && !s.starting, past = !up && !!kPast(k);
   const md = k.model || {};
-  draw('khead', [k.id, kTitle(k), st, label, k.pinned, k.archived, tab, up, past, sp && [sp.id, sp.name], k.kind, k.folder, k.branch, KV.info, KV.menu, KV.rename, [md.model, md.effort, md.speed], KV.model, KV.model && s && sayHow(s), LANG], () => {
+  draw('khead', [k.id, kTitle(k), st, label, k.pinned, k.archived, tab, up, past, sp && [sp.id, sp.name], k.kind, k.folder, k.branch, KV.info, KV.menu, KV.rename, [md.model, md.effort, md.speed], KV.model, KV.model && s && sayHow(s), acctSig(k), KV.acct, KV.acct && Math.floor(Date.now() / 60000), LANG], () => {
     const tabs = up ? [['chat', tt('对话', 'Conversation')], ['overview', tt('概览', 'Overview')], ['term', tt('终端', 'Terminal')], ['msgs', tt('消息', 'Messages')]]
       : past ? [['chat', tt('对话', 'Conversation')], ['overview', tt('概览', 'Overview')]] : [];
     $('#kpHead').innerHTML = `<div class="kh-l">${KV.rename ? `<input class="field" id="kTitle" value="${esc(k.title || kTitle(k))}" aria-label="${tt('会话的名字', 'Session title')}" placeholder="${tt('留空：回到自动起的名字', 'Empty: back to the name it is given')}">`
         : `<h1 data-krename title="${tt('点一下改名', 'Click to rename')}">${esc(kTitle(k))}</h1>`}
-        <div class="sub">${mark(k.kind, '', 'xs')}<span>${esc(FULL[k.kind] || k.kind)}</span>${md.model ? `<button class="kh-model" data-kmodel aria-haspopup="menu" aria-expanded="${!!KV.model}" title="${tt('它用的模型、思考强度和速度；点开可以换', 'Its model, effort and speed; open to change them')}">${esc(kModelName(md.model))}${md.effort ? `<em>${esc(md.effort)}</em>` : ''}${kFast(md) ? `<em class="fast">↯ ${tt('快速', 'fast')}</em>` : ''}${chev(true)}</button>` : ''}<i>·</i>${sp ? `<a href="#/w/${encodeURIComponent(sp.id)}">${esc(sp.name)}</a>` : `<span>${tt('未归入工作区', 'In no workspace')}</span>`}<i>·</i><span class="mono" title="${esc(k.show)}">${esc(folder(k.folder))}${k.branch ? ' / ' + esc(k.branch) : ''}</span></div>${KV.model && md.model ? kModelMenu(k, s, md) : ''}</div>
+        <div class="sub">${mark(k.kind, '', 'xs')}<span>${esc(FULL[k.kind] || k.kind)}</span>${md.model ? `<button class="kh-model" data-kmodel aria-haspopup="menu" aria-expanded="${!!KV.model}" title="${tt('它用的模型、思考强度和速度；点开可以换', 'Its model, effort and speed; open to change them')}">${esc(kModelName(md.model))}${md.effort ? `<em>${esc(md.effort)}</em>` : ''}${kFast(md) ? `<em class="fast">↯ ${tt('快速', 'fast')}</em>` : ''}${chev(true)}</button>` : ''}${acctChip(k)}<i>·</i>${sp ? `<a href="#/w/${encodeURIComponent(sp.id)}">${esc(sp.name)}</a>` : `<span>${tt('未归入工作区', 'In no workspace')}</span>`}<i>·</i><span class="mono" title="${esc(k.show)}">${esc(folder(k.folder))}${k.branch ? ' / ' + esc(k.branch) : ''}</span></div>${KV.model && md.model ? kModelMenu(k, s, md) : ''}${KV.acct && kAcct(k) ? `<div class="acct-card" role="dialog" aria-label="${tt('账号与用量', 'Account and limits')}">${acctBody(k)}</div>` : ''}</div>
       <div class="r"><span class="kchip ${st}"><i></i>${esc(k.archived ? tt('已归档', 'Archived') : label)}</span>
         ${!s && !k.archived ? `<button class="btn primary" data-kresume>${KI.play}${tt('继续', 'Go on')}</button>` : ''}
         ${tabs.length ? `<nav class="seg ktabs">${tabs.map(([x, l]) => `<a href="${kHref(k)}${x === 'chat' ? '' : '/' + x}" class="${tab === x ? 'on' : ''}">${l}</a>`).join('')}</nav>` : ''}
@@ -617,7 +656,7 @@ function kDrawInfo(k, s) {
   const par = up && parentOf(s), terms = full ? (full.terms || []).slice().sort((x, y) => y.n - x.n) : [];
   draw('kinfo', ['info', k.id, k.space, k.spaced, k.kind, k.show, k.branch, k.name, k.note, k.conv, a, s && [s.id, s.summary, needOf(s), asksSig(s), s.loc, s.origin, par && [par.id, par.name], s.project, s.workspace, s.attrib],
     tasks.map(x => [x.id, x.title, x.shown, x.now, x.next]), pick.map(x => [x.id, x.title]), subs.map(x => [x.id, x.state, x.at]), kids.map(c => [c.id, c.state, c.status, c.summary, c.title]), KV.kidsAll, KV.nameEd, Object.keys(S.projects || {}).length,
-    (S.spaces || []).map(w => [w.id, w.name]), terms.map(t => [t.n, t.ended, t.why, t.pane]), full && (full.segs || []).length, Math.floor(Date.now() / 60000), LANG], () => {
+    (S.spaces || []).map(w => [w.id, w.name]), terms.map(t => [t.n, t.ended, t.why, t.pane]), full && (full.segs || []).length, Math.floor(Date.now() / 60000), acctSig(k), LANG], () => {
     const title = kTitle(k), cmd = `sturnus open ${/^[^\s"'$`\\!]+$/.test(title) ? title : /["$`\\!]/.test(title) ? k.id : `"${title}"`}`;
     const open = terms.find(t => !t.ended);
     box.innerHTML = kSideTabs() + (a ? `<div class="need-box ${ATT[a][1]}"><div class="k">${standing(s)[0] === 'asking' ? t('工作中 · 等你确认') : t(ATT[a][0])}</div><p>${esc(needOf(s) || s.summary || (s.prompting ? tt('它停在终端里的一个提示上：进终端看一眼。', 'It is stopped at a prompt in its terminal: take a look there.') : ''))}</p></div>` : '')
@@ -632,6 +671,7 @@ function kDrawInfo(k, s) {
           ${k.name ? `<dt>${tt('名字', 'Name')}</dt><dd class="mono kname" title="${tt('会话之间写信用的名字', 'Its name when sessions write to each other')}">${KV.nameEd === k.id && up ? `<span class="inline"><input class="field" id="rName" value="${esc(k.name)}" aria-label="${tt('新名字', 'New name')}" placeholder="${t('新名字（字母、数字、_ . -）')}"><button class="btn" data-act="rename">${t('改名')}</button></span>`
             : `${esc(k.name)}${up ? `<button class="kv-ed" data-kname title="${k.kind === 'claude' ? tt('Claude 会话的名字由它自己定：点一下看怎么改', 'A Claude session names itself: click to see how') : tt('改这个名字', 'Change this name')}" aria-label="${tt('改名字', 'Change the name')}">${KI.pen}</button>` : ''}`}</dd>` : ''}
           ${k.conv ? `<dt>${tt('对话 ID', 'Conversation')}</dt><dd class="mono kconv"><span title="${esc(k.conv)}">${esc(k.conv)}</span><button class="kv-ed" data-kcopy="${esc(k.conv)}" title="${tt('复制', 'Copy')}" aria-label="${tt('复制对话 ID', 'Copy the conversation id')}">${KI.copy}</button></dd>` : ''}</dl></section>`
+      + (kAcct(k) ? `<section class="acct-sec"><h3>${tt('账号与用量', 'Account and limits')}</h3>${acctBody(k)}</section>` : '')
       + (s && s.summary ? `<section><h3>${tt('现在在做', 'Doing now')}</h3><p class="now">${esc(s.summary)}</p></section>` : !s && k.note ? `<section><h3>${tt('停下时在做', 'Doing when it stopped')}</h3><p class="now">${esc(k.note)}</p></section>` : '')
       + (s && ((s.asks || []).length || (S.inbox || []).some(m => m.from === s.name)) ? asksPanel(s) : '')
       + (tasks.length || pick.length ? `<section><h3>${tt('任务', 'Tasks')}<a class="lnk" href="#/tasks${scope ? '/' + encodeURIComponent(scope) : ''}">${tt('全部', 'All')}</a></h3>
@@ -956,7 +996,9 @@ document.addEventListener('click', async e => {
   if (KV.menu && !q('.kmenu')) { KV.menu = false; delete sig.khead; render(); }
   if (KV.arr && !q('.ks-arr')) { KV.arr = false; render(); }
   if (KV.model && !q('.kmodel-menu, [data-kmodel]')) { KV.model = false; render(); }
-  if (q('[data-kmodel]')) { KV.model = !KV.model; render(); return; }
+  if (KV.acct && !q('.acct-card, [data-kacct]')) { KV.acct = false; render(); }
+  if (q('[data-kmodel]')) { KV.model = !KV.model; KV.acct = false; render(); return; }
+  if (q('[data-kacct]')) { KV.acct = !KV.acct; KV.model = false; render(); return; }
   if ((el = q('[data-kmset]'))) {  // (a model, an effort or a speed for a Claude Code session: the command for it, typed into its terminal)
     const k = cur(), s = k && kLive(k), [what, v] = el.dataset.kmset.split(':');
     if (!k || !s || sayHow(s) !== 'type') return;
@@ -1118,6 +1160,7 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && KV.menu) { KV.menu = false; delete sig.khead; render(); e.stopImmediatePropagation(); return; }
   if (e.key === 'Escape' && KV.arr) { KV.arr = false; render(); e.stopImmediatePropagation(); return; }
   if (e.key === 'Escape' && KV.model) { KV.model = false; render(); e.stopImmediatePropagation(); return; }
+  if (e.key === 'Escape' && KV.acct) { KV.acct = false; render(); e.stopImmediatePropagation(); return; }
   if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
   const overlay = ['#palette', '#settings', '#newSess', '#taskPanel'].some(id => !$(id).hidden);
   if (overlay) return;

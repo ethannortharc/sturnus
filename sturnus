@@ -43,6 +43,7 @@ SHARE = os.path.expanduser('~/.local/share/sturnus')
 CONF = os.environ.get('STURNUS_CONF') or os.path.expanduser('~/.config/sturnus/config.json')  # (another one: a second deck to try things on)
 CACHE = os.environ.get('STURNUS_CACHE') or os.path.expanduser('~/.cache/sturnus')
 DRY = bool(os.environ.get('STURNUS_DRY'))  # (a deck to try things on: it types into no pane and queues into no Codex thread)
+CLAUDE_CONF = os.environ.get('CLAUDE_CONFIG_DIR') or ''  # (where Claude Code keeps its sign-in, when not in the usual place)
 WASM = os.path.join(SHARE, 'zellij-jump.wasm')  # (one path for every version: Zellij's grant is by path)
 MAC = sys.platform == 'darwin'
 LABEL = 'com.giomni.sturnus'  # (macOS: the LaunchAgent's)
@@ -911,10 +912,122 @@ def open_book():
 
 # ---------- the model a session runs on, as its own conversation file says ----------
 
+# ---------- the accounts the agents are signed in to, and how much of their limits is used ----------
+# All of it is read from the agents' own files on this machine: nothing is asked of any service.
+
+def claude_account(conf=''):
+    """Who Claude Code is signed in as, by its own files: {who, name, plan} ({} when it is not, or by an API key).
+    conf: its CLAUDE_CONFIG_DIR ('' the usual place)."""
+    o = (A.get(os.path.join(conf, '.claude.json') if conf else os.path.expanduser('~/.claude.json')) or {}).get('oauthAccount')
+    if not isinstance(o, dict) or not (o.get('emailAddress') or o.get('displayName')):
+        return {}
+    cred = (A.get(os.path.join(conf or os.path.expanduser('~/.claude'), '.credentials.json')) or {}).get('claudeAiOauth')
+    cred = cred if isinstance(cred, dict) else {}
+    tier = next((t for t in (o.get('userRateLimitTier'), o.get('organizationRateLimitTier'), cred.get('rateLimitTier')) if isinstance(t, str) and t), '')
+    times = re.search(r'_(\d+)x$', tier)
+    base = ({'claude_max': 'Max', 'claude_pro': 'Pro', 'claude_team': 'Team', 'claude_enterprise': 'Enterprise'}.get(str(o.get('organizationType') or ''))
+            or str(cred.get('subscriptionType') or '').capitalize())
+    plan = o.get('planDisplayName') if isinstance(o.get('planDisplayName'), str) and o.get('planDisplayName') else ' '.join(x for x in (base, times and times.group(1) + 'x') if x)
+    return {'who': str(o.get('emailAddress') or ''), 'name': str(o.get('displayName') or o.get('fullName') or ''), 'plan': plan}
+
+
+def claude_limits(conf='', now=None):
+    """How much of Claude Code's 5-hour and 7-day windows is used, as its status line was last told (amail's is put in
+    front of the person's own to note it: Claude Code writes it nowhere else): ([{k, mins, pct, resets}], when read).
+    A window whose time has come has started anew, and is left out until it is heard of again."""
+    now = now or time.time()
+    d = A.get(os.path.join(A.HOME, 'limits', f'claude-{hashlib.sha1(conf.encode()).hexdigest()[:10] if conf else "default"}.json')) or {}
+    out = []
+    for k, key, mins in (('5h', 'five_hour', 300), ('7d', 'seven_day', 10080)):
+        w = (d.get('windows') or {}).get(key) if isinstance(d.get('windows'), dict) else None
+        if isinstance(w, dict) and isinstance(w.get('used_percentage'), (int, float)) and (not w.get('resets_at') or w['resets_at'] > now):
+            out.append({'k': k, 'mins': mins, 'pct': round(float(w['used_percentage']), 1), 'resets': float(w.get('resets_at') or 0)})
+    return out, float(d.get('at') or 0) if out else 0
+
+
+def codex_account():
+    """Who Codex is signed in as, by its own sign-in file: {who, name, plan} ({} when it is not)."""
+    a = A.get(os.path.join(os.environ.get('CODEX_HOME') or os.path.expanduser('~/.codex'), 'auth.json')) or {}
+    tok = (a.get('tokens') or {}).get('id_token') if isinstance(a.get('tokens'), dict) else None
+    if not isinstance(tok, str) or tok.count('.') != 2:
+        return {'who': '', 'name': '', 'plan': 'API key'} if a.get('OPENAI_API_KEY') else {}
+    try:
+        body = tok.split('.')[1]
+        j = json.loads(base64.urlsafe_b64decode(body + '=' * (-len(body) % 4)))
+    except (ValueError, UnicodeDecodeError):
+        return {}
+    au = j.get('https://api.openai.com/auth') if isinstance(j.get('https://api.openai.com/auth'), dict) else {}
+    return {'who': str(j.get('email') or ''), 'name': str(j.get('name') or ''), 'plan': str(au.get('chatgpt_plan_type') or '').replace('_', ' ').title()}
+
+
+def codex_limits(now=None):
+    """How much of the Codex account's windows is used: Codex writes it into a thread's conversation file with every
+    answer, so the newest word among the files last written to is the account's ([{k, mins, pct, resets}], when said)."""
+    now = now or time.time()
+    home = os.environ.get('CODEX_HOME') or os.path.expanduser('~/.codex')
+    days = sorted(glob.glob(os.path.join(home, 'sessions', '*', '*', '*')))[-3:]
+    files = []
+    for f in (f for d in days for f in glob.glob(os.path.join(d, 'rollout-*.jsonl'))):
+        with contextlib.suppress(OSError):
+            files.append((os.path.getmtime(f), f))
+    best = (0, None)
+    for _, f in sorted(files)[-6:]:
+        try:
+            with open(f, 'rb') as o:
+                o.seek(max(0, os.path.getsize(f) - 600_000))
+                tail = o.read()
+        except OSError:
+            continue
+        i = tail.rfind(b'"rate_limits"')
+        if i < 0:
+            continue
+        line = tail[tail.rfind(b'\n', 0, i) + 1:(tail.find(b'\n', i) + 1 or len(tail) + 1) - 1]
+        try:
+            d = json.loads(line)
+            at = calendar.timegm(time.strptime(str(d.get('timestamp'))[:19], '%Y-%m-%dT%H:%M:%S'))
+        except (ValueError, TypeError):
+            continue
+        rl = (d.get('payload') or {}).get('rate_limits') if isinstance(d.get('payload'), dict) else None
+        if isinstance(rl, dict) and at > best[0]:
+            best = (at, rl)
+    at, rl = best
+    out = []
+    for w in ((rl or {}).get('primary'), (rl or {}).get('secondary')):
+        if not isinstance(w, dict) or not isinstance(w.get('used_percent'), (int, float)):
+            continue
+        mins = int(w.get('window_minutes') or 0)
+        resets = float(w.get('resets_at') or 0) or (at + float(w['resets_in_seconds']) if isinstance(w.get('resets_in_seconds'), (int, float)) else 0)
+        if resets and resets <= now:
+            continue
+        k = '5h' if mins == 300 else '7d' if mins == 10080 else f'{mins // 1440}d' if mins and mins % 1440 == 0 else f'{round(mins / 60)}h' if mins else ''
+        out.append({'k': k, 'mins': mins, 'pct': round(float(w['used_percent']), 1), 'resets': resets})
+    return sorted(out, key=lambda w: w['mins']), at if out else 0
+
+
+def tool_version(name):
+    """The version of an agent's program as installed here ('' when it is not, or does not say)."""
+    exe = None if DRY else shutil.which(name)
+    if not exe:
+        return ''
+    try:
+        r = subprocess.run([exe, '--version'], capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL, env={**os.environ, 'AMAIL_SKIP': '1'})
+    except (OSError, subprocess.SubprocessError):
+        return ''
+    m = re.search(r'\d+\.\d+\.\d+', r.stdout or '')
+    return m.group(0) if m else ''
+
+
 def conv_meta(path, kind):
     """The model a conversation was last run on, and how: {model, effort, speed} from the end of its file (Claude Code
-    writes them on every answer; Codex in each turn's context and whenever a thread's settings are applied). {} when
-    the file does not say."""
+    writes them on every answer; Codex in each turn's context and whenever a thread's settings are applied), and the
+    version of the agent that ran it ('ver': each answer of Claude Code's says it; a Codex thread's first line does).
+    {} when the file does not say."""
+    out = conv_model(path, kind)
+    v = codex_meta(path).get('cli_version') if out and kind == 'codex' else None
+    return {**out, 'ver': v} if isinstance(v, str) and v else out
+
+
+def conv_model(path, kind):
     try:
         size = os.path.getsize(path)
     except (OSError, TypeError):
@@ -940,7 +1053,7 @@ def conv_meta(path, kind):
                 if d.get('type') != 'assistant' or d.get('isSidechain') or not isinstance(model, str) or model.startswith('<'):
                     continue
                 u = m.get('usage') if isinstance(m.get('usage'), dict) else {}
-                return {k: v for k, v in (('model', model), ('effort', d.get('effort')), ('speed', u.get('speed'))) if isinstance(v, str) and v}
+                return {k: v for k, v in (('model', model), ('effort', d.get('effort')), ('speed', u.get('speed')), ('ver', d.get('version'))) if isinstance(v, str) and v}
             if kind == 'codex':
                 if b'turn_context' not in l[:300] and b'thread_settings_applied' not in l[:300]:
                     continue
@@ -2535,6 +2648,9 @@ class Deck:
         self.book = open_book()  # (the sessions that last, and their workspaces)
         self.kept, self.wants, self.items = {}, {}, {}  # (the sessions as the page lists them; (pid, when it started) -> the session it was started for; conversation file -> its items as last read)
         self.metas = {}  # (session -> (when read, its file as it was, the model it runs on): read again when the file has grown)
+        # (the accounts the agents are signed in to: as last read, when; a Claude Code process -> its sign-in's folder; the
+        # sign-ins in other folders than the usual one; the agents' versions as installed, when looked at)
+        self.accts, self.accts_at, self.confs, self.acct_confs, self.latest, self.latest_at = {}, 0, {}, {}, {}, 0
         self.keep_lock = threading.Lock()  # (one reader of a conversation file at a time: what it reads goes after what is there)
         self.recovered = self.book.meta('recover')  # (the restart whose sessions the person has already been offered)
 
@@ -2789,6 +2905,7 @@ class Deck:
             self.everyone = sessions
             self.state = {'sessions': [s for s in sessions if not s['hidden']], 'talk': self.talk.all(), 'groups': zs, 'locks': locks,
                           'tasks': task_rows, 'kept': kept, 'spaces': spaces, 'recover': self.recover_view(kept), 'plans': plans,
+                          'accounts': self.accounts_view(now),
                           'terminal': {'way': T.way(self.cfg).key, 'usable': [w.key for w in T.WAYS.values() if w.usable()],
                                        'rest_days': float(self.cfg.get('rest_days', DEFAULTS['rest_days']) or 0)},
                           'workspaces': workspaces, 'projects': projects, 'boards': boards,
@@ -3943,11 +4060,22 @@ class Deck:
                 continue
             pid = s.get('window_pid') or (s.get('pid') if s['kind'] != 'codex' else None)
             s['proc'], s['pid_at'] = pid, ((born.get(pid) or (A.proc(pid) or (0, 0, 0))[2] or 0) if pid else 0)
+            if s['kind'] in ('claude', 'codex'):  # (the account it runs on: Claude Code's sign-in is in the folder its process names, the usual one when it names none)
+                s['acct'] = s['kind']
+                if s['kind'] == 'claude' and pid:
+                    if (pid, s['pid_at']) not in self.confs:
+                        self.confs[(pid, s['pid_at'])] = env_of(pid, 'CLAUDE_CONFIG_DIR') or ''
+                    conf = self.confs[(pid, s['pid_at'])]
+                    if conf != CLAUDE_CONF:
+                        s['acct'] = 'claude:' + (hashlib.sha1(conf.encode()).hexdigest()[:8] if conf else 'home')
+                        self.acct_confs[s['acct']] = conf
             if pid and (pid, s['pid_at']) not in self.wants:
                 self.wants[(pid, s['pid_at'])] = (env_of(pid, 'STURNUS_SESSION') or '', env_of(pid, 'STURNUS_NEW') or '')
             s['want'], s['mark'] = [x or None for x in self.wants.get((pid, s['pid_at'])) or ('', '')]
         if len(self.wants) > 3000:
             self.wants.clear()
+        if len(self.confs) > 3000:
+            self.confs.clear()
         got = self.book.bind(sessions, now, boot_time(), lambda t: T.there(T.loc_of(t)))
         by_id = {s['id']: s for s in sessions}
         for s in sessions:
@@ -3957,6 +4085,33 @@ class Deck:
         for s in sessions:
             if not s['kept'] and s.get('parent_id') in by_id:
                 s['kept'] = by_id[s['parent_id']].get('kept')
+
+    def accounts_view(self, now):
+        """The accounts the agents here are signed in to, as their own files say: {key: {kind, who, name, plan, limits:
+        [{k, mins, pct, resets}], at: when the limits were said, src, latest: the agent's version as installed}}; a
+        Claude Code sign-in also says how its status line stands (tap: on, off, none), since its limits are heard only
+        there. Read anew every 15 seconds at most; what is installed, every half hour, off this thread."""
+        if now - self.accts_at < 15:
+            return self.accts
+        self.accts_at = now
+        if now - self.latest_at > 1800:
+            self.latest_at = now
+            threading.Thread(target=lambda: self.latest.update({k: tool_version(k) for k in ('claude', 'codex')}), daemon=True).start()
+        out = {}
+        for key, conf in {'claude': CLAUDE_CONF, **self.acct_confs}.items():
+            with contextlib.suppress(Exception):  # (a file of theirs not as expected: that account is not shown)
+                a = claude_account(conf)
+                if a:
+                    wins, at = claude_limits(conf, now)
+                    out[key] = {**a, 'kind': 'claude', 'limits': wins, 'at': at, 'src': 'statusline', 'latest': self.latest.get('claude') or '',
+                                'tap': A.statusline_of(A.get(os.path.join(conf or os.path.expanduser('~/.claude'), 'settings.json')) or {})}
+        with contextlib.suppress(Exception):
+            a = codex_account()
+            if a:
+                wins, at = codex_limits(now)
+                out['codex'] = {**a, 'kind': 'codex', 'limits': wins, 'at': at, 'src': 'file', 'latest': self.latest.get('codex') or ''}
+        self.accts = out
+        return out
 
     def meta_of(self, k, l, now):
         """The model a session runs on, with its effort and speed: read from the end of its conversation file when that
@@ -3998,6 +4153,7 @@ class Deck:
                 l = None  # (stopped a moment ago: what is still seen of it is on its way out)
             v = {f: k[f] for f in ('id', 'title', 'space', 'spaced', 'folder', 'kind', 'name', 'branch', 'made', 'at', 'pinned', 'archived', 'state', 'note', 'nsegs', 'nterms')}
             v.update(live=l and l['id'], conv=(k.get('seg') or {}).get('conv'), show=tilde(k['folder']), wt=k.get('wt') or '', model=self.meta_of(k, l, now),
+                     acct=(l or {}).get('acct') or (k['kind'] if k['kind'] in ('claude', 'codex') else ''),
                      term=t and {x: t[x] for x in ('n', 'mux', 'grp', 'pane', 'origin', 'began')},
                      ended=None if t or not lt else {'at': lt['ended'], 'why': lt['why']})
             out.append(v)
@@ -5073,7 +5229,7 @@ def app_lasting(st, rows):
                     'kind': k.get('kind') or '', 'space': k.get('space') or '', 'spaced': bool(k.get('spaced')), 'show': k.get('show') or '',
                     'branch': k.get('branch') or '', 'name': k.get('name') or '', 'made': k.get('made') or 0, 'at': k.get('at') or 0,
                     'pinned': bool(k.get('pinned')), 'live': r['id'] if r else '', 'standing': r['standing'] if r else 'idle' if k.get('live') else 'stopped',
-                    'note': (k.get('note') or '')[:300], 'model': k.get('model') or {}, 'wt': bool(k.get('wt')),
+                    'note': (k.get('note') or '')[:300], 'model': k.get('model') or {}, 'acct': k.get('acct') or '', 'wt': bool(k.get('wt')),
                     'term': {'mux': t.get('mux') or '', 'grp': t.get('grp') or '', 'origin': t.get('origin') or ''} if t else None,
                     'ended': {'at': e.get('at') or 0, 'why': e.get('why') or ''} if e else None})
     out.sort(key=lambda k: (-(k['made'] or 0), k['id']))
@@ -5090,7 +5246,7 @@ def app_lasting(st, rows):
               'folder': tilde(p.get('folder') or ''), 'space': p.get('space') or '', 'every': p.get('every') or '', 'live': bool(p.get('live')),
               'next': p.get('next') if p.get('live') else None, 'runs': [{'kept': r.get('kept') or '', 'at': r.get('at') or 0} for r in p.get('runs') or []][:5]}
              for p in st.get('plans') or []]
-    return {'kept': out, 'spaces': spaces, 'plans': plans, 'recover': list(st.get('recover') or []),
+    return {'kept': out, 'spaces': spaces, 'plans': plans, 'recover': list(st.get('recover') or []), 'accounts': dict(st.get('accounts') or {}),
             'kinds': [k for k in (st.get('launch') or DEFAULTS['launch']) if k in ('claude', 'codex', 'cursor')],
             'terminal': (st.get('terminal') or {}).get('way') or ''}
 
