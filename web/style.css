@@ -64,6 +64,7 @@ code { font: 12px var(--font-mono); background: var(--panel-2); border: 1px soli
 .icon-btn:hover { color: var(--ink); } .icon-btn svg { width: 17px; height: 17px; }
 @keyframes beat { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 55%, transparent); } 70%, 100% { box-shadow: 0 0 0 7px transparent; } }
 .view { min-height: 0; overflow: hidden; background: var(--canvas); border-radius: 14px; border: 1px solid var(--sheet-edge); box-shadow: var(--sheet-shadow); }
+.view { overflow-wrap: break-word; }  /* (a path, an address, a command with nowhere to break: broken where the line ends, not run out of its box) */
 
 /* ---------- home ---------- */
 .page { height: 100%; overflow-y: auto; padding: 22px 28px 48px; }

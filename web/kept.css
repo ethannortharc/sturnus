@@ -180,7 +180,7 @@ html:not(.phone) .asst-fab { display: none; }
 .kp-foot .reply textarea:focus { box-shadow: none; }
 .kp-foot .reply .row { margin-top: 6px; }
 /* a prompt of the person's, where the words go: what the agent is stopped at, and its answers */
-.qa { border-radius: 14px; border: 1px solid color-mix(in srgb, var(--warn) 38%, transparent); background: var(--panel); box-shadow: var(--shadow-1), 0 6px 18px -10px rgba(24, 22, 18, .18); overflow: hidden; }
+.qa { overflow-wrap: break-word; border-radius: 14px; border: 1px solid color-mix(in srgb, var(--warn) 38%, transparent); background: var(--panel); box-shadow: var(--shadow-1), 0 6px 18px -10px rgba(24, 22, 18, .18); overflow: hidden; }
 .qa-h { display: flex; align-items: center; gap: 9px; padding: 10px 14px; background: var(--warn-soft); font-size: 13px; }
 .qa-h > i { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--warn); }
 .qa-h b { font-weight: 650; color: var(--warn-ink); min-width: 0; }
@@ -199,7 +199,7 @@ html:not(.phone) .asst-fab { display: none; }
 .qa-q > p { font-weight: 600; font-size: 14px; }
 .qa-q > small { display: block; margin-top: 2px; font-size: 12px; color: var(--muted); }
 .qa-tag { display: inline-block; margin-bottom: 5px; padding: 1px 7px; border-radius: 6px; background: color-mix(in srgb, var(--ink) 7%, transparent); font-size: 11px; font-weight: 600; color: var(--ink-2); }
-.qa-opts { display: grid; gap: 6px; margin-top: 9px; }
+.qa-opts { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; margin-top: 9px; }
 .qa-opt { display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 8px 11px; border-radius: 10px; border: 1px solid var(--hair); background: var(--panel); text-align: left; font-size: 13px; line-height: 1.45; color: var(--ink); }
 button.qa-opt:hover:not(:disabled) { border-color: color-mix(in srgb, var(--ink) 34%, transparent); background: var(--panel-2); }
 button.qa-opt:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
@@ -340,7 +340,8 @@ a.wk-row:hover, .wk-row:hover { background: var(--panel-2); }
 .wk-row.pl.off .t { opacity: .6; }
 .wk-row.pl .t small { white-space: normal; }
 .kset-col { display: flex; flex-direction: column; gap: 10px; margin: 14px 0 10px; }
-.kp-info { overflow-x: hidden; }
+.kp-main { overflow-wrap: break-word; }
+.kp-info { overflow-x: hidden; overflow-wrap: break-word; }  /* (a path, an address, a command with nowhere to break: broken where the line ends, not run out of its box) */
 .kp-info .hint.mono { overflow-wrap: anywhere; word-break: break-all; }
 
 /* ---------- how the sidebar's sessions are grouped and ordered: one button, one menu ---------- */
@@ -424,7 +425,7 @@ a.wk-row:hover, .wk-row:hover { background: var(--panel-2); }
 .acct-who .mark.xs { flex: none; width: 16px; height: 16px; border-radius: 5px; }
 .acct-who b { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acct-plan { flex: none; margin-left: auto; padding: 2px 7px; border-radius: 6px; background: color-mix(in srgb, var(--ink) 7%, transparent); font-size: 11px; font-weight: 600; color: var(--ink-2); }
-.acct-lims { display: grid; gap: 11px; margin: 12px 0; padding: 12px 0; border-block: 1px solid var(--hair-2); }
+.acct-lims { display: grid; grid-template-columns: minmax(0, 1fr); gap: 11px; margin: 12px 0; padding: 12px 0; border-block: 1px solid var(--hair-2); }
 .acct-lim .top { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
 .acct-lim .top span { font-weight: 550; }
 .acct-lim .top b { margin-left: auto; font: 600 12px var(--font-mono); font-variant-numeric: tabular-nums; }
