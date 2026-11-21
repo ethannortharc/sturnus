@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """amail - mail and a status board for the Claude Code, Codex and Cursor sessions on this machine.
 
-  amail send TO TEXT... [--fyi|--question|--block]
+  amail send TO TEXT... [--fyi|--question|--block|--wake]
                               mail TO (a name, "user" for the person, or "all": sturnus passes it on to the sessions
                               it concerns). A note (fyi, the default) arrives when TO next stops or starts a turn; a
-                              question (the default when TEXT asks one) or a block also mid-work, and wakes TO when idle
+                              question (the default when TEXT asks one), a block, or one sent with --wake (for TO to
+                              act on now) also mid-work, and wakes TO when idle. The reply says when TO gets it
+  amail wake NAME             your notes still unread by NAME are for it to act on now: it is woken for them when idle
   amail ask NAME TEXT...      a question; you are told when NAME next stops, unless it answers first. An idle Cursor
                               session answers at once from a copy of its chat (its own chat is not touched)
   amail wait NAME [--until TEXT]   be told (mail, and woken when idle) when NAME stops, or once TEXT holds by its
@@ -345,7 +347,7 @@ def whoami(argv_as=None):
 
 # ---------- mail ----------
 
-KINDS = ('fyi', 'question', 'block')
+KINDS = ('fyi', 'question', 'block', 'wake')  # (all but a note, fyi, do not wait for the reader's next turn)
 
 
 def kind_of(text, kind=None):
@@ -378,9 +380,50 @@ def everyone():
     return sorted(set(board()) | {s['name'] for s in claude_sessions()})
 
 
-def take(name, peek=False, urgent=False):
-    """My unread mail, oldest first; taken (marked read) unless peek; urgent: questions and blocks only (notes wait for
-    a stop). Two hooks at once: each takes what it renamed."""
+def sent_text(to, sent, kind):
+    """What a sender is told: who it went to, and when that reader gets it — a note to an idle session waits until the
+    person next talks to it, which its sender should know (and can change: amail wake)."""
+    if not sent:
+        return 'nobody to send to'
+    if to in ('all', 'user') or sent != [to]:
+        return f'sent to {", ".join(sent)}'
+    e = rows().get(to)
+    if not e:
+        return f'sent to {to} (not on the board yet: it reads mail when its hooks first run)'
+    st, note = e.get('state'), kind == 'fyi'
+    if st in ('ended', 'gone'):
+        return f'sent to {to}, which has exited: it reads this only if it is started again'
+    if st == 'working':
+        return (f'sent to {to} (at work): a note, handed over when its turn ends; `amail wake {to}` hands it over at its next step' if note
+                else f'sent to {to} (at work): handed over at its next step')
+    if st == 'waiting':
+        return f'sent to {to} (stopped at a prompt of the person\'s): it reads this once it works again'
+    if note:
+        return (f'sent to {to} ({st or "idle"}): a note waits for its next turn, and it starts none by itself. '
+                f'If it should act on this now: amail wake {to}')
+    if not deck():
+        return f'sent to {to} ({st or "idle"}): it reads this at its next turn (sturnus is not running, so nobody wakes it)'
+    if e.get('kind') != 'codex' and not (e.get('tmux') or e.get('zellij')):
+        return f'sent to {to} ({st or "idle"}): sturnus wakes it if it can type into its terminal (it is in no Zellij or tmux pane amail knows of); else it reads this at its next turn'
+    return f'sent to {to} ({st or "idle"}): sturnus wakes it now'
+
+
+def wake_mail(me, to):
+    """My notes TO has not read yet become ones for it to act on now (sturnus then wakes it when idle). How many."""
+    d, n = os.path.dirname(path('mail', to, 'new', 'x')), 0
+    for f in sorted(os.listdir(d)):
+        m = get(os.path.join(d, f)) if f.endswith('.json') else None
+        if m and m.get('from') == me and m.get('kind', 'fyi') == 'fyi':
+            m['kind'] = 'wake'
+            if os.path.exists(os.path.join(d, f)):  # (not taken a moment ago: then it has it already)
+                put(os.path.join(d, f), m)
+                n += 1
+    return n
+
+
+def take(name, peek=False, urgent=False, ids=None):
+    """My unread mail, oldest first; taken (marked read) unless peek; urgent: all but notes (those wait for a stop);
+    ids: only these (what was handed over by another way). Two hooks at once: each takes what it renamed."""
     d = os.path.dirname(path('mail', name, 'new', 'x'))
     out = []
     for f in sorted(os.listdir(d)):
@@ -388,7 +431,7 @@ def take(name, peek=False, urgent=False):
             continue
         src = os.path.join(d, f)
         m = get(src)
-        if not m or (urgent and m.get('kind', 'fyi') == 'fyi'):
+        if not m or (urgent and m.get('kind', 'fyi') == 'fyi') or (ids is not None and m.get('id') not in ids):
             continue
         if not peek:
             try:
@@ -406,7 +449,7 @@ def hhmm(t):
 def mail_text(me, mails):
     lines = [f'[amail] {len(mails)} new message{"s" if len(mails) > 1 else ""} for you ({me}):']
     for m in mails:
-        tag = {'question': ' [question]', 'block': ' [blocking you]'}.get(m.get('kind'), '')
+        tag = {'question': ' [question]', 'block': ' [blocking you]', 'wake': ' [for you to act on now]'}.get(m.get('kind'), '')
         lines.append(f'- from {m["from"]} at {hhmm(m["at"])}{" (to all)" if m.get("all") else ""}{tag}: {m["text"]}')
     lines.append(f'Reply with: amail --as {me} send <name> "..."  (who is doing what: amail status)')
     return '\n'.join(lines)
@@ -725,6 +768,18 @@ def news(me, urgent=False, take=True, only=None):
         meta = get(os.path.join(HOME, 'channels', key, 'meta.json')) or {'key': key, 'name': key}
         out += [(meta, p) for p in hit]
     return out
+
+
+def news_taken(me, items):
+    """Posts handed to ME by another way (a wake): marked so, each by its id, as a taking mid-work marks them."""
+    by = {}
+    for meta, p in items:
+        by.setdefault(meta['key'], []).append(p['id'])
+    for key, ids in by.items():
+        f = seen_file(key, me)
+        s = get(f)
+        s = s if isinstance(s, dict) and isinstance(s.get('at'), (int, float)) else {'at': time.time(), 'ids': []}
+        put(f, {**s, 'ids': (list(s.get('ids') or []) + ids)[-600:]})
 
 
 def news_text(me, items, intro=True, budget=True):
@@ -1097,7 +1152,8 @@ def on_event(kind, ev, p):
     intro = ''
     if ev == 'start':
         intro = (f'[amail] You are "{me}" on amail, the mailbox shared by the Claude Code, Codex and Cursor sessions on this '
-                 f'machine; mail to you shows up here. Send: amail --as {me} send <name|all> "text". Who is doing what: '
+                 f'machine; mail to you shows up here. Send: amail --as {me} send <name|all> "text" (a note waits for the reader\'s '
+                 f'next turn; add --wake when it should act on it now, as a question does by itself). Who is doing what: '
                  f'amail status (NAME: its report). To be told when another session stops or gets somewhere: amail wait NAME '
                  f'[--until "what"]. Those waiting on you are told when you stop; no DONE notes needed. The person: send user. '
                  f'Your project has a channel every session on it reads: amail post "..." tells them all (what you changed, '
@@ -1488,6 +1544,21 @@ def selftest():
         stop = ev('codex', 'Stop', last_assistant_message='Merged abc123.')
         assert stop['decision'] == 'block' and 'one more' in stop['reason']
         assert ev('codex', 'Stop') is None and board()['codex-456789']['state'] == 'idle' and board()['codex-456789']['said'] == 'Merged abc123.'
+        # what a sender is told: when the reader gets it. A note to an idle one waits; it can be made one to wake it for
+        assert 'a note waits for its next turn' in sent_text('codex-456789', send('lead', 'codex-456789', 'merged, by the way'), 'fyi')
+        assert 'nobody wakes it' in sent_text('codex-456789', ['codex-456789'], 'wake') and sent_text('nobody', [], 'fyi') == 'nobody to send to'
+        assert 'not on the board yet' in sent_text('newcomer', ['newcomer'], 'fyi') and sent_text('all', ['a', 'b'], 'fyi') == 'sent to a, b'
+        assert [m['kind'] for m in take('codex-456789', peek=True)] == ['fyi'] and take('codex-456789', peek=True, urgent=True) == []
+        assert wake_mail('lead', 'codex-456789') == 1 and wake_mail('lead', 'codex-456789') == 0 and wake_mail('other', 'codex-456789') == 0
+        got = take('codex-456789', peek=True, urgent=True)
+        assert [m['kind'] for m in got] == ['wake'] and 'for you to act on now' in mail_text('codex-456789', got)
+        assert take('codex-456789', ids={'no-such'}) == [] and len(take('codex-456789', ids={got[0]['id']})) == 1 and not take('codex-456789')
+        ev('codex', 'PreToolUse', tool_name='Bash')
+        assert 'handed over when its turn ends' in sent_text('codex-456789', ['codex-456789'], 'fyi')
+        assert sent_text('codex-456789', ['codex-456789'], 'wake').endswith('handed over at its next step')
+        assert send('lead', 'codex-456789', 'take the release over', 'wake') and 'take the release over' in ev('codex', 'PostToolUse')['hookSpecificOutput']['additionalContext']
+        assert kind_of('do it', 'wake') == 'wake' and kind_of('do it') == 'fyi' and kind_of('ok?') == 'question'
+        assert ev('codex', 'Stop') is None and board()['codex-456789']['state'] == 'idle'
         ev('cursor', 'sessionStart', conversation_id='abcdef12-0000')
         send('lead', 'cursor-abcdef', 'hi')
         assert ev('cursor', 'beforeSubmitPrompt', conversation_id='abcdef12-0000') is None
@@ -1529,8 +1600,11 @@ def selftest():
         join('cursor-abcdef', key)
         post('lead', key, 'heads up: main moves')
         assert news('codex-456789', urgent=True) == []  # (a plain post waits for a turn's start)
+        seen = news('codex-456789', take=False)  # (handed over by another way, a wake: marked by its id, and not handed over again)
+        post('lead', key, 'and one a moment later')
+        news_taken('codex-456789', seen)
         got = [p['text'] for _, p in news('codex-456789')]
-        assert got == ['heads up: main moves'] and news('codex-456789') == [], got
+        assert [p['text'] for _, p in seen] == ['heads up: main moves'] and got == ['and one a moment later'] and news('codex-456789') == [], got
         put(path('board', 'helper.json'), {'name': 'helper', 'kind': 'claude'})
         m = post('lead', key, '请@codex-456789看一下 the release, @helper too; not @dataclass.')
         assert m['to'] == ['codex-456789', 'helper']  # (only sessions' names call)
@@ -2437,7 +2511,15 @@ def main(argv):
             print(ask(me, a[0], ' '.join(words)))
         else:
             sent = send(me, a[0], ' '.join(words), kind)
-            print(f'sent to {", ".join(sent)}' if sent else 'nobody to send to')
+            print(sent_text(a[0], sent, kind_of(' '.join(words), kind)))
+        return 0
+    if c == 'wake':
+        if not a:
+            sys.exit('usage: amail wake NAME')
+        n = wake_mail(me, a[0])
+        print(f'{n} unread note{"s" if n > 1 else ""} of yours to {a[0]}: for it to act on now'
+              + ('; sturnus wakes it when idle' if deck() else ' (sturnus is not running: it reads them at its next step or turn)')
+              if n else f'nothing of yours waits unread for {a[0]}: it has read what you sent')
         return 0
     if c == 'inbox':
         mails = take(me, peek='--peek' in a)

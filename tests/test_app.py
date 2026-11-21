@@ -871,5 +871,100 @@ class Tidying(unittest.TestCase):
         self.assertTrue(new_wait in shown and old_wait not in shown and old_wait in [x['id'] for x in A.tasks_query(closed=True, archived=True)])
 
 
+
+class Waking(unittest.TestCase):
+    """Mail that should not wait wakes an idle reader, is tried again while it stays unread, and is the person's to ask for."""
+
+    def setUp(self):
+        self.old = (S.DRY, S.in_view, S.A.wake_codex)
+        S.DRY, self.seen, self.queued, self.queue_ok = False, False, [], True
+        S.in_view = lambda loc: self.seen
+        S.A.wake_codex = lambda e, text: (self.queued.append((e['session'], text)) or self.queue_ok, '')
+
+    def tearDown(self):
+        S.DRY, S.in_view, S.A.wake_codex = self.old
+
+    def deck(self, *rows):
+        d = type('D', (), {n: getattr(S.Deck, n) for n in ('wake', 'wake_how', 'wake_for', 'mind', 'act', 'WAKE_GAP', 'WAKE_REST', 'WAKE_MAX')})()
+        d.all, d.typed, d.notes, d.can_type = list(rows), [], [], True
+        d.type_in = lambda s, text, enter: (d.typed.append(s['name']) or d.can_type, '')
+        d.note = lambda text, ok=True: d.notes.append(text)
+        d.find = lambda sid: next((x for x in d.all if x['id'] == sid), None)
+        d.prev, d.stopped, d.waking, d.checked, d.lock_seen = {}, {}, {}, {}, None
+        d.call_in, d.watch, d.route = (lambda: None), (lambda *a: None), (lambda r, ss: [])
+        return d
+
+    @staticmethod
+    def row(name, state='idle', kind='claude', loc=PANE, **more):
+        return {'id': f'{kind}:{name}', 'name': name, 'kind': kind, 'state': state, 'session': f'conv-{name}', 'loc': loc, 'prompting': state == 'waiting', **more}
+
+    def test_who_is_woken_and_why_not(self):
+        d = self.deck(self.row('wk-idle'), self.row('wk-busy', 'working'), self.row('wk-menu', 'waiting'), self.row('wk-far', loc=None), self.row('wk-left', 'ended'))
+        why = lambda n, **k: d.wake_how(n, **k)
+        self.assertEqual([why(n) for n in ('wk-none', 'wk-left', 'wk-busy', 'wk-menu', 'wk-far')],
+                         [(False, 'gone'), (False, 'gone'), (False, 'working'), (False, 'prompt'), (False, 'unreachable')])
+        self.assertEqual(d.typed, [], 'none of those was typed into')
+        self.seen = True  # (its pane is on a screen: someone there may be typing)
+        self.assertEqual((why('wk-idle'), d.typed), ((False, 'in view'), []))
+        self.assertEqual((why('wk-idle', asked=True), d.typed), ((True, ''), ['wk-idle']), 'the person asked for it: typed all the same')
+        self.seen, d.can_type = False, False
+        self.assertEqual(why('wk-idle'), (False, 'failed'))
+        d.can_type = True
+        self.assertEqual((d.wake('wk-idle'), d.wake('wk-busy')), (True, False))
+
+    def test_a_codex_thread_keeps_its_mail_when_the_queue_fails(self):
+        A, d = S.A, self.deck(self.row('wk-cx', kind='codex', loc=None))
+        A.send('lead', 'wk-cx', 'a note, by the way', 'fyi')
+        A.send('lead', 'wk-cx', 'which branch?')
+        self.queue_ok = False
+        self.assertEqual((d.wake_how('wk-cx'), len(A.take('wk-cx', peek=True))), ((False, 'failed'), 2), 'not handed over: it still waits')
+        self.queue_ok = True
+        self.assertEqual((d.wake_how('wk-cx'), A.take('wk-cx', peek=True)), ((True, ''), []))
+        self.assertTrue(self.queued[-1][0] == 'conv-wk-cx' and 'which branch?' in self.queued[-1][1] and 'a note, by the way' in self.queued[-1][1])
+        n = len(self.queued)
+        self.assertEqual((d.wake_how('wk-cx'), len(self.queued)), ((True, ''), n), 'nothing waits: nothing queued')
+
+    def test_waking_is_tried_again_while_the_mail_waits(self):
+        d = self.deck(self.row('wk-again'))
+        self.seen = True
+        self.assertEqual((d.wake_for('wk-again', 1000), d.typed), (False, []))  # (on a screen: not this time)
+        self.seen = False
+        self.assertEqual((d.wake_for('wk-again', 1010), d.typed), (False, []), 'not sooner than the gap')
+        self.assertEqual((d.wake_for('wk-again', 1021), d.typed), (True, ['wk-again']))
+        self.assertEqual((d.wake_for('wk-again', 1100), len(d.typed)), (False, 1), 'it has two minutes to take its mail')
+        self.assertEqual((d.wake_for('wk-again', 1142), len(d.typed)), (True, 2), 'still unread: once more')
+        t = 1142
+        for _ in range(d.WAKE_MAX - 2):
+            t += d.WAKE_REST + 1
+            self.assertTrue(d.wake_for('wk-again', t))
+        t += d.WAKE_REST + 1
+        self.assertEqual((d.wake_for('wk-again', t), d.wake_for('wk-again', t + 60), len(d.typed), len(d.notes)), (False, False, d.WAKE_MAX, 1), 'no more this hour, said once')
+        self.assertEqual((d.wake_for('wk-again', t + 3700), len(d.typed)), (True, d.WAKE_MAX + 1), 'an hour on, it may be woken again')
+
+    def test_a_note_wakes_nobody_until_it_is_made_one_to_act_on(self):
+        A, d = S.A, self.deck(self.row('wk-note'), self.row('wk-ask'))
+        A.send('lead', 'wk-note', 'merged, by the way')
+        d.mind()
+        self.assertEqual(d.typed, [], 'a note waits for its next turn')
+        A.send('lead', 'wk-ask', 'please take the release over', 'wake')
+        d.mind()
+        self.assertEqual(d.typed, ['wk-ask'])
+        self.assertEqual(A.wake_mail('lead', 'wk-note'), 1)
+        d.mind()
+        self.assertEqual(d.typed, ['wk-ask', 'wk-note'], 'the one just woken rests; the note made urgent wakes its reader')
+        for n in ('wk-note', 'wk-ask'):
+            A.take(n)
+
+    def test_the_person_wakes_one_from_its_page(self):
+        d = self.deck(self.row('wk-page'), self.row('wk-work', 'working'))
+        self.seen = True
+        ok, msg = d.act('wake', {'id': 'claude:wk-page'})
+        self.assertTrue(ok and msg and d.typed == ['wk-page'], (ok, msg, d.typed))
+        self.assertEqual(d.wake_for('wk-page', time.time() + 5), False, 'the deck does not wake it again right after')
+        ok, msg = d.act('wake', {'id': 'claude:wk-work'})
+        self.assertTrue(not ok and msg and d.typed == ['wk-page'])
+        self.assertEqual(d.act('wake', {'id': 'claude:nobody'})[0], False)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -192,6 +192,8 @@ amail topics
 
 Ordinary posts reach the project's sessions at the start of their next turn; on a busy channel a turn starts with what calls the session, your posts and its discussions in full, the newest of the rest, and a count of the others. `@NAME` calls a session while it works and can wake it when idle; `@all` calls everyone on the channel. On a channel of more than 12 sessions a session's `@all` wakes nobody and reaches them at their next turn; yours still calls everyone. Invited discussions close after 24 posts by default, or when explicitly closed. The project's **Channels** tab shows the same discussion. Run `amail help` for all commands.
 
+Mail between two sessions is `amail send NAME "..."`. A plain note waits for the reader: it gets it when its turn ends, or, when it is idle, at its next turn, which may be a long time. A question, a block, or a note sent with `--wake` does not wait: it reaches a working session at its next step and wakes an idle one, and the wake is tried again while the mail stays unread (the session may have been at a prompt, or on your screen, the first time). The sender is told which of these it is, and `amail wake NAME` turns notes already sent into ones to act on now. On the page, a session with unread mail shows a count on its row, and its page says when it will read it, with **Wake it** for an idle one.
+
 ## Answering from a phone
 
 `/api/phone/summary` and `/api/phone/inbox` list what waits on you: a session stopped at a permission prompt, at a question, or waiting for your words. `POST /api/phone/actions/<id>` with `{"choice": …, "text": …}` answers one of them, with the same sign-in as the page, so a phone app that opens the page can also list and answer them on its own screen.

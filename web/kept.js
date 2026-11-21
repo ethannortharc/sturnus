@@ -123,8 +123,9 @@ function kRow(k, two) {
   const [st] = kStand(k), s = kLive(k), on = route.kept === k.id, sp = kSpace(k.space);
   const need = ['waiting', 'asking', 'blocked', 'review'].includes(st);
   const when = need ? { blocked: tt('卡住', 'Stuck'), review: tt('待验收', 'Review') }[st] || tt('等你', 'You') : st === 'working' ? tt('工作中', 'Working') : ago(s ? s.at || s.since : k.at);
+  const un = s && s.unread || 0;  // (mail from other sessions it has not read yet: it waits for its next step or turn)
   return `<a class="ks-row${on ? ' on' : ''}${two ? ' two' : ''}" href="${kHref(k)}" title="${esc(kTitle(k))} · ${esc(FULL[k.kind] || k.kind)} · ${esc(kStand(k)[1])}">${mark(k.kind, st, 'xs')}
-    <span class="t"><span>${esc(kTitle(k))}</span>${two ? `<small>${esc(sp ? sp.name : tt('未归入工作区', 'In no workspace'))}</small>` : ''}</span><span class="w${need ? ' need' : st === 'working' ? ' work' : ''}">${esc(when)}</span></a>`;
+    <span class="t"><span>${esc(kTitle(k))}</span>${two ? `<small>${esc(sp ? sp.name : tt('未归入工作区', 'In no workspace'))}</small>` : ''}</span>${un ? `<span class="ks-mail" title="${esc(tt(`有 ${un} 条消息它还没读`, `${un} message${un > 1 ? 's' : ''} it has not read yet`))}">${I.mail}${un}</span>` : ''}<span class="w${need ? ' need' : st === 'working' ? ' work' : ''}">${esc(when)}</span></a>`;
 }
 function kGroup(key, label, lead, rows, plus = '', two = false) {
   rows = rows.slice().sort(kSorter());
@@ -147,7 +148,7 @@ function kDrawSide() {
   const off = Date.now() - lastOk > 6000;
   const narrow = sideOff && !phone();
   $('#ks').classList.toggle('strip', narrow);  // (not 'rail': that is the old frame's, and hidden here)
-  draw('ks', [route, narrow, KV.view, KV.sort, KV.arr, KV.sort === 'at' && kept.map(kAt), [...KV.open], [...KV.shut], KV.places, kept.map(k => [k.id, kTitle(k), k.space, k.pinned, k.live, k.kind, kStand(k)[0]]), spaces.map(w => [w.id, w.name, w.places.length]),
+  draw('ks', [route, narrow, KV.view, KV.sort, KV.arr, KV.sort === 'at' && kept.map(kAt), [...KV.open], [...KV.shut], KV.places, kept.map(k => [k.id, kTitle(k), k.space, k.pinned, k.live, k.kind, kStand(k)[0], (kLive(k) || {}).unread || 0]), spaces.map(w => [w.id, w.name, w.places.length]),
     need, bNew, bCalls, tNeed, qReady, off, S.version, Math.floor(Date.now() / 60000), LANG, document.documentElement.dataset.theme], () => {
     const at = route.name, more = ['talk', 'reports', 'queue', 'plans'], plans = (S.plans || []).filter(x => x.live).length;
     const here = at === 'space' ? route.key : at === 'session' ? ((kOf(route.kept) || {}).space || '~none') : '';

@@ -3039,21 +3039,61 @@ class Deck:
         if A.send('sturnus', to, text, kind):
             self.wake(to)
 
-    def wake(self, name):
-        """An idle session is told it has mail or a call on a channel: a Codex thread by its queue, else a line typed into
-        its pane (its hook then hands it over). Never one at a prompt of the person's, or at work (its next step brings it)."""
+    def wake(self, name, asked=False):
+        """An idle session is told it has mail or a call on a channel; whether it was. See wake_how."""
+        return self.wake_how(name, asked)[0]
+
+    def wake_how(self, name, asked=False):
+        """An idle session told it has mail or a call on a channel: a Codex thread by its queue, else a line typed into
+        its pane (its hook then hands it over). Never one at a prompt of the person's, or at work (its next step brings
+        it), nor one whose pane is on a screen (someone there may be typing) — unless the person asked for it, from the
+        page. Returns (whether it was woken, why not: gone, working, prompt, unreachable, in view, failed)."""
         s = next((x for x in getattr(self, 'all', []) if x['name'] == name and not x.get('unknown')), None)
-        if not s or s['state'] != 'idle' or s.get('prompting'):
-            return False
+        if not s or s['state'] in ('gone', 'ended'):
+            return False, 'gone'
+        if s.get('prompting'):
+            return False, 'prompt'
+        if s['state'] != 'idle':
+            return False, 'working'
         if DRY:
             self.note(tx(f'（试用，没有真的叫醒）{name}', f'(trial, nobody was really woken) {name}'))
-            return True
+            return True, ''
         if s['kind'] == 'codex' and s.get('session'):
-            mails, items = A.take(name), A.news(name)
+            # (looked at, queued, and only then taken: what a queue that fails did not hand over still waits for it)
+            mails, items = A.take(name, peek=True), A.news(name, take=False)
             text = '\n'.join(x for x in [mails and A.mail_text(name, mails), items and A.news_text(name, items)] if x)
-            return not text or DRY or A.wake_codex({'session': s['session']}, text)[0]
-        if s.get('loc') and not in_view(s['loc']):  # (someone at that pane may be typing: its next turn brings it)
-            return self.type_in(s, '[amail] 有新消息', True)[0]
+            if text and not A.wake_codex({'session': s['session']}, text)[0]:
+                return False, 'failed'
+            A.take(name, ids={m.get('id') for m in mails})
+            A.news_taken(name, items)
+            return True, ''
+        if not s.get('loc'):
+            return False, 'unreachable'
+        if not asked and in_view(s['loc']):
+            return False, 'in view'
+        return (True, '') if self.type_in(s, '[amail] 有新消息', True)[0] else (False, 'failed')
+
+    WAKE_GAP, WAKE_REST, WAKE_MAX = 20, 120, 6
+
+    def wake_for(self, name, now):
+        """Mail that should not wait is unread: its reader is woken, and woken again while it stays unread — the first
+        time it may have been at a prompt, on a screen, or in a group with no terminal attached. Tried no more often than
+        every 20 s; after a wake that went through, not for two minutes (its hook has the mail by then, unless the line
+        never reached its agent); and at most six that went through in an hour, so nothing is typed on and on."""
+        w = self.waking.setdefault(name, {'try': 0, 'ok': [], 'said': 0})
+        w['ok'] = [t for t in w['ok'] if now - t < 3600]
+        if now - w['try'] < self.WAKE_GAP or (w['ok'] and now - w['ok'][-1] < self.WAKE_REST):
+            return False
+        if len(w['ok']) >= self.WAKE_MAX:
+            if w['said'] < w['ok'][0]:
+                w['said'] = now
+                self.note(tx(f'{name} 这一小时被叫醒了 {self.WAKE_MAX} 次，信还是没读，先不再叫它了：去它的终端看一眼',
+                             f'{name} was woken {self.WAKE_MAX} times this hour and its mail is still unread; not waking it again for now: have a look at its terminal'), False)
+            return False
+        w['try'] = now
+        if self.wake(name):
+            w['ok'].append(now)
+            return True
         return False
 
     def call_in(self):
@@ -3100,7 +3140,7 @@ class Deck:
                                 pass
 
     def mind_loop(self):
-        self.prev, self.stopped, self.woken, self.checked, self.lock_seen = {}, {}, set(), {}, None
+        self.prev, self.stopped, self.waking, self.checked, self.lock_seen = {}, {}, {}, {}, None
         while True:
             try:
                 self.mind()
@@ -3119,13 +3159,12 @@ class Deck:
             w = A.get(f)
             if w:
                 self.watch(f, w, ss.get(w['on']), now)
-        for box in glob.glob(A.path('mail', '*', 'new')):  # (a question to an idle session wakes it)
+        for box in glob.glob(A.path('mail', '*', 'new')):  # (mail that should not wait — a question, a block, one sent to wake — wakes an idle reader)
             name = os.path.basename(os.path.dirname(box))
-            for f in glob.glob(os.path.join(box, '*.json')):
-                m = A.get(f) or {}
-                if m.get('kind', 'fyi') != 'fyi' and m.get('id') not in self.woken and name != ME_NAME:
-                    self.woken.add(m.get('id'))
-                    self.wake(name)
+            if name != ME_NAME and any((A.get(f) or {}).get('kind', 'fyi') != 'fyi' for f in glob.glob(os.path.join(box, '*.json'))):
+                self.wake_for(name, now)
+        if len(self.waking) > 400:
+            self.waking = {n: w for n, w in self.waking.items() if now - w['try'] < 3600}
         for f in sorted(glob.glob(A.path('route', '*.json'))):  # (a note to all: to the sessions it concerns)
             r = A.get(f)
             os.remove(f)
@@ -3502,6 +3541,19 @@ class Deck:
             if not s:
                 return False, tx('找不到这个会话', 'Session not found')
             return go_to(s.get('loc'), body.get('via'))
+        if what == 'wake':  # (the person's word, from the session's page: its unread mail is not to wait for its next turn)
+            if not s:
+                return False, tx('找不到这个会话', 'Session not found')
+            ok, why = self.wake_how(s['name'], asked=True)
+            if ok:
+                getattr(self, 'waking', {}).setdefault(s['name'], {'try': 0, 'ok': [], 'said': 0})['ok'].append(time.time())  # (the deck's own waking rests after it too)
+                return True, tx(f'已叫醒 {s["name"]}：它这就读信', f'Woke {s["name"]}: it reads its mail now')
+            return False, {
+                'gone': tx(f'{s["name"]} 已经退出了', f'{s["name"]} has exited'),
+                'working': tx(f'{s["name"]} 正在工作：要它马上处理的信下一步就读到，普通通知等它这一轮结束', f'{s["name"]} is at work: mail for it to act on now reaches it at its next step, a note when its turn ends'),
+                'prompt': tx(f'{s["name"]} 停在一个授权或选择提示上，这时往终端里打字会被当成回答：先去终端处理它', f'{s["name"]} is stopped at a permission or choice prompt, and typed text would answer it: handle that in its terminal first'),
+                'unreachable': tx(f'{s["name"]} 不在 Zellij 或 tmux 里，这里够不着它的终端：它下一次工作时读到', f'{s["name"]} is not in Zellij or tmux, so its terminal cannot be reached from here: it reads its mail when it next works'),
+            }.get(why) or tx(f'没能写进 {s["name"]} 的终端（它的组可能没有终端连着）', f'Could not type into the terminal of {s["name"]} (its group may have no terminal attached)')
         if what == 'send':
             to = s['name'] if s else body.get('to')
             text = (body.get('text') or '').strip()

@@ -1879,7 +1879,22 @@ function asksPanel(s) {
       <div class="ask-acts"><button class="btn" data-ask-done="${esc(x.id)}">${I.check}${t('已处理')}</button></div></div>`).join('')}${n ? '' : `
     <div class="hint">${t('现在没有等你确认的事。它要你确认的事会一直列在这里，直到你点「已处理」，或者它之后的总结看出你已经回应了。')}</div>`}</div>`;
 }
-function drawSay(s) { draw('say', [s.id, sayHow(s), s.state === 'working', S.voice && S.voice.on, sig.ov], () => { if ($('#sayRow')) $('#sayRow').innerHTML = sayRow(s); }); }
+function drawSay(s) { draw('say', [s.id, sayHow(s), s.state === 'working', S.voice && S.voice.on, sig.ov, s.unread || 0, s.state, s.kind, !!s.loc], () => { if ($('#sayRow')) $('#sayRow').innerHTML = sayRow(s); }); }
+// mail from other sessions that it has not read yet: when it will, and a way to wake it for it now
+function sayMail(s) {
+  const n = s.unread || 0;
+  if (!n) return '';
+  const what = tt(`有 ${n} 条消息它还没读`, `${n} message${n > 1 ? 's' : ''} it has not read yet`);
+  const st = s.state === 'working' ? 'working' : s.state === 'waiting' ? 'prompt' : s.state === 'idle' ? (s.kind === 'codex' || s.loc ? 'idle' : 'far') : 'gone';
+  if (st === 'gone') return '';
+  const when = {
+    working: tt('要它马上处理的，下一步就读到；普通通知等它这一轮结束。', 'What is for it to act on now reaches it at its next step; a note when its turn ends.'),
+    prompt: tt('它停在一个提示上，答完提示、接着工作时读到。', 'It is stopped at a prompt, and reads them once that is answered and it works again.'),
+    idle: tt('它空着，不会自己开始下一轮：普通通知要等你下次跟它说话。', 'It is idle and starts no turn by itself: a note waits until you next talk to it.'),
+    far: tt('它不在 Zellij 或 tmux 里，这里叫不醒它：等它下一次工作时读到。', 'It is not in Zellij or tmux, so it cannot be woken from here: it reads them when it next works.'),
+  }[st];
+  return `<div class="say-mail">${I.mail}<span><b>${what}</b>${when}</span>${st === 'idle' ? `<button class="btn" data-wake="${esc(s.id)}">${tt('叫醒它', 'Wake it')}</button>` : ''}</div>`;
+}
 // words for it: one way to send, which follows how it stands (as the deck's say_how)
 const SAY = {
   type: ['发到它的终端', '它空着：像你在它终端里敲一样，马上送到。'],
@@ -1896,7 +1911,7 @@ function sayRow(s) {
   const hint = busy ? tt('它正在做事：这句话现在就打进它的终端，它做完手上这一步就读到，不用等这一轮结束。', 'It is at work: this goes into its terminal now, and it reads it once it is through with the step in hand, not at the end of its turn.') : t(SAY[how][1]);
   return `${micBtn('rText')}<button class="btn" data-act="draft">${I.spark}${t('帮我起草')}</button><span class="sp"></span>
     ${how === 'menu' ? `<button class="btn dark" data-tab-go="term" ${webOk(s) ? '' : 'disabled'}>${I.enter}${label}</button>` : `<button class="btn primary" data-act="say" ${how === 'gone' ? 'disabled' : ''}>${how === 'type' ? I.enter : how === 'mail' ? I.mail : I.arrow}${label}</button>`}
-    <div class="say-hint">${hint}</div>`;
+    ${sayMail(s)}<div class="say-hint">${hint}</div>`;
 }
 // which project it counts as: as found (its folder, the files it works on), or the person's word
 function projSelect(s) {
@@ -2767,6 +2782,7 @@ document.addEventListener('click', async e => {
   if ((el = q('[data-stop]'))) { if (confirm(t('停止这个子 agent？它和它启动的进程都会被结束。'))) post('stop', { id: el.dataset.stop }); return; }
   if ((el = q('[data-mreply]'))) { const f = document.querySelector(`.m-reply[data-mid="${CSS.escape(el.dataset.mreply)}"]`); if (f) { f.hidden = !f.hidden; if (!f.hidden) f.querySelector('input').focus(); } return; }
   if ((el = q('[data-mread]'))) { post('mail_read', { mid: el.dataset.mread }); return; }
+  if ((el = q('[data-wake]'))) { el.disabled = true; post('wake', { id: el.dataset.wake }); return; }
   if ((el = q('[data-ask-done]'))) { post('ask_done', { ask: el.dataset.askDone }); return; }
   if ((el = q('[data-unlock]'))) { if (confirm(t('释放这把推送锁？在等它的会话会收到通知。'))) post('unlock', { key: el.dataset.unlock }); return; }
   if ((el = q('[data-quiet]'))) { toggle(quietOpen, 'deck.quietOpen', el.dataset.quiet); return; }
