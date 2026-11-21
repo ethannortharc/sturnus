@@ -169,7 +169,7 @@ const boardOf = k => (S.boards || {})[k] || null;
 const live = s => !s.stale && !['gone', 'ended'].includes(s.state);
 
 // ---------- language: the menus and navigation in Chinese or English (the Chinese is the key) ----------
-const EN = { "任务": "Tasks", "任务：每个项目在推进的事": "Tasks: what each project is working through", "每个项目在推进的事": "What each project is working through", "总览": "Overview", "总览：所有工作区": "Overview: all workspaces", "讨论：所有讨论区": "Channels: all of them", "消息：会话之间的信": "Messages: mail between sessions", "报告：每个会话的简报": "Reports: a brief per session", "排队：等会话空了再发": "Queue: sent once a session is free", "所有工作区（还有 {n} 个安静的）": "All workspaces ({n} more, quiet)", "所有工作区": "All workspaces", "不在工作区里的会话": "Sessions in no workspace", "不在工作区里": "In no workspace", "（再点一下：收起或展开旁边那栏）": " (click again: fold or unfold the column)", "目录不在任何工作区里的会话": "sessions whose folder is in no workspace", "仪表盘": "Dashboard", "项目": "Projects", "工作项": "Work items", "讨论区": "Channel", "终端": "Terminal", "讨论": "Channels", "每个工作区、每个项目一个讨论区": "one per workspace and per project", "{name} 工作区": "{name} workspace", "消息": "Messages", "会话之间的信，和写给你的": "mail between sessions, and to you", "会话之间": "Between sessions", "与你有关": "To and from you", "报告": "Reports", "每个会话的简报": "a brief per session", "排队": "Queue", "等会话空了再发的事": "things to send once a session is free", "可以发了": "Ready to send", "排着": "Waiting", "已发出": "Sent", "不用发了": "Dropped", "{n} 个 · 有会话的在前": "{n} · busy ones first", "筛选工作区": "Filter workspaces", "有会话": "With sessions", "安静": "Quiet", "{n} 个会话": "{n} sessions", "没有这个名字的工作区": "No workspace by that name", "{a} 个工作区 · {b} 个会话": "{a} workspaces · {b} sessions", "等你": "Needs you", "工作中": "Working", "空闲": "Idle", "卡住": "Blocked", "待验收": "To review", "已离开": "Gone", "已结束": "Ended", "一天以上没动静 {n} 个": "{n} quiet for a day", "现在没有会话": "No sessions now", "工作区顶层": "workspace top", "概览": "Overview", "对话": "Conversation", "在终端里打开": "Open in terminal", "进入": "Enter", "让连着这个组的终端切到它": "Switch the attached terminal to it", "会话": "Sessions", "{n} 条新": "{n} new", "在这里新建会话": "New session here", "收起旁边那栏（⌘B）": "Fold the column (⌘B)", "展开旁边那栏（⌘B）": "Unfold the column (⌘B)", "设置": "Settings", "助手与模型": "Assistant & models", "语音输入": "Voice input", "显示": "Display", "访问": "Access", "关于": "About", "这台机器上的显示偏好。": "Display preferences on this machine.", "主题": "Theme", "跟随系统，或固定浅色、深色。": "Follow the system, or always light or dark.", "跟随系统": "System", "浅色": "Light", "深色": "Dark", "工作区图标": "Workspace marks", "最左边那条栏里工作区的颜色。": "The color of workspaces on the rail.", "石墨": "Graphite", "暗彩": "Muted colors", "石墨加色条": "Graphite with a stripe", "页面配色": "Page colors", "外框和中间页面的颜色，浅色、深色主题都适用。": "The colors of the frame and of the page inside it, in light and dark.", "暖灰": "Warm grey", "冷灰": "Cool grey", "深色外框": "Dark frame", "窗格标题": "Pane titles", "用「状态 · 会话名 · 在做的事」做每个 agent 窗格的标题，在 Zellij 或 tmux 里一眼认出是哪个（tmux 要开 pane-border-status 才看得到）。": "Title each agent pane \"state · name · what it does\", to tell them apart in Zellij or tmux (tmux shows them with pane-border-status).", "语言": "Language", "菜单和导航用的语言；页面内容暂时还是中文。": "The language of menus and navigation; page content is in Chinese for now.", "agent 的工作语言": "Agents’ working language", "总结、简报、助手的回答、帮你起草的话用哪种语言写。已经写好的，等它们下次更新时换过来。": "The language summaries, reports, the assistant’s answers and drafts are written in. Ones already written change at their next update.", "搜索工作区、项目、会话": "Search…", "新建会话": "New session", "新建会话（N）": "New session (N)", "实时": "Live", "连接中断，重试中": "Disconnected, retrying", "与本机 sturnus 服务的连接": "Connection to Sturnus on this machine", "主题：跟随系统": "Theme: system", "主题：浅色": "Theme: light", "主题：深色": "Theme: dark", "助手：问各个会话的事（⌘/Ctrl+J）": "Assistant: ask about the sessions (⌘/Ctrl+J)", "工作区、项目、会话的名字，任务，目录……": "Names of workspaces, projects, sessions; tasks; folders…", "选择": "select", "打开": "open", "进终端": "terminal", "关闭": "close", "没有匹配的工作区、项目或会话": "No matching workspace, project or session", "工作区 · {p}": "Workspace · {p}", "项目 · {w}": "Project · {w}", "总结模型出错，去设置里看看": "The summary model failed: see Settings", "总结：{m}": "Summaries: {m}", " · 正在更新": " · updating", "刷新于 {t}": "Refreshed {t}", "刚刚": "just now", "{t}前": "{t} ago", "{n} 分钟": "{n} min", "{n} 小时": "{n} h", "{n} 天": "{n} d", "工作区与全局入口": "Workspaces and global places", "Sturnus 总览": "Sturnus overview", "搜索会话": "Search" };
+const EN = { "插件": "Add-ons", "任务": "Tasks", "任务：每个项目在推进的事": "Tasks: what each project is working through", "每个项目在推进的事": "What each project is working through", "总览": "Overview", "总览：所有工作区": "Overview: all workspaces", "讨论：所有讨论区": "Channels: all of them", "消息：会话之间的信": "Messages: mail between sessions", "报告：每个会话的简报": "Reports: a brief per session", "排队：等会话空了再发": "Queue: sent once a session is free", "所有工作区（还有 {n} 个安静的）": "All workspaces ({n} more, quiet)", "所有工作区": "All workspaces", "不在工作区里的会话": "Sessions in no workspace", "不在工作区里": "In no workspace", "（再点一下：收起或展开旁边那栏）": " (click again: fold or unfold the column)", "目录不在任何工作区里的会话": "sessions whose folder is in no workspace", "仪表盘": "Dashboard", "项目": "Projects", "工作项": "Work items", "讨论区": "Channel", "终端": "Terminal", "讨论": "Channels", "每个工作区、每个项目一个讨论区": "one per workspace and per project", "{name} 工作区": "{name} workspace", "消息": "Messages", "会话之间的信，和写给你的": "mail between sessions, and to you", "会话之间": "Between sessions", "与你有关": "To and from you", "报告": "Reports", "每个会话的简报": "a brief per session", "排队": "Queue", "等会话空了再发的事": "things to send once a session is free", "可以发了": "Ready to send", "排着": "Waiting", "已发出": "Sent", "不用发了": "Dropped", "{n} 个 · 有会话的在前": "{n} · busy ones first", "筛选工作区": "Filter workspaces", "有会话": "With sessions", "安静": "Quiet", "{n} 个会话": "{n} sessions", "没有这个名字的工作区": "No workspace by that name", "{a} 个工作区 · {b} 个会话": "{a} workspaces · {b} sessions", "等你": "Needs you", "工作中": "Working", "空闲": "Idle", "卡住": "Blocked", "待验收": "To review", "已离开": "Gone", "已结束": "Ended", "一天以上没动静 {n} 个": "{n} quiet for a day", "现在没有会话": "No sessions now", "工作区顶层": "workspace top", "概览": "Overview", "对话": "Conversation", "在终端里打开": "Open in terminal", "进入": "Enter", "让连着这个组的终端切到它": "Switch the attached terminal to it", "会话": "Sessions", "{n} 条新": "{n} new", "在这里新建会话": "New session here", "收起旁边那栏（⌘B）": "Fold the column (⌘B)", "展开旁边那栏（⌘B）": "Unfold the column (⌘B)", "设置": "Settings", "助手与模型": "Assistant & models", "语音输入": "Voice input", "显示": "Display", "访问": "Access", "关于": "About", "这台机器上的显示偏好。": "Display preferences on this machine.", "主题": "Theme", "跟随系统，或固定浅色、深色。": "Follow the system, or always light or dark.", "跟随系统": "System", "浅色": "Light", "深色": "Dark", "工作区图标": "Workspace marks", "最左边那条栏里工作区的颜色。": "The color of workspaces on the rail.", "石墨": "Graphite", "暗彩": "Muted colors", "石墨加色条": "Graphite with a stripe", "页面配色": "Page colors", "外框和中间页面的颜色，浅色、深色主题都适用。": "The colors of the frame and of the page inside it, in light and dark.", "暖灰": "Warm grey", "冷灰": "Cool grey", "深色外框": "Dark frame", "窗格标题": "Pane titles", "用「状态 · 会话名 · 在做的事」做每个 agent 窗格的标题，在 Zellij 或 tmux 里一眼认出是哪个（tmux 要开 pane-border-status 才看得到）。": "Title each agent pane \"state · name · what it does\", to tell them apart in Zellij or tmux (tmux shows them with pane-border-status).", "语言": "Language", "菜单和导航用的语言；页面内容暂时还是中文。": "The language of menus and navigation; page content is in Chinese for now.", "agent 的工作语言": "Agents’ working language", "总结、简报、助手的回答、帮你起草的话用哪种语言写。已经写好的，等它们下次更新时换过来。": "The language summaries, reports, the assistant’s answers and drafts are written in. Ones already written change at their next update.", "搜索工作区、项目、会话": "Search…", "新建会话": "New session", "新建会话（N）": "New session (N)", "实时": "Live", "连接中断，重试中": "Disconnected, retrying", "与本机 sturnus 服务的连接": "Connection to Sturnus on this machine", "主题：跟随系统": "Theme: system", "主题：浅色": "Theme: light", "主题：深色": "Theme: dark", "助手：问各个会话的事（⌘/Ctrl+J）": "Assistant: ask about the sessions (⌘/Ctrl+J)", "工作区、项目、会话的名字，任务，目录……": "Names of workspaces, projects, sessions; tasks; folders…", "选择": "select", "打开": "open", "进终端": "terminal", "关闭": "close", "没有匹配的工作区、项目或会话": "No matching workspace, project or session", "工作区 · {p}": "Workspace · {p}", "项目 · {w}": "Project · {w}", "总结模型出错，去设置里看看": "The summary model failed: see Settings", "总结：{m}": "Summaries: {m}", " · 正在更新": " · updating", "刷新于 {t}": "Refreshed {t}", "刚刚": "just now", "{t}前": "{t} ago", "{n} 分钟": "{n} min", "{n} 小时": "{n} h", "{n} 天": "{n} d", "工作区与全局入口": "Workspaces and global places", "Sturnus 总览": "Sturnus overview", "搜索会话": "Search" };
 Object.assign(EN, {
 "你": "You",
 "还认不出在做什么": "Can’t tell yet what it is doing",
@@ -2458,6 +2458,29 @@ function modelBlock(role, title, what) {
     <div class="result" id="res-${role}"></div></div>`;
 }
 const MB = {};
+// (add-ons: what other programs add to Sturnus. The deck's addons.view() tells of each; every word of theirs is escaped,
+// and nothing of an add-on runs in this page)
+const aw = v => esc((v && (LANG === 'en' ? v.en : v.zh)) || '');
+const adEvery = s => s % 3600 === 0 ? tt(`每 ${s / 3600} 小时`, `every ${s / 3600} h`) : tt(`每 ${Math.round(s / 60)} 分钟`, `every ${Math.round(s / 60)} min`);
+const adWhen = at => new Date(at * 1000).toLocaleString(LANG === 'en' ? 'en-GB' : 'zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+function adLast(t) {
+  if (t.busy) return tt('正在做', 'At work now');
+  const l = t.last;
+  return l ? `${tt('上一次：', 'Last: ')}${adWhen(l.at)}${l.ok ? '' : tt('，没做成', ', failed')}${aw(l.note) ? ' · ' + aw(l.note) : ''}` : '';
+}
+function addonsPane() {
+  const list = S.addons || [];
+  const one = a => a.error ? `<div class="mblock"><h4 class="mono">${esc(a.id)}</h4><div class="what">${tt('没有装上：', 'Not loaded: ')}${esc(a.error)}</div></div>` : `<div class="mblock ad" data-ad="${esc(a.id)}">
+      <div class="opt"><div><h4>${aw(a.name)} <small class="hint">${esc(a.version)}</small></h4><p>${aw(a.about)}</p></div>
+        <label class="switch"><input type="checkbox" data-ad-on="${esc(a.id)}" ${a.on ? 'checked' : ''} ${a.ready || a.on ? '' : 'disabled'} aria-label="${aw(a.name)}"></label></div>
+      ${aw(a.status) ? `<div class="what">${aw(a.status)}</div>` : ''}
+      ${a.settings.map(f => `<div class="f-row"><label>${aw(f.name)}</label><input class="field" data-ad-field="${esc(f.id)}" ${f.kind === 'secret' ? 'type="password" autocomplete="off"' : ''} value="${f.kind === 'secret' ? '' : esc(f.value || '')}" placeholder="${f.kind === 'secret' && f.value ? tt('已保存；要换才填', 'Saved; fill in to replace it') : aw(f.hint)}"></div>`).join('')}
+      ${a.settings.length || a.links.length ? `<div class="f-row"><label></label><div class="inline">${a.settings.length ? `<button class="btn primary" data-ad-save="${esc(a.id)}">${tt('保存', 'Save')}</button>` : ''}${a.links.filter(l => /^https?:\/\//.test(l.url)).map(l => `<a class="btn" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">${aw(l.name)}</a>`).join('')}</div></div>` : ''}
+      ${a.rows.length ? `<dl class="kv said">${a.rows.map(r => `<dt>${aw(r.name)}</dt><dd>${aw(r.value)}</dd>`).join('')}</dl>` : ''}
+      ${a.tasks.map(k => `<div class="opt"><div><h4>${aw(k.name)} <small class="hint">${adEvery(k.every)}</small></h4><p>${aw(k.about)}${adLast(k) ? `<br>${adLast(k)}` : ''}</p></div><button class="btn" data-ad-task="${esc(a.id)}:${esc(k.id)}" ${k.busy || !a.on ? 'disabled' : ''}>${tt('现在做一次', 'Run now')}</button></div>`).join('')}</div>`;
+  return `<h3>${t('插件')}</h3><p class="lead">${tt('别的程序加到 Sturnus 上的功能。Sturnus 给插件三样东西：会话开始、一轮结束、会话结束时告诉它；按时运行它（在「定时」页能看到）；在这里显示它的设置和状态。插件是在这台机器上以你的身份运行的程序，所以只能由你在命令行里装：', 'What other programs add to Sturnus. It gives an add-on three things: word when a session starts, a turn ends or a session ends; runs by the clock (shown on the By the clock page); its settings and state shown here. An add-on is a program that runs as you on this machine, so only you put one in, at the command line: ')}<span class="mono">sturnus addon add ${tt('文件夹', 'DIR')}</span></p>
+    ${list.length ? list.map(one).join('') : `<div class="calm">${tt('还没有装插件。', 'No add-ons yet.')}</div>`}`;
+}
 function drawSettings() {
   document.querySelectorAll('#settingsNav button').forEach(b => b.classList.toggle('on', b.dataset.pane === pane));
   const a = S.about || {}, th = store.get('deck.theme', 'auto');
@@ -2478,6 +2501,7 @@ function drawSettings() {
           <span class="wsc-prev" data-look="${k}">${[['S', 0], ['N', 1], ['D', 3]].map(([c, i]) => `<i style="--t:${MUTED[i]}">${c}</i>`).join('')}</span><b>${t(l)}</b></button>`).join('')}</div></div>
       <div class="opt"><div><h4>${t('窗格标题')}</h4><p>${t('用「状态 · 会话名 · 在做的事」做每个 agent 窗格的标题，在 Zellij 或 tmux 里一眼认出是哪个（tmux 要开 pane-border-status 才看得到）。')}</p></div><label class="switch"><input type="checkbox" id="paneTitles" ${S.pane_titles ? 'checked' : ''}></label></div>`,
     voice: voicePane(),
+    addons: addonsPane(),
     access: `<h3>${t('访问')}</h3><div id="accessBody"></div>`,
     about: `<h3>Sturnus</h3><p class="lead">${t('这台机器上所有 Claude Code、Codex、Cursor 会话的入口和状态。')}</p>
       <dl class="kv"><dt>${t('版本')}</dt><dd>${esc(S.version)}</dd><dt>${t('地址')}</dt><dd>http://${esc(a.listen || '')}</dd><dt>${t('运行自')}</dt><dd>${a.started ? new Date(a.started * 1000).toLocaleString(LANG === 'en' ? 'en-GB' : 'zh-CN') : ''}</dd>
@@ -2772,7 +2796,19 @@ document.addEventListener('click', async e => {
   if ((el = q('[data-mux]'))) { readNew(); NS.mux = el.dataset.mux; drawNew(); return; }
   if ((el = q('[data-group]'))) { readNew(); NS.group = el.dataset.group; drawNew(); if (NS.group === '+') setTimeout(() => $('#nsGroup') && $('#nsGroup').focus(), 30); return; }
   if (q('#nsGo')) { submitNew(); return; }
-  if ((el = q('#settingsNav [data-pane]'))) { pane = el.dataset.pane; drawSettings(); return; }
+  if ((el = q('#settingsNav [data-pane]'))) {
+    pane = el.dataset.pane; drawSettings();
+    if (pane === 'addons') { await post('addon', { look: true }); await load(); if (pane === 'addons' && !$('#settings').hidden) drawSettings(); }  // (asked afresh how each stands)
+    return;
+  }
+  if ((el = q('[data-ad-save]')) || (el = q('[data-ad-task]'))) {  // (an add-on: its settings handed over, or one of its tasks run now)
+    const inSettings = !$('#settings').hidden;
+    if (el.dataset.adSave) await post('addon', { addon: el.dataset.adSave, values: Object.fromEntries([...el.closest('.ad').querySelectorAll('[data-ad-field]')].map(i => [i.dataset.adField, i.value])) });
+    else { const [addon, task] = el.dataset.adTask.split(':'); await post('addon', { addon, task }); }
+    await load();
+    if (inSettings) drawSettings();
+    return;
+  }
   if (q('[data-asst-close]')) { asstToggle(false); return; }
   if (q('[data-asst-clear]')) { ASST.msgs = []; store.set('deck.asstMsgs', []); drawAsst(true); return; }
   if ((el = q('[data-asst-ask]'))) { asstAsk(el.dataset.asstAsk); return; }
@@ -2838,6 +2874,11 @@ document.addEventListener('input', e => {
 document.addEventListener('compositionend', e => { if (e.target.id === 'wsFilter') { sig.wsFilter = e.target.value; if ($('#wsList')) $('#wsList').innerHTML = wsListHtml(); } });
 document.addEventListener('change', async e => {
   if (e.target.id === 'paneTitles') post('titles', { on: e.target.checked });
+  if (e.target.dataset.adOn) {  // (an add-on's switch)
+    await post('addon', { addon: e.target.dataset.adOn, on: e.target.checked });
+    await load();
+    if (!$('#settings').hidden) drawSettings();
+  }
   if (e.target.dataset.attrib) post('attribute', { id: e.target.dataset.attrib, project: e.target.value });
   if (e.target.id === 'vOn') {  // (the switch takes effect at once)
     const j = await api('voice', { only_on: e.target.checked }).catch(x => ({ ok: false, msg: x.message }));

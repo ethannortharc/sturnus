@@ -486,3 +486,6 @@ a.wk-row:hover, .wk-row:hover { background: var(--panel-2); }
 .kmore { display: flex; justify-content: center; min-height: 30px; align-items: center; }
 .kmore .btn { height: 30px; padding: 0 14px; font-size: 12.5px; }
 .kmore .hint { display: inline-flex; align-items: center; }
+
+/* (the clock's page: what add-ons do by the clock, under the person's own list) */
+.pl-sys { margin: 26px 0 10px; font-size: 13px; font-weight: 600; color: var(--muted); }

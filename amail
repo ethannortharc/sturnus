@@ -1103,6 +1103,7 @@ def hook(kind):
         return  # (Cursor runs Claude Code's hooks too; its own amail hook speaks for it)
     ev = EVENTS.get(p.get('hook_event_name', ''))
     out = None
+    addons(kind, ev, p)
     try:
         if os.environ.get('AMAIL_DEBUG'):
             put(path('debug', f'{kind}-{p.get("hook_event_name")}.json'), p)
@@ -1117,6 +1118,28 @@ def hook(kind):
         print(json.dumps(out))
     elif kind == 'cursor':
         print(json.dumps({'continue': True} if ev == 'prompt' else {}))
+
+
+ADDON_EVENTS = {'start': 'session_start', 'stop': 'turn_end', 'end': 'session_end'}
+
+
+def addons(kind, ev, p):
+    """A session started, a turn ended or a session ended: for each of Sturnus's add-ons that is switched on and wants
+    to hear of it, a line is left in the mailbox. The service hands the lines to the add-on within seconds; the hook
+    itself runs none of them (it may be where neither the network nor the home folder can be reached, and it never
+    keeps the agent waiting)."""
+    try:
+        name = ADDON_EVENTS.get(ev)
+        if not name:
+            return
+        conf = get(os.environ.get('STURNUS_CONF') or os.path.expanduser('~/.config/sturnus/config.json'), {}) or {}
+        for aid, c in (conf.get('addons') or {}).items():
+            if isinstance(c, dict) and c.get('on') and name in (c.get('events') or []) and re.fullmatch(r'[a-z][a-z0-9-]{1,30}', aid):
+                put(path('addons', aid, f'{time.time_ns()}-{os.getpid()}.json'),
+                    {'event': name, 'agent': kind, 'session': p.get('session_id') or p.get('conversation_id'), 'cwd': p.get('cwd'),
+                     'transcript': p.get('transcript_path'), 'at': time.time()})
+    except Exception:  # (a hook never stands in the agent's way)
+        pass
 
 
 def clip_input(v, room=6000):

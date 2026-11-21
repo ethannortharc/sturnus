@@ -11,6 +11,9 @@ is (its Zellij session and pane), what they say to each other. Jump to one, writ
                                    the newest version: a git clone it was installed from is pulled first; one installed
                                    from a release archive (or --release) takes the newest release on GitHub
   sturnus uninstall [--purge]      take everything out again (--purge: its settings and caches too)
+  sturnus addon [add DIR | remove ID | on ID | off ID]
+                                   what other programs add to Sturnus (docs/addons.md): the ones here; put the one in
+                                   folder DIR in (again: replace it); take one out; switch one on or off
   sturnus ls [--all]               the sessions: what each is called, its workspace, how it stands, its terminal
   sturnus open NUMBER|TITLE        this terminal goes to that session's terminal; a stopped one is given a new
                                    terminal first and goes on with its conversation
@@ -130,6 +133,18 @@ def load_kept():
 
 
 K = load_kept()
+
+
+def load_addons():
+    """What other programs add to Sturnus: told of events, run by the clock, shown in the settings (addons.py)."""
+    loader = importlib.machinery.SourceFileLoader('addons', os.path.join(APP, 'addons.py'))
+    m = importlib.util.module_from_spec(importlib.util.spec_from_loader('addons', loader))
+    loader.exec_module(m)
+    m.setup(A, tx, config, lambda patch: save_config(patch), SHARE)
+    return m
+
+
+AD = load_addons()
 
 
 @functools.cache
@@ -2620,6 +2635,7 @@ class Deck:
     def __init__(self):
         os.makedirs(CACHE, exist_ok=True)  # (before anything keeps a file there: the first install's check builds a deck too)
         self.cfg = config()
+        self.addons = AD.Addons(self.note, self.addons_tell, lang_now)
         self.sums = Summaries()
         self.reports = Reports()
         self.stories = Stories()
@@ -2920,7 +2936,7 @@ class Deck:
                           'stories': {k: [len(v.get('topics') or []), v.get('at'), v.get('left', 0), len(v.get('turns') or [])] for k, v in self.stories.data.items()},
                           'storying': sorted(self.stories.asked | ({self.stories.busy} if self.stories.busy else set())),
                           'digests': self.digests.view(), 'digest': {'busy': self.digests.busy, 'errors': dict(self.digests.errors)},
-                          'events': list(self.events), 'pane_titles': self.cfg.get('pane_titles', True), 'me': ME_NAME, 'dirs': self._dirs,
+                          'addons': self.addons.view(), 'events': list(self.events), 'pane_titles': self.cfg.get('pane_titles', True), 'me': ME_NAME, 'dirs': self._dirs,
                           'launch': self.cfg.get('launch', DEFAULTS['launch']), 'work_lang': self.cfg.get('work_lang') or 'zh',
                           'about': {'started': STARTED, 'app': APP, 'config': CONF, 'source': self.cfg.get('source'),
                                     'listen': f'{self.cfg["host"]}:{self.cfg["port"]}', 'model': model_label(self.cfg, 'summary'),
@@ -3866,6 +3882,11 @@ class Deck:
             self.cfg['work_lang'] = v
             save_config({'work_lang': v})
             return True, {'zh': 'agent 的工作语言：中文。之后写的总结、简报、回答都用中文', 'en': 'Agents now write in English: summaries, reports and answers from here on'}[v]
+        if what == 'addon':  # (an add-on: looked at again, switched, given its settings, or one of its tasks run now)
+            try:
+                return self.addons.act(body)
+            finally:
+                self.addons_tell()
         if what == 'titles':
             self.cfg['pane_titles'] = bool(body.get('on'))
             save_config({'pane_titles': self.cfg['pane_titles']})
@@ -4707,6 +4728,14 @@ class Deck:
             except Exception as e:
                 self.note(tx(f'定时任务出错：{e!r}', f'The clock failed: {e!r}'), False)
             time.sleep(min(30, REST_EVERY))
+
+    def addons_tell(self):
+        """The page shows how the add-ons stand at once, not at the next collect."""
+        view = self.addons.view()
+        with self.lock:
+            self.state['addons'] = view
+        with self.changed:
+            self.changed.notify_all()
 
     def subs_out(self):
         """Sessions in the record that are no sessions of the person's, kept as such before the deck could tell them
@@ -6203,6 +6232,7 @@ def serve():
     threading.Thread(target=DECK.index_loop, daemon=True).start()
     threading.Thread(target=DECK.keep_loop, daemon=True).start()
     threading.Thread(target=DECK.plan_loop, daemon=True).start()
+    threading.Thread(target=DECK.addons.loop, daemon=True).start()
     cfg = DECK.cfg
     global ACCESS_
     ACCESS_ = Access()
@@ -6299,7 +6329,7 @@ def service(do):
     return r
 
 
-FILES = ['sturnus', 'amail', 'terms.py', 'kept.py', 'VERSION', 'README.md', 'LICENSE', 'web', 'zellij-jump.wasm']
+FILES = ['sturnus', 'amail', 'terms.py', 'kept.py', 'addons.py', 'VERSION', 'README.md', 'LICENSE', 'web', 'zellij-jump.wasm']
 
 
 def move_into(old, new):
@@ -6681,6 +6711,9 @@ def main(argv):
               f'code:    {code[:4]}-{code[4:]}   (good for {PAIR_LIFE // 60} minutes, once)')
     elif c == 'version':
         print(VERSION)
+    elif c == 'addon':
+        _REQ.lang = 'en' if config().get('work_lang') == 'en' else 'zh'
+        sys.exit(AD.command(argv[1:], lang=lang_now))
     elif c == 'check':
         d = Deck()
         d.cfg['pane_titles'] = False  # (a check names no panes)

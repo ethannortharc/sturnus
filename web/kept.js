@@ -927,7 +927,8 @@ function kBuildPlans() {
 }
 function kDrawPlans() {
   const plans = S.plans || [];
-  draw('plans', [plans, (S.kept || []).map(k => [k.id, k.title]), LANG, Math.floor(Date.now() / 60000)], () => {
+  const sys = (S.addons || []).filter(a => !a.error && a.tasks.length);  // (what add-ons do by the clock: shown under the person's own list)
+  draw('plans', [plans, (S.kept || []).map(k => [k.id, k.title]), LANG, Math.floor(Date.now() / 60000), sys], () => {
     $('#plList').innerHTML = plans.length ? `<div class="wk-rows">${plans.map(p => `<div class="wk-row pl${p.live ? '' : ' off'}"><span class="mark sm pj">${KI.clock}</span>
       <div class="t"><b>${esc(p.title)}</b><small>${esc(kEvery(p.every))} · ${esc(FULL[p.kind] || p.kind)} · <span class="mono">${esc(home(p.folder))}</span></small>
         <small>${p.live && p.next ? tt('下一次：', 'Next: ') + esc(kDay(p.next)) : tt('已关掉', 'Switched off')}${p.runs.length ? tt('；做过的：', '; runs: ') + p.runs.slice(0, 5).map(r => kOf(r.kept) ? `<a class="lnk" href="#/k/${encodeURIComponent(r.kept)}">${esc(kDay(r.at))}</a>` : esc(kDay(r.at))).join(tt('、', ', ')) : ''}</small></div>
@@ -935,6 +936,11 @@ function kDrawPlans() {
       <button class="btn" data-plrun="${esc(p.id)}">${KI.play}${tt('现在做一次', 'Run now')}</button>
       <button class="ks-ib" data-pldel="${esc(p.id)}" title="${tt('删除', 'Delete')}" aria-label="${esc(tt(`删除「${p.title}」`, `Delete “${p.title}”`))}">${KI.x}</button></div>`).join('')}</div>`
       : `<div class="calm">${KI.clock}${tt('还没有定时的事。', 'Nothing is set by the clock yet.')}</div>`;
+    if (sys.length) $('#plList').innerHTML += `<h3 class="pl-sys">${tt('插件按时做的', 'What add-ons do by the clock')}</h3>
+      <div class="wk-rows">${sys.map(a => a.tasks.map(k => `<div class="wk-row pl${a.on ? '' : ' off'}"><span class="mark sm pj">${KI.clock}</span>
+        <div class="t"><b>${aw(a.name)} · ${aw(k.name)}</b><small>${adEvery(k.every)}${aw(k.about) ? ' · ' + aw(k.about) : ''}</small>
+          <small>${a.on ? (k.busy ? tt('正在做', 'At work now') : k.next ? tt('下一次：', 'Next: ') + esc(kDay(k.next)) : '') : tt('插件关着（在 设置 → 插件 里打开）', 'The add-on is off (switch it on under Settings → Add-ons)')}${!k.busy && adLast(k) ? tt('；', '; ') + adLast(k) : ''}</small></div>
+        <button class="btn" data-ad-task="${esc(a.id)}:${esc(k.id)}" ${k.busy || !a.on ? 'disabled' : ''}>${KI.play}${tt('现在做一次', 'Run now')}</button></div>`).join('')).join('')}</div>`;
   });
 }
 

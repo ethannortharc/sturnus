@@ -297,6 +297,7 @@ code { font: 12px var(--font-mono); background: var(--panel-2); border: 1px soli
 .said { font-size: 13px; line-height: 1.65; color: var(--ink-2); white-space: pre-wrap; word-break: break-word; max-height: 300px; overflow-y: auto; }
 .kv { display: grid; grid-template-columns: 76px 1fr; gap: 9px 14px; font-size: 13px; margin: 0; }
 .kv dt { color: var(--muted); } .kv dd { margin: 0; word-break: break-all; font-family: var(--font-mono); font-size: 12.3px; }
+.kv.said { margin: 14px 0 4px; } .kv.said dd { font-family: inherit; font-size: 13px; word-break: break-word; }  /* (an add-on's rows: sentences, not paths) */
 .inline { display: flex; gap: 8px; }
 .field { flex: 1; height: 36px; border: 1px solid var(--hair); border-radius: 10px; background: var(--panel-2); padding: 0 12px; outline: none; min-width: 0; }
 .field:focus, .area:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }

@@ -144,7 +144,7 @@ The dashboard and its state live on this machine. Model features send relevant s
 
 ## Trying a change
 
-A second instance can run beside the installed one: `STURNUS_CONF`, `STURNUS_CACHE`, `STURNUS_TASKS` and `AMAIL_HOME` point it at its own settings (with another `port`), caches, tasks (and, beside them, its record of sessions) and mail. One that opens Zellij terminals also needs its own `ZELLIJ_SOCKET_DIR`, and one that opens tmux terminals its own `TMUX_TMPDIR`, set before it starts: otherwise its test sessions land among the real ones. `STURNUS_DRY=1` suppresses typing into panes and queueing into Codex threads; it is not a general network or filesystem sandbox.
+A second instance can run beside the installed one: `STURNUS_CONF`, `STURNUS_CACHE`, `STURNUS_TASKS` and `AMAIL_HOME` point it at its own settings (with another `port`), caches, tasks (and, beside them, its record of sessions) and mail. `STURNUS_ADDONS` gives it its own [add-ons](addons.md). One that opens Zellij terminals also needs its own `ZELLIJ_SOCKET_DIR`, and one that opens tmux terminals its own `TMUX_TMPDIR`, set before it starts: otherwise its test sessions land among the real ones. `STURNUS_DRY=1` suppresses typing into panes and queueing into Codex threads; it is not a general network or filesystem sandbox.
 
 To reproduce the README media without contacting agent sessions or model services, use the [fixture capture runbook](../.demo-studio/runbook.md). That browser harness serves the unmodified frontend with fictional API responses and rejects mutating requests.
 

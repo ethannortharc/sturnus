@@ -216,6 +216,17 @@ Each machine runs its own Sturnus, which sees every session on that machine. A p
 - `GET /api/app/state?after=<rev>&wait=25` answers as soon as anything it shows changes, or after 25 seconds unchanged: the live sessions with how each stands (a sub-agent names the session that started it), what waits on you with the answers a phone may give, the groups and recent folders for starting a new session; the sessions that last, running or stopped, with how each stands, and the workspaces you keep with their folders; what runs by the clock, the sessions a restart ended, the agents a new session can be; each workspace's dashboard overview and its projects, each project with its work items; the tasks, those put aside too; the channels with what is new in them; mail to you; push locks left behind. A session stirring alone is no news.
 - `GET /api/app/session?kept=<id>` is one session's page: what it is and the terminals it has run in, what it asked of you, its report and its timeline, the tasks it is on, the sub-agents it started, the messages to and from it. Its conversation is `GET /api/transcript?kept=<id>`, as the page reads it. (`?id=<row>` gives the same for a running row, for an app that knows only those.)
 
+## Add-ons
+
+Other programs of yours can ride on Sturnus instead of installing hooks and timers of their own. An add-on is a folder with a small declaration and one program: Sturnus tells it when a session starts or a turn ends, runs it by the clock (shown on the By the clock page), and shows its settings and state under Settings → Add-ons. It runs as a process of its own and puts nothing into the page.
+
+```sh
+sturnus addon add DIR     # put the add-on in folder DIR in
+sturnus addon             # the ones here, on or off
+```
+
+An add-on is a program that runs as you, so one is put in only at the machine's command line. See [add-ons](docs/addons.md) for the declaration and what the program is asked.
+
 ## Models, data, and access
 
 Sturnus runs on your machine and reads local agent activity and Git state. **Summaries, reports, and assistant requests send relevant context to the model you configure**, which may be a remote service. Model sources include Claude Code, Codex, pi, and OpenAI-compatible APIs. Optional voice input sends recordings to the transcription provider you choose.
