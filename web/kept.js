@@ -586,15 +586,81 @@ async function kSay(k, s, text, now) {
   kChatPaint(k, true);
   load();
 }
+// ---------- a prompt of the person's: what an agent is stopped at, shown where the words go, with its answers ----------
+// What the prompt is for comes with the session's row, as the agent's hook said it. The answers that can be given from
+// here, and whether a key typed for them would reach this very prompt, are the deck's to say: the items a phone is
+// given (a permission prompt of Claude Code's: yes or no; one question with one answer: its options). Everything else
+// is shown and answered in the terminal.
+const askSig = s => !!s && sayHow(s) === 'menu' && [s.asking && [s.asking.use, s.asking.at, s.asking.tool, s.asking.many], s.tool, s.waiting_for, s.since,
+  (it => it && [it.id, it.actions.length])(promptItem(s)), justAnswered(s), !!s.loc, PI.at > 0, Math.floor(Date.now() / 60000)];
+const askCut = (t, lines = 14) => { const l = String(t || '').split('\n'); return l.length > lines ? l.slice(0, lines).join('\n') + '\n…' : l.join('\n'); };
+function askSaid(tool, inp) {  // (what a permission prompt is for, as much as a person needs to judge it)
+  const v = k => (inp[k] === undefined || inp[k] === null ? '' : String(inp[k])), why = v('description') ? `<p class="qa-why">${esc(v('description'))}</p>` : '';
+  const file = (zh, en, path) => `<p class="qa-what">${tt(zh, en)}<code>${esc(path)}</code></p>`;
+  if (tool === 'Bash') return `<p class="qa-what">${tt('运行这条命令', 'Run this command')}</p><pre class="qa-cmd"><i>$</i>${esc(askCut(v('command')))}</pre>${why}`;
+  if (tool === 'apply_patch') return `<p class="qa-what">${tt('改文件', 'Change files')}</p><pre class="qa-cmd">${esc(askCut(v('command'), 24))}</pre>${why}`;
+  if (['Edit', 'MultiEdit', 'NotebookEdit'].includes(tool)) {
+    const diff = inp.old_string || inp.new_string ? `<pre class="qa-diff">${inp.old_string ? `<span class="d">${esc(askCut(inp.old_string, 8).replace(/^/gm, '- '))}</span>` : ''}${inp.new_string ? `<span class="a">${esc(askCut(inp.new_string, 8).replace(/^/gm, '+ '))}</span>` : ''}</pre>` : '';
+    return file('改文件 ', 'Edit ', v('file_path') || v('notebook_path')) + diff;
+  }
+  if (tool === 'Write') return file('写文件 ', 'Write ', v('file_path')) + (inp.content ? `<pre class="qa-cmd">${esc(askCut(inp.content, 10))}</pre>` : '');
+  if (tool === 'Read') return file('读文件 ', 'Read ', v('file_path'));
+  if (tool === 'WebFetch') return file('打开网页 ', 'Fetch ', v('url')) + (v('prompt') ? `<p class="qa-why">${esc(v('prompt'))}</p>` : '');
+  if (tool === 'WebSearch') return file('搜索 ', 'Search for ', v('query'));
+  const m = /^mcp__(.+?)__(.+)$/.exec(tool), rest = JSON.stringify(inp, null, 1);
+  return `<p class="qa-what">${m ? tt('调用工具 ', 'Call the tool ') + `<code>${esc(m[1])} · ${esc(m[2])}</code>` : tt('用工具 ', 'Use ') + `<code>${esc(tool)}</code>`}</p>${rest && rest !== '{}' ? `<pre class="qa-cmd">${esc(askCut(rest, 16))}</pre>` : ''}${why}`;
+}
+function askCard(k, s) {
+  const a = s.asking || {}, tool = a.tool || (asking(s) ? s.tool : '') || '', inp = a.input && typeof a.input === 'object' ? a.input : {};
+  const it = promptItem(s), acts = (it && it.actions) || [], done = justAnswered(s), who = FULL[s.kind] || s.kind, term = webOk(s);
+  const qs = tool === 'AskUserQuestion' && Array.isArray(inp.questions) ? inp.questions.filter(q => q && typeof q === 'object') : [];
+  const pick = acts.length && acts.every(x => /^o\d+$/.test(x.id)), yesno = acts.some(x => x.id === 'allow');
+  const btn = (c, label, cls = '') => `<button class="btn${cls}" data-qa="${esc(it.id)}" data-qc="${esc(c)}" data-qs="${esc(s.id)}">${label}</button>`;
+  let what, body, note;
+  if (qs.length) {
+    what = qs.length > 1 ? tt(`问了你 ${qs.length} 个问题`, `asks you ${qs.length} questions`) : tt('问了你一个问题', 'asks you a question');
+    body = qs.map(q => `<div class="qa-q">${q.header ? `<span class="qa-tag">${esc(q.header)}</span>` : ''}<p>${esc(q.question || '')}</p>${q.multiSelect ? `<small>${tt('可以选几个', 'More than one may be picked')}</small>` : ''}
+      <div class="qa-opts">${(Array.isArray(q.options) ? q.options : []).map((o, i) => { const lab = `<span class="tx"><b>${esc((o && o.label) || '')}</b>${o && o.description ? `<span>${esc(o.description)}</span>` : ''}</span>`;
+        return pick && !done && qs.length === 1 ? `<button class="qa-opt" data-qa="${esc(it.id)}" data-qc="o${i + 1}" data-qs="${esc(s.id)}"><i>${i + 1}</i>${lab}</button>` : `<div class="qa-opt off"><i>${i + 1}</i>${lab}</div>`; }).join('')}</div></div>`).join('');
+    note = pick ? tt('点一个选项就是回答。要自己写答案，去终端。', 'Click an option to answer. To write an answer of your own, use the terminal.')
+      : qs.length > 1 || qs.some(q => q.multiSelect) ? tt('几个问题、或能选几项的问题，要在终端里回答。', 'Several questions, or one with several answers, are answered in the terminal.') : '';
+  } else if (tool === 'ExitPlanMode') {
+    what = tt('做好了计划，等你批准', 'has a plan for you to approve');
+    body = `<div class="qa-plan md">${md(String(inp.plan || '')) || esc(s.waiting_for || '')}</div>`;
+    note = tt('批准、让它接着改计划，都在终端里选。', 'Approving it, or having it plan on, is chosen in the terminal.');
+  } else if (tool) {
+    what = tt('要你确认一步操作', 'needs your OK for a step');
+    body = askSaid(tool, inp);
+    note = yesno ? tt('「以后都允许」这类选项在终端里。', 'Choices such as “always allow” are in the terminal.') : '';
+  } else {
+    what = tt('停在一个提示上', 'is stopped at a prompt');
+    body = `<p class="qa-what">${esc(s.waiting_for || tt('它在终端里等你回答。', 'It waits for your answer in its terminal.'))}</p>`;
+    note = '';
+  }
+  // (no answer offered here, though it is a kind that can have one: say why, as far as can be told)
+  if (!acts.length && !note) note = s.kind !== 'claude' ? tt(`${who} 的提示要在它自己的界面里回答。`, `A prompt of ${who} is answered where it runs.`)
+    : !it && !PI.at ? tt('正在看这里能不能直接回答……', 'Seeing whether it can be answered from here…')
+    : tool ? tt('这里现在不能直接回答：按键送不到这个提示（它的终端没有连着，或同时开着几个提示）。', 'It cannot be answered from here just now: a key would not reach this prompt (no terminal attached to it, or several prompts open at once).') : '';
+  if (a.many) note = tt('同时开着几个提示，这里是最近的一个：去终端一个个回答。', 'Several prompts are open at once, and this is the latest: answer them one by one in the terminal.');
+  const far = term ? '' : tt('它不在 Zellij 或 tmux 里：到它所在的窗口里回答。', 'It is not in Zellij or tmux: answer it in the window it runs in.');
+  const goTerm = term ? `<button class="btn${acts.length ? '' : ' primary'}" data-tab-go="term">${I.term}${acts.length ? tt('去终端', 'To the terminal') : tt('去终端回答', 'Answer in the terminal')}</button>` : '';
+  return `<div class="qa" role="group" aria-label="${esc(who + ' ' + what)}"><div class="qa-h"><i></i><b>${esc(who)} ${what}</b><time>${esc(agoT(a.at || s.since))}</time></div>
+    <div class="qa-b">${body}</div>
+    <div class="qa-f">${done ? `<span class="qa-done">${I.check}${tt('已回答，等它接着做', 'Answered: waiting for it to go on')}</span>`
+      : `${yesno ? btn('allow', tt('允许', 'Allow'), ' primary') + btn('deny', tt('拒绝', 'Deny'), ' danger') : ''}${goTerm}`}<span class="qa-n">${esc([note, far].filter(Boolean).join(' '))}</span></div></div>`;
+}
 function kDrawFoot(k, s, tab) {
   const mode = tab !== 'chat' ? 'none' : !s ? (k.archived ? 'archived' : KV.hand ? 'hand' : 'stopped') : s.starting ? 'starting' : 'live';
   if (mode !== 'hand') KV.hand = null;
-  draw('kfoot', [k.id, mode, s && s.id, mode === 'starting' && [s.summary, s.needs_you, s.loc], KV.hand && [KV.hand.kind, KV.hand.busy, KV.hand.file], LANG], () => {
+  const ask = mode === 'live' && sayHow(s) === 'menu';  // (stopped at a prompt of the person's: that is shown where the words go, since words typed now would answer it)
+  if (ask) phoneInbox();
+  draw('kfoot', [k.id, mode, s && s.id, mode === 'starting' && [s.summary, s.needs_you, s.loc], KV.hand && [KV.hand.kind, KV.hand.busy, KV.hand.file], ask && askSig(s), LANG], () => {
     $('#kpFoot').innerHTML = mode === 'none' ? ''
       : mode === 'hand' ? `<div class="khand"><div class="kn-ch"><b>${tt('换谁来接着做', 'Who takes it on')}</b>${Object.keys(S.launch || {}).filter(x => FULL[x] && x !== k.kind).map(x => `<button type="button" data-khandkind="${x}" aria-pressed="${KV.hand.kind === x}" class="${KV.hand.kind === x ? 'on' : ''}">${mark(x, '', 'xs')}${FULL[x]}</button>`).join('')}</div>
           <textarea id="kNote" aria-label="${tt('交接说明', 'The handover')}" placeholder="${KV.hand.busy ? tt('正在写交接说明……', 'Writing the handover…') : tt('先选一个 agent', 'Pick an agent first')}">${esc(KV.hand.note || '')}</textarea>
           <div class="row"><span class="hint">${tt('这是新 agent 开头读到的话，可以改。它换不走原来那个 agent 的上下文，只能靠这份说明和完整记录文件接上；之前的对话仍然留在这条会话里。', 'This is what the new agent reads first; change it as you like. It cannot take over the other agent’s context: this note and the full record file are how it picks up. What was said before stays in this session.')}</span>
             <button class="btn" data-khandoff>${tt('取消', 'Cancel')}</button><button class="btn primary" data-khandgo ${KV.hand.kind && !KV.hand.busy ? '' : 'disabled'}>${KI.play}${KV.hand.kind ? tt(`用 ${FULL[KV.hand.kind]} 继续`, `Go on with ${FULL[KV.hand.kind]}`) : tt('继续', 'Go on')}</button></div></div>`
+      : ask ? `<div class="kp-ask">${askCard(k, s)}</div>`
       : mode === 'live' ? `<div class="chat-say kp-say">${replyBox(s)}</div>`
       : mode === 'starting' ? `<div class="kstop"><div><b>${esc(s.summary || tt('正在启动……', 'Starting…'))}</b><span>${esc(s.needs_you || tt('它的 agent 起来以后，这里就能说话了。', 'Once its agent is up, you can talk to it here.'))}</span></div>${s.loc ? `<a class="btn dark" href="#/term/${encodeURIComponent(s.loc.session)}/${encodeURIComponent(s.loc.pane)}">${I.term}${tt('看它的终端', 'See its terminal')}</a>` : ''}</div>`
       : mode === 'archived' ? `<div class="kstop"><div><b>${tt('这条会话已经归档', 'This session is archived')}</b><span>${tt('对话都还在。取消归档后可以继续。', 'The conversation is all here. Unarchive it to go on.')}</span></div><button class="btn" data-kdo="unarchive">${tt('取消归档', 'Unarchive')}</button></div>`
@@ -995,6 +1061,10 @@ document.addEventListener('click', async e => {
   const cur = () => kOf((el && el.dataset.kid) || route.kept);
   if (KV.menu && !q('.kmenu')) { KV.menu = false; delete sig.khead; render(); }
   if (KV.arr && !q('.ks-arr')) { KV.arr = false; render(); }
+  if ((el = q('[data-qa]'))) {  // (an answer to the prompt shown: the deck types its key, only if it is still this very prompt)
+    el.closest('.qa').querySelectorAll('[data-qa]').forEach(b => { b.disabled = true; });
+    phoneAnswer(el.dataset.qa, el.dataset.qc, el.dataset.qs); return;
+  }
   if (KV.model && !q('.kmodel-menu, [data-kmodel]')) { KV.model = false; render(); }
   if (KV.acct && !q('.acct-card, [data-kacct]')) { KV.acct = false; render(); }
   if (q('[data-kmodel]')) { KV.model = !KV.model; KV.acct = false; render(); return; }

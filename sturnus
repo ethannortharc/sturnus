@@ -5089,6 +5089,8 @@ def phone_items(sessions, project_of=lambda s: '', groups=None):
             else:
                 body = str(inp.get('plan') or '')[:600] if tool == 'ExitPlanMode' else '\n'.join(
                     str(q.get('question') or '') for q in inp.get('questions') or [] if isinstance(q, dict)) if tool == 'AskUserQuestion' else ''
+                if not body and ask.get('tool') and tool not in ASKS:  # (one whose answer is not typed from here, Codex's: still what it is for)
+                    body = phone_said(tool, inp)
                 item = {'kind': 'menu', 'title': tx(f'{who} 停在一个提示上', f'{who} is stopped at a prompt'),
                         'body': body or s.get('waiting_for') or tool, 'actions': []}
             item.update(level='urgent', at=ask.get('at') or s.get('since') or s.get('at'))

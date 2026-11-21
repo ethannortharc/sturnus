@@ -179,6 +179,43 @@ html:not(.phone) .asst-fab { display: none; }
 .kp-foot .reply textarea { min-height: 54px; border: 0; padding: 4px 2px; background: none; resize: none; }
 .kp-foot .reply textarea:focus { box-shadow: none; }
 .kp-foot .reply .row { margin-top: 6px; }
+/* a prompt of the person's, where the words go: what the agent is stopped at, and its answers */
+.qa { border-radius: 14px; border: 1px solid color-mix(in srgb, var(--warn) 38%, transparent); background: var(--panel); box-shadow: var(--shadow-1), 0 6px 18px -10px rgba(24, 22, 18, .18); overflow: hidden; }
+.qa-h { display: flex; align-items: center; gap: 9px; padding: 10px 14px; background: var(--warn-soft); font-size: 13px; }
+.qa-h > i { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--warn); }
+.qa-h b { font-weight: 650; color: var(--warn-ink); min-width: 0; }
+.qa-h time { margin-left: auto; flex: none; font-size: 11.5px; color: var(--muted); }
+.qa-b { padding: 12px 14px 4px; max-height: min(46vh, 420px); overflow-y: auto; font-size: 13.5px; line-height: 1.55; }
+.qa-b p { margin: 0; }
+.qa-what { color: var(--ink-2); }
+.qa-what code { margin-left: 2px; font-size: 12px; overflow-wrap: anywhere; }
+.qa-why { margin-top: 6px !important; font-size: 12.5px; color: var(--muted); }
+.qa-cmd, .qa-diff { margin: 8px 0 0; padding: 9px 11px; border-radius: 9px; background: var(--panel-2); border: 1px solid var(--hair-2); font: 12px/1.55 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink); }
+.qa-cmd > i { font-style: normal; color: var(--faint); margin-right: 8px; user-select: none; }
+.qa-diff span { display: block; }
+.qa-diff .d { color: var(--bad); }
+.qa-diff .a { color: var(--ok-ink); }
+.qa-q + .qa-q { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--hair-2); }
+.qa-q > p { font-weight: 600; font-size: 14px; }
+.qa-q > small { display: block; margin-top: 2px; font-size: 12px; color: var(--muted); }
+.qa-tag { display: inline-block; margin-bottom: 5px; padding: 1px 7px; border-radius: 6px; background: color-mix(in srgb, var(--ink) 7%, transparent); font-size: 11px; font-weight: 600; color: var(--ink-2); }
+.qa-opts { display: grid; gap: 6px; margin-top: 9px; }
+.qa-opt { display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 8px 11px; border-radius: 10px; border: 1px solid var(--hair); background: var(--panel); text-align: left; font-size: 13px; line-height: 1.45; color: var(--ink); }
+button.qa-opt:hover:not(:disabled) { border-color: color-mix(in srgb, var(--ink) 34%, transparent); background: var(--panel-2); }
+button.qa-opt:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+button.qa-opt:disabled { opacity: .55; cursor: default; }
+.qa-opt.off { background: none; border-style: dashed; }
+.qa-opt > i { flex: none; width: 18px; height: 18px; margin-top: 1px; border-radius: 6px; background: color-mix(in srgb, var(--ink) 8%, transparent); font: 600 11px/18px var(--font-mono); font-style: normal; text-align: center; color: var(--ink-2); }
+.qa-opt .tx { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.qa-opt .tx b { font-weight: 600; }
+.qa-opt .tx span { font-size: 12px; color: var(--muted); }
+.qa-plan { font-size: 13.5px; }
+.qa-plan > :first-child { margin-top: 0; }
+.qa-f { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px 14px 12px; }
+.qa-f .btn.danger { color: var(--bad); }
+.qa-n { flex: 1 1 220px; min-width: 0; font-size: 12px; line-height: 1.5; color: var(--muted); }
+.qa-f .btn + .qa-n, .qa-done + .qa-n { margin-left: 4px; }
+.qa-done { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: var(--ok-ink); }
 .kstop { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 12px 12px 12px 16px; border-radius: 14px; border: 1px solid var(--hair); background: var(--panel-2); margin-bottom: 10px; }
 .kstop > div { flex: 1 1 320px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .kstop b { font-size: 13.5px; font-weight: 650; }

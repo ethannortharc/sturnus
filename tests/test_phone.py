@@ -90,6 +90,11 @@ class Items(unittest.TestCase):
             [it] = items([s])
             self.assertEqual(it['actions'], [])
 
+    def test_a_codex_prompt_says_what_it_is_for_though_it_is_not_answered_from_here(self):
+        [it] = items([session(kind='codex', id='codex:x', state='waiting', waiting_for='Bash', asking=BASH)])
+        self.assertEqual((it['kind'], it['actions']), ('menu', []))
+        self.assertIn('touch columba-one.txt', it['body'])
+
     def test_keys_are_offered_only_where_they_would_reach_this_prompt(self):
         def acts(**kw):
             return [a['id'] for a in items([session(**{'state': 'waiting', 'asking': BASH, **kw})])[0]['actions']]

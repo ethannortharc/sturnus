@@ -283,6 +283,43 @@ class Sessions(unittest.TestCase):
         self.assertFalse(self.call('/api/kept', {'id': kid, 'do': 'merge'})['ok'])  # (merged and gone: not its any more)
         self.assertEqual((open(f'{repo}/b.txt').read(), os.path.exists(work), git('branch', '--list', 'add-b-file').stdout), ('two\nthree\n', False, ''))
 
+    def test_a_prompt_of_the_person_s_is_answered_from_the_page(self):
+        from urllib.parse import quote
+        os.makedirs(f'{self.dir}/asks', exist_ok=True)  # (a folder of its own: the other tests count the sessions in theirs)
+        j = self.call('/api/new', {'kind': 'claude', 'cwd': f'{self.dir}/asks', 'prompt': 'start', 'title': 'Asks'})
+        self.assertTrue(j['ok'], j)
+        kid = j['kept']
+        live = self.until(lambda: (lambda k: k and k['conv'] and k['live'] and not k['live'].startswith('new:') and k['live'])(self.kept(kid)), 'the session did not start')
+        row = lambda: next((s for s in self.call('/api/state')['sessions'] if s['id'] == live), None) or {}
+        item = lambda: next((i for i in self.call('/api/phone/inbox')['items'] if i['open_url'].endswith('/s/' + quote(live, safe=''))), None)
+
+        def stop_at(text, answers):
+            """It is given a line that stops it at a prompt; the item the page is given for that prompt, once its answers are these."""
+            self.until(lambda: row().get('state') == 'idle', f'it did not come to rest before {text}')
+            self.assertTrue(self.call('/api/type', {'id': live, 'text': text, 'enter': True})['ok'])
+            return self.until(lambda: (lambda i: i and [a['id'] for a in i['actions']] == answers and i)(item()), f'the prompt of {text} did not offer {answers}')
+
+        it = stop_at('/perm make build', ['allow', 'deny'])  # (a permission prompt: what it is for, yes or no)
+        self.assertIn('make build', it['body'])
+        self.assertEqual(((row().get('asking') or {}).get('tool'), row().get('prompting')), ('Bash', True), 'the row says what the prompt is for: the page shows it where the words go')
+        self.assertTrue(self.call('/api/phone/actions/' + it['id'], {'choice': 'allow'})['ok'])
+        self.until(lambda: 'ran: make build' in self.said(kid), 'Allow did not reach its prompt')
+        self.assertFalse(self.call('/api/phone/actions/' + it['id'], {'choice': 'allow'})['ok'], 'an answer to a prompt that is gone types nothing')
+        it = stop_at('/question', ['o1', 'o2', 'o3'])  # (one question with one answer: its options)
+        self.assertEqual(len((row().get('asking') or {})['input']['questions'][0]['options']), 3)
+        self.assertTrue(self.call('/api/phone/actions/' + it['id'], {'choice': 'o2'})['ok'])
+        self.until(lambda: 'chosen: The private host only' in self.said(kid), 'the option picked did not reach its prompt')
+        it = stop_at('/perm rm -rf build', ['allow', 'deny'])
+        self.assertTrue(self.call('/api/phone/actions/' + it['id'], {'choice': 'deny'})['ok'])
+        self.until(lambda: 'not done: the person said no to Bash' in self.said(kid), 'No did not reach its prompt')
+        it = stop_at('/plan', [])  # (a plan is shown whole, and approved in the terminal: no answer is typed for it from here)
+        self.assertIn('show an agent', it['body'])
+        self.assertEqual((row().get('asking') or {}).get('tool'), 'ExitPlanMode')
+        self.assertTrue(self.call('/api/type', {'id': live, 'text': '1', 'enter': False})['ok'])  # (as the person would, in its terminal)
+        self.until(lambda: 'plan approved' in self.said(kid), 'the key typed in its terminal did not answer the plan')
+        self.assertTrue(self.call('/api/kept', {'id': kid, 'do': 'stop'})['ok'])
+        self.until(lambda: not self.kept(kid)['live'], 'it did not stop')
+
     def test_an_agent_started_by_hand_is_a_session_too(self):
         there = f'{self.dir}/elsewhere'
         r = self.tmux('new-session', '-d', '-s', 'hand', '-c', there, sys.executable, AGENT, 'by hand')

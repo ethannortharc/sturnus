@@ -1860,7 +1860,22 @@ function drawOverview(s, k) {
   drawSay(s);
 }
 // what it waits on you for, in a line: the prompt it sits at, or what it asked (the latest summary's, else the oldest still open)
+// what a session stopped at a prompt waits for, in a line: the question it asks, its plan, the step it wants an OK for
+function askLine(s) {
+  const a = s.asking || {}, tool = a.tool || (asking(s) ? s.tool : '') || '', inp = a.input && typeof a.input === 'object' ? a.input : {};
+  const one = (x, n = 140) => { const l = String(x || '').split('\n')[0]; return l.length > n ? l.slice(0, n) + '…' : l; };
+  if (tool === 'AskUserQuestion') {
+    const qs = Array.isArray(inp.questions) ? inp.questions.filter(q => q && q.question) : [];
+    return qs.length === 1 ? tt(`它问你：${one(qs[0].question)}`, `It asks you: ${one(qs[0].question)}`) : qs.length ? tt(`它问了你 ${qs.length} 个问题`, `It asks you ${qs.length} questions`) : tt('它问了你一个问题', 'It asks you a question');
+  }
+  if (tool === 'ExitPlanMode') return tt('它做好了计划，等你批准', 'It has a plan for you to approve');
+  if (tool === 'Bash' && inp.command) return tt(`等你确认：运行 ${one(inp.command)}`, `Needs your OK to run: ${one(inp.command)}`);
+  const path = inp.file_path || inp.notebook_path;
+  if (['Edit', 'MultiEdit', 'Write', 'NotebookEdit'].includes(tool) && path) return tt(`等你确认：改 ${one(path)}`, `Needs your OK to change: ${one(path)}`);
+  return a.tool ? tt(`等你确认：${a.tool}`, `Needs your OK: ${a.tool}`) : '';
+}
 function needOf(s) {
+  if (s.prompting || asking(s)) { const l = askLine(s); if (l) return l; }
   if (s.state === 'waiting' && s.waiting_for) return t('在等你批准：{w}', { w: s.waiting_for });
   if (asking(s)) return t('它停在终端里的一个选择上，进终端回答');
   return s.needs_you || ((s.asks || [])[0] || {}).what || '';

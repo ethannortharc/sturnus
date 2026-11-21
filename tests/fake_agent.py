@@ -8,6 +8,9 @@ A line typed to it is an ask, answered at once with "done: <ask>". /clear goes o
 waiting on the person; /model NAME, /effort LEVEL and /fast on|off change what its next answers say they were made with;
 /work SECONDS keeps it at work that long, and a line typed meanwhile is kept as Claude Code keeps words sent mid-turn (queued
 at once, handed over at the next step as a line of its own kind, then answered with "noted: <words>"); /exit ends it.
+/perm COMMAND stops at a permission prompt for a Bash command, /question at a question with three options, /questions at
+two questions, /plan at a plan to approve: each tells amail as the real one's hooks do, then waits for one key (1 allows
+or picks the first, another digit picks that option, Esc says no) and goes on.
 It needs FAKE_HOME (where its conversation files go), FAKE_AMAIL (the amail to tell) and AMAIL_CLAUDE_SESSIONS (the registry)."""
 import json
 import os
@@ -15,7 +18,9 @@ import select
 import signal
 import subprocess
 import sys
+import termios
 import time
+import tty
 import uuid
 
 HOME, REG, AMAIL = os.environ['FAKE_HOME'], os.environ['AMAIL_CLAUDE_SESSIONS'], os.environ['FAKE_AMAIL']
@@ -117,6 +122,63 @@ def work(secs, text):
     print(f'done: {text}', flush=True)
 
 
+def key():
+    """One key typed to it, as a prompt takes it: no Enter needed. (Its input a terminal: read a key at a time.)"""
+    global held
+    if held:
+        k, held = held[:1], held[1:]
+        return k.decode('utf-8', 'replace')
+    try:
+        old = termios.tcgetattr(0)
+    except termios.error:
+        old = None
+    try:
+        if old:
+            tty.setcbreak(0)
+        k = os.read(0, 1)
+    finally:
+        if old:
+            termios.tcsetattr(0, termios.TCSADRAIN, old)
+    return k.decode('utf-8', 'replace') if k else '\x1b'
+
+
+def prompt(tool, inp, say):
+    """Stopped at a prompt of the person's for a tool call, as Claude Code is: its hooks say what for, its registry says
+    it waits; one key answers it, and it goes on. SAY(key) is what it then says it did, or None when the answer is no."""
+    use = 'toolu_' + uuid.uuid4().hex[:12]
+    write('user', f'/{tool}')
+    reg('busy')
+    hook('UserPromptSubmit', prompt=f'/{tool}')
+    hook('PreToolUse', tool_name=tool, tool_input=inp, tool_use_id=use)
+    hook('PermissionRequest', tool_name=tool, tool_input=inp)
+    reg('waiting')
+    print(f'waiting on the person: {tool}', flush=True)
+    k = key()
+    did = say(k)
+    reg('busy')
+    if did is not None:
+        hook('PostToolUse', tool_name=tool, tool_input=inp, tool_use_id=use)
+    out = did if did is not None else f'not done: the person said no to {tool}'
+    write('assistant', out)
+    reg('idle')
+    hook('Stop', last_assistant_message=out)
+    print(out, flush=True)
+
+
+QUESTIONS = [{'question': 'Which way should the release go out?', 'header': 'Release', 'multiSelect': False, 'options': [
+                 {'label': 'GitHub and the private host', 'description': 'Tag main, build the archive, publish on both.'},
+                 {'label': 'The private host only', 'description': 'Push main and the tag to git.example.com; nothing public.'},
+                 {'label': 'Not yet', 'description': 'Keep it on main and wait.'}]},
+             {'question': 'Which machines get it?', 'header': 'Machines', 'multiSelect': True, 'options': [{'label': 'This one'}, {'label': 'The Linux box'}]}]
+PLAN = """## Plan: show an agent's question in the conversation
+
+1. Read what the prompt is for from the hook's record.
+2. Draw it above the box of words, with its answers.
+3. Type the answer's key into the terminal, only at this very prompt.
+
+**Files:** `web/kept.js`, `web/kept.css`, `tests/fake_agent.py`"""
+
+
 def leave(*_):
     try:
         os.remove(me)
@@ -139,6 +201,16 @@ while True:
     if line == '/exit':
         hook('SessionEnd')
         leave()
+    elif line.split(' ')[0] == '/perm':
+        cmd = line[6:].strip() or 'git push origin main'
+        prompt('Bash', {'command': cmd, 'description': 'Push the merged change'}, lambda k: f'ran: {cmd}' if k == '1' else None)
+    elif line == '/question':
+        prompt('AskUserQuestion', {'questions': QUESTIONS[:1]},
+               lambda k: f'chosen: {QUESTIONS[0]["options"][int(k) - 1]["label"]}' if k.isdigit() and 1 <= int(k) <= 3 else None)
+    elif line == '/questions':
+        prompt('AskUserQuestion', {'questions': QUESTIONS}, lambda k: 'answered in the terminal' if k != '\x1b' else None)
+    elif line == '/plan':
+        prompt('ExitPlanMode', {'plan': PLAN}, lambda k: 'plan approved' if k == '1' else None)
     elif line == '/ask':  # (stopped at a prompt that waits on the person, until the next line)
         reg('waiting')
         print('waiting on the person', flush=True)
