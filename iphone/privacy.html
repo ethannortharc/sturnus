@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Sturnus for iPhone 隐私政策</title>
+  <style>
+    :root { font: -apple-system-body; font-family: system-ui, sans-serif; line-height: 1.65; }
+    body { max-width: 40rem; margin: 0 auto; padding: 1.25rem; }
+    h1 { font-size: 1.5rem; margin: 0; }
+    h2 { font-size: 1.15rem; margin: 1.65rem 0 .35rem; }
+    p { margin: .35rem 0 .75rem; }
+    a { color: LinkText; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Sturnus for iPhone 隐私政策</h1>
+    <p>更新于 <time datetime="2026-11-28">2026 年 11 月 28 日</time> · Ethan H.B. Zhou</p>
+    <p>Sturnus 让你用 iPhone 查看和操作自己电脑上的 Agent 会话。App 直接与配对的机器通信。开发者不收集你的会话内容，也不做广告追踪或使用行为统计。</p>
+
+    <h2>配对和相机</h2>
+    <p>你可以手动输入地址和配对码，也可以允许相机扫描二维码。扫码画面在手机上识别。点「连接」时，App 将配对码及 iOS 提供的设备名称发送给你选定的机器。手机保存机器名称、地址、版本和 App 偏好，配对密钥存放在这部 iPhone 的钥匙串中。</p>
+
+    <h2>会话和语音</h2>
+    <p>手机从配对的机器读取对话、图片、终端画面和工作区内容。你输入的文字、授权选择和操作也会发到那台机器。Agent 对话、起草和摘要等功能可能把相关内容交给机器上配置的模型服务。</p>
+    <p>点麦克风并授权后，App 才会录音。结束录音后，手机将音频发给配对的机器，由它配置的本地或第三方语音服务转写。转写请求结束或你取消录音时，App 会清理手机上的临时录音。你也可以直接打字。</p>
+
+    <h2>撤销访问和删除数据</h2>
+    <p>在 App 的「机器」列表左滑移除一台机器，会删除手机上的配对记录和密钥。在电脑的 Sturnus「设置 → 访问」移除这部手机，可以让服务端立即撤销该密钥。你可以随时在 iPhone「设置 → App → Sturnus」关闭相机或麦克风权限。</p>
+    <p>解除配对后，已经发出的会话和消息仍保存在原机器上。请在那台机器上管理会话记录和 Agent 日志。若启用了远程模型或转写服务，发给该服务的数据按其保留和删除政策处理，你可以向对应服务商申请删除。</p>
+
+    <h2>TestFlight 和联系</h2>
+    <p>使用 TestFlight 测试时，Apple 会向开发者提供测试使用情况、崩溃信息和你提交的反馈。按邮件邀请加入的测试者，其姓名和邮箱也可能对开发者可见。请在提交反馈前移除截图中的私密会话内容。</p>
+    <p>测试期间，可在 TestFlight 的 Sturnus 页面联系开发者或提交隐私请求。一般问题也可以通过 <a href="https://github.com/ethannortharc/sturnus/issues">Sturnus 项目反馈页</a>联系。公开反馈请勿附上配对码、密钥或会话内容。</p>
+  </main>
+</body>
+</html>
